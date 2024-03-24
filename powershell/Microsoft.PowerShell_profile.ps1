@@ -10,6 +10,7 @@ $env:DOTFILES_ROOT="${env:DOTFILES}\powershell"
 $env:ON_PATH="${env:DOTFILES_ROOT}\onpath"
 $env:ORIG_PATH=$env:PATH
 $env:PATH="${env:ON_PATH};$env:PATH;$env:BB_DOV_ROOT\dev_stuff\helper-scripts\windows"
+$env:NF_ROOT="${env:OZ_ROOT}\nf"
 
 #aliases - get rid of overlapping ones with bash
 Remove-Item alias:curl -ErrorAction Ignore
@@ -22,12 +23,16 @@ Remove-Item alias:find -ErrorAction Ignore
 Set-Alias -name vi -value "vim.exe"
 
 
+function cddev () { cd $env:DOTFILES }
 function cddf () { cd $env:DOTFILES_ROOT }
+function cdgh () { cd $env:GH_ROOT }
 function cdo () { cd $env:OZ_ROOT }
-function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
+function cdnf () { cd $env:NF_ROOT }
+function cdz () { cd $env:NF_ROOT\ziti }
 function cdzd () { cd $env:OZ_ROOT\ziti-doc }
 
 $ChocolateyProfile = "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
 if (Test-Path($ChocolateyProfile)) {
   Import-Module "$ChocolateyProfile"
 }
+	
