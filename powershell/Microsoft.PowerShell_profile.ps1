@@ -26,9 +26,9 @@ Set-Alias -name vi -value "vim.exe"
 function cddev () { cd $env:DOTFILES }
 function cddf () { cd $env:DOTFILES_ROOT }
 function cdgh () { cd $env:GH_ROOT }
-function cdo () { cd $env:OZ_ROOT }
 function cdnf () { cd $env:NF_ROOT }
 function cdz () { cd $env:NF_ROOT\ziti }
+function cdo () { cd $env:OZ_ROOT }
 function cdzd () { cd $env:OZ_ROOT\ziti-doc }
 
 $ChocolateyProfile = "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
