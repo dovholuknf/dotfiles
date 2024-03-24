@@ -1,55 +1,49 @@
 # Receive the RootFolder and SortBySize parameters
 param (
     [string]$RootFolder,
+    [switch]$SortByName,
     [switch]$SortBySize
 )
 
-# Get all directories at the specified root folder
-$directories = Get-ChildItem -Path $RootFolder -Directory
+function Get-FolderSize {
+    param (
+        [string]$Folder
+    )
 
-# Sort directories by total size if SortBySize switch is provided
-if ($SortBySize) {
-    $directories = $directories | Sort-Object {
-        $totalSize = (Get-ChildItem -Path $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-        $totalSize
+    # Get all files in the specified subfolder and its immediate subdirectories (up to depth 1), including hidden files, and calculate their total size
+    $subFolderFiles = Get-ChildItem -Path $Folder -Recurse -Force -Depth 1 -File
+
+    # Measure the total size of the files using the 'Length' property and sum them up
+    $sizeMeasurements = $subFolderFiles | Measure-Object -Property Length -Sum
+
+    # Select only the 'Sum' property from the measurements
+    $sumSize = $sizeMeasurements | Select-Object -ExpandProperty Sum
+
+    # Calculate size in MB and GB
+    $sizeMB = [Math]::Round($sumSize / 1MB, 2)
+    $sizeGB = [Math]::Round($sumSize / 1GB, 2)
+
+    # Create and return an object with the desired output
+    [PSCustomObject]@{
+        Folder = $Folder
+        SizeGB = $sizeGB
+        SizeMB = $sizeMB
     }
 }
 
-# Initialize a dictionary to store job ID and corresponding directory
-$jobDirectoryMap = @{}
+# Get all subfolders in the specified folder and sort them
+$subfolders = Get-ChildItem $folder -Directory | Sort-Object
 
-# Initialize an array to store background jobs
-$jobs = @()
-
-# Start jobs for each directory
-foreach ($directory in $directories) {
-    $job = Start-Job -ScriptBlock {
-        param($dir)
-        $items = Get-ChildItem -Path $dir.FullName -Recurse -File -ErrorAction SilentlyContinue
-        $size = ($items | Measure-Object -Property Length -Sum).Sum
-        $sizeInMB = [Math]::Round($size / 1MB, 2)
-        $sizeInGB = [Math]::Round($size / 1GB, 2)
-        "$($sizeInGB.ToString().PadLeft(8)) GB`t$($sizeInMB.ToString().PadLeft(8)) MB`t$($dir.FullName)"
-    } -ArgumentList $directory
-    $jobs += $job
-    $jobDirectoryMap[$job.Id] = $directory
+$sizes = @()
+# Iterate over each subfolder
+foreach ($folderItem in $subfolders) {
+	$sizes += Get-FolderSize $folderItem
 }
 
-# Check and display job status while running
-while ($jobs.State -contains 'Running') {
-    $runningJobs = $jobs | Where-Object { $_.State -eq 'Running' }
-    foreach ($job in $runningJobs) {
-        $directory = $jobDirectoryMap[$job.Id]
-        Write-Host "Still waiting for $($directory.FullName) ..."
-    }
-    Start-Sleep -Seconds 5
+if ($SortByName) {
+	$sizes
+} elseif ($SortBySize) {
+    $sizes | Sort-Object -Property SizeMB
+} else {
+	$sizes
 }
-
-# Retrieve and display job results
-foreach ($job in $jobs) {
-    $result = Receive-Job $job
-    Write-Output $result
-}
-
-# Cleanup: Remove completed jobs
-Remove-Job -Job $jobs
