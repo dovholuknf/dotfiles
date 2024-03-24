@@ -7,7 +7,7 @@ param (
 
 function Get-FolderSize($Folder) {
     # Get all files in the specified subfolder and its immediate subdirectories (up to depth 1), including hidden files, and calculate their total size
-    $subFolderFiles = Get-ChildItem -Path $Folder -Recurse -Force -File
+	$subFolderFiles = Get-ChildItem -Path $Folder -Recurse -Force -File -ErrorAction SilentlyContinue
 
     # Measure the total size of the files using the 'Length' property and sum them up
     $sizeMeasurements = $subFolderFiles | Measure-Object -Property Length -Sum
@@ -28,11 +28,12 @@ function Get-FolderSize($Folder) {
 }
 
 # Get all subfolders in the specified folder and sort them
-$subfolders = Get-ChildItem $RootFolder -Directory | Sort-Object
+$subfolders = Get-ChildItem $RootFolder -Directory -Force | Sort-Object
 
 $sizes = @()
 # Iterate over each subfolder
 foreach ($folderItem in $subfolders) {
+	"processing: $folderItem"
 	$sizes += Get-FolderSize $folderItem
 }
 
