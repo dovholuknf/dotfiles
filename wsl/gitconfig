@@ -1,0 +1,87 @@
+[user]
+	signingkey = 136D3480
+[push]
+    default = simple
+[core]
+	autocrlf = false
+	editor = vim
+[merge]
+	tool = meld
+[mergetool]
+    keepBackup = false
+[color]
+    ui = auto
+[alias]
+    co = checkout
+    sts = status
+    st = status --ignore-submodules
+    rs = restore 
+    rss = restore --staged
+    br = branch
+    l = "log --graph --decorate --format=format:'%C(bold blue)%h%C(reset) - %C(bold green)(%ar)%C(reset) %C(green)%s%C(reset) %C(bold blue)<%an>%C(reset) %C(bold yellow)%d%C(reset)' --abbrev-commit --date=relative"
+    ll = "log --graph --decorate --abbrev-commit --date=relative"
+    lg = "log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit --date=relative"
+    info = "config --get remote.origin.url"
+    supdate = "submodule update --remote --merge"
+    whoami = "config user.name"
+    gpr = pull --recurse-submodules
+    suri = submodule update --init --recursive
+    undocommit = reset --soft HEAD~1
+    smerge = merge --squash --no-commit
+    brls = branch --sort=-committerdate
+    uprebase = git pull --rebase upstream main
+
+    
+[winUpdater]
+	recentlySeenVersion = 2.24.1.windows.2
+    
+[color "branch"]
+  current = yellow reverse
+  local = white
+  remote = cyan
+[mergetool "vs2017"]
+	path = C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\TeamFoundation\\Team Explorer\\vsDiffMerge.exe
+[mergetool "vs2019"]
+	path = C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\TeamFoundation\\Team Explorer\\vsDiffMerge.exe
+[mergetool "goland"]
+	path = /mnt/c/Program\\ Files/JetBrains/GoLand\\ 2020.1.1/bin/goland.exe
+
+[mergetool "bc3"]
+	cmd = \"c:\\Program Files (x86)\\Beyond Compare 3\\BComp.exe\" \"$REMOTE\" \"$LOCAL\" \"$BASE\" \"$MERGED\" //m
+
+[mergetool "meldwin"]
+	cmd = \"C:\\Program Files (x86)\\Meld\\Meld.exe\" \"$REMOTE\" \"$LOCAL\" \"$BASE\" \"$MERGED\" //m
+
+[mergetool "meldwinwsl"]
+    cmd = "/mnt/c/Program\\ Files/Meld/Meld.exe" \"$REMOTE\" \"$LOCAL\" \"$BASE\" \"$MERGED\" /m
+
+
+[fetch]
+	prune = true
+#[includeIf "gitdir:~/git/personal/"]
+#    [user]
+#        email = "46322585+dovholuknf@users.noreply.github.com"
+#    [core]
+#        sshCommand = "ssh -i ~/.ssh/personal/id_rsa"
+
+[gpg]
+	program = /usr/bin/gpg
+[safe]
+	directory = /home/cd/gitws/*
+	directory = /home/cd/git/*
+	directory = /mnt/v/work/git/*
+	directory = /home/cd/git/github/openziti/ziti-doc
+	directory = /home/cd/git/github/openziti/ziti-doc
+	directory = /home/cd/git/github/openziti/ziti-doc
+	directory = /home/cd/git/github/openziti/ziti-doc
+	directory = /home/cd/git/github/openziti/ziti-doc
+	directory = /home/cd/git/github/openziti/ziti-doc/docusaurus
+	directory = /home/cd/git/github/openziti/ziti-doc/docusaurus
+[credential "https://github.com"]
+	helper = 
+	helper = !/usr/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = 
+	helper = !/usr/bin/gh auth git-credential
+[commit]
+	signoff = true
