@@ -7,6 +7,6 @@ git branch -vv |
     ForEach-Object { 
         if ($_ -match '^.\s+(\S+)') {
             $branchName = $Matches[1]
-            echo $branchName
+            echo "$branchName would be removed"
         }
     }
