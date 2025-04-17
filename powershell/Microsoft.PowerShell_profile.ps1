@@ -1,5 +1,5 @@
 #environment variables
-$env:WORK_ROOT="c:\work"
+#$env:WORK_ROOT="c:\work"
 $env:GIT_ROOT="${env:WORK_ROOT}\git"
 $env:GH_ROOT="${env:GIT_ROOT}\github"
 $env:BB_ROOT="${env:GIT_ROOT}\bitbucket"
@@ -23,7 +23,8 @@ Remove-Item alias:find -ErrorAction Ignore
 Set-Alias -name vi -value "vim.exe"
 
 
-function cddev () { cd $env:DOTFILES }
+function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
+function cddot () { cd $env:DOTFILES }
 function cddf () { cd $env:DOTFILES_ROOT }
 function cdgh () { cd $env:GH_ROOT }
 function cdnf () { cd $env:NF_ROOT }
