@@ -31,9 +31,10 @@ function cdnf () { cd $env:NF_ROOT }
 function cdz () { cd $env:NF_ROOT\ziti }
 function cdo () { cd $env:OZ_ROOT }
 function cdzd () { cd $env:OZ_ROOT\ziti-doc }
+function cdew () { cd $env:OZ_ROOT\desktop-edge-win }
+function cdzet() { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 
 $ChocolateyProfile = "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
 if (Test-Path($ChocolateyProfile)) {
   Import-Module "$ChocolateyProfile"
 }
-	
