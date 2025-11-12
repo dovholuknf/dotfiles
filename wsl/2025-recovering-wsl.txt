@@ -1,0 +1,83 @@
+Jun 9 - wsl no longer started. totally dead. error shown below
+
+    wsl -d ubu-july-2024
+    Catastrophic failure
+    Error code: Wsl/Service/E_UNEXPECTED
+
+
+
+    <3>WSL (395 - Relay) ERROR: CreateProcessParseCommon:989: getpwnam(cd) failed 5
+    <3>WSL (395 - Relay) ERROR: CreateProcessParseCommon:998: getpwuid(1000) failed 5
+    <3>WSL (395 - Relay) ERROR: ConfigUpdateLanguage:2580: fopen(/etc/default/locale) failed 5
+    <3>WSL (395 - Relay) ERROR: operator():509: getpwuid(0) failed 5
+    <3>WSL (395) ERROR: I/O error @util.cpp:1327 (UtilInitGroups)
+    <3>WSL (395 - Relay) ERROR: CreateProcessCommon:732: Create process failed
+
+
+dumed the whole thing
+fired up new ubuntu and used qemu to mount the old drive
+
+    3  sudo apt update && sudo apt install qemu-utils -y
+    4  sudo modprobe nbd max_part=8
+    5  sudo qemu-nbd -c /dev/nbd0 /mnt/c/Users/clint/AppData/Local/Packages/CanonicalGroupLimited.Ubuntu24.04LTS_79rhkp1fndgsc/LocalState/ext4.vhdx
+    6  mkdir -p ~/mnt/recovery
+    7  sudo mount -o ro /dev/nbd0 ~/mnt/recovery
+    8  ls -la ~/mnt/recovery/home/clint
+    9  ls -la ~/mnt/recovery
+   10  ls -la ~/mnt/recovery/home/cd
+   11  cd ~/mnt/recovery/etc/
+   12  cat fstab
+   13  mkdir -p ~/recovery
+   14  cd ~/recovery/
+
+Alternate example:
+sudo modprobe nbd max_part=8
+sudo qemu-nbd -c /dev/nbd0 /mnt/c/Users/clint/AppData/Local/Packages/CanonicalGroupLimited.Ubuntu24.04LTS_79rhkp1fndgsc/LocalState/ext4.vhdx
+sudo mkdir -p ~/mnt/recovery
+sudo mount -o ro /dev/nbd0 ~/mnt/recovery
+ls -la ~/mnt/recovery/home
+
+
+
+PS V:\work\wsl> sudo pwsh
+PowerShell 7.5.1
+PS V:\work\wsl> New-VHD -Path "V:\work\wsl\2025-home.vhdx" -SizeBytes 10GB -Dynamic
+
+ComputerName            : SG4
+Path                    : V:\work\wsl\2025-home.vhdx
+VhdFormat               : VHDX
+VhdType                 : Dynamic
+FileSize                : 4194304
+Size                    : 10737418240
+MinimumSize             :
+LogicalSectorSize       : 512
+PhysicalSectorSize      : 4096
+BlockSize               : 33554432
+ParentPath              :
+DiskIdentifier          : F1CF5548-7A08-4EF1-A17E-B1689E5CD0D3
+FragmentationPercentage : 0
+Alignment               : 1
+Attached                : False
+DiskNumber              :
+IsPMEMCompatible        : False
+AddressAbstractionType  : None
+Number                  :
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+sudo modprobe nbd max_part=8
+sudo qemu-nbd -c /dev/nbd0 /mnt/c/Users/clint/AppData/Local/Packages/CanonicalGroupLimited.Ubuntu22.04LTS_79rhkp1fndgsc/LocalState/ext4.vhdx
+sudo mkdir -p ~/mnt/recovery
+sudo mount -o ro /dev/nbd0 ~/mnt/recovery
+ls -la ~/mnt/recovery/home
