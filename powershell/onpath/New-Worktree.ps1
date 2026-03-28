@@ -7,11 +7,19 @@
 #   Branch:
 #     script.ps1 -Org org -Repo repo -Branch branch-name
 #
+#   Branch with iteration fork:
+#     script.ps1 -Org org -Repo repo -Branch branch-name -ToBranch my-iteration
+#
 #   Auto-open in claude:
 #     add -y to skip prompt
 #
+#   Remove a worktree:
+#     script.ps1 -Url https://github.com/org/repo/pull/123 -Remove
+#     script.ps1 -Org org -Repo repo -Branch branch-name -Remove
+#     add -y to skip confirmation prompt
+#
 # notes:
-#   - requires git, wt.exe, and claude CLI
+#   - requires git, gh, wt.exe, and claude CLI
 #   - clones to $SourceRoot if missing
 #   - creates/updates worktree under $WorktreeRoot
 
@@ -29,9 +37,18 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = 'ByBranch')]
     [string]$Branch,
 
+    # When supplied, $Branch is the source; a new local branch named $ToBranch is created from it.
+    # Re-running is safe: if $ToBranch already has a worktree it is simply reopened.
+    [Parameter(ParameterSetName = 'ByBranch')]
+    [string]$ToBranch,
+
     [string]$SourceRoot = 'D:\git',
 
     [string]$WorktreeRoot = 'D:\worktrees',
+
+    [string]$Prompt,
+
+    [switch]$Remove,
 
     [switch]$y
 )
@@ -50,7 +67,7 @@ begin {
 
         Push-Location $RepoPath
         try {
-            & git @Args 2>&1
+            & git @Args
             if ($LASTEXITCODE -ne 0) {
                 throw "git $($Args -join ' ') failed in $RepoPath"
             }
@@ -152,23 +169,44 @@ begin {
         }
     }
 
+    # Returns the real head branch name for a PR via gh.
+    function Get-PrHeadBranch {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Org,
+
+            [Parameter(Mandatory = $true)]
+            [string]$Repo,
+
+            [Parameter(Mandatory = $true)]
+            [string]$PrNumber
+        )
+
+        $result = (& gh pr view $PrNumber --repo "$Org/$Repo" --json headRefName -q .headRefName 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "gh pr view failed for PR ${PrNumber}: $result"
+        }
+        return $result
+    }
+
+    # Fetches the branch from origin and creates/updates a local tracking branch.
+    # Caller must ensure the branch is not currently checked out in any worktree.
     function Sync-PrBranch {
         param(
             [Parameter(Mandatory = $true)]
             [string]$RepoPath,
 
             [Parameter(Mandatory = $true)]
-            [string]$PrNumber,
-
-            [Parameter(Mandatory = $true)]
             [string]$Branch
         )
 
-        if (-not (Test-LocalBranchExists -RepoPath $RepoPath -Branch $Branch)) {
-            Invoke-Git -RepoPath $RepoPath -Args @('fetch','origin',"pull/$PrNumber/head:$Branch")
+        Invoke-Git -RepoPath $RepoPath -Args @('fetch','origin',$Branch)
+
+        $localExists = Test-LocalBranchExists -RepoPath $RepoPath -Branch $Branch
+        if ($localExists) {
+            Invoke-Git -RepoPath $RepoPath -Args @('branch','-f',$Branch,"origin/$Branch")
         } else {
-            Invoke-Git -RepoPath $RepoPath -Args @('fetch','origin',"pull/$PrNumber/head")
-            Invoke-Git -RepoPath $RepoPath -Args @('branch','-f',$Branch,'FETCH_HEAD')
+            Invoke-Git -RepoPath $RepoPath -Args @('branch','--track',$Branch,"origin/$Branch")
         }
     }
 
@@ -197,7 +235,7 @@ begin {
 
         return $null
     }
-    
+
     function Sync-RemoteBranch {
         param(
             [Parameter(Mandatory = $true)]
@@ -246,24 +284,49 @@ begin {
             AlreadyExists = $false
         }
     }
-    
+
+    function Invoke-WorktreeRemove {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$RepoPath,
+
+            [Parameter(Mandatory = $true)]
+            [string]$WorktreePath,
+
+            [switch]$AutoConfirm
+        )
+
+        if (-not (Test-Path $WorktreePath)) {
+            Write-Host "worktree not found at '$WorktreePath', pruning stale registrations"
+            Invoke-Git -RepoPath $RepoPath -Args @('worktree','prune')
+            return
+        }
+
+        if ($AutoConfirm) {
+            $confirmed = $true
+        } else {
+            $resp = Read-Host "remove worktree at '$WorktreePath'? (Y/n)"
+            $confirmed = [string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$'
+        }
+
+        if ($confirmed) {
+            Invoke-Git -RepoPath $RepoPath -Args @('worktree','remove','--force',$WorktreePath)
+            Write-Host "removed: $WorktreePath"
+        }
+    }
+
     function Open-ClaudeShell {
         param(
             [string]$Path,
             [string]$Repo,
             [string]$PrNumber,
-            [string]$Branch
+            [string]$Branch,
+            [string]$PromptOverride
         )
 
-        if ($PrNumber) {
-            $prompt = "review PR $PrNumber in $Repo. summarize changes, risks, and test coverage gaps"
-            runas /user:claude "wt.exe -d `"$Path`" cmd /k claude `"$prompt`""
-        } elseif ($Branch) {
-            $prompt = "review branch $Branch in $Repo. summarize changes, risks, and test coverage gaps"
-            runas /user:claude "wt.exe -d `"$Path`" cmd /k claude `"$prompt`""
-        } else {
-            runas /user:claude "wt.exe -d `"$Path`" cmd /k claude"
-        }
+        $prompt = if ($PromptOverride) { $PromptOverride } else { "critique the changes from this branch ($Branch in $Repo). summarize changes commit by commit and pay attention to risks and crtique overall design" }
+        $encodedCmd = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("Set-Location '$Path'; claude `"$prompt`""))
+        runas /user:claude "wt.exe -d `"$Path`" pwsh -NoExit -EncodedCommand $encodedCmd"
     }
 
     function Confirm-OpenClaudeShell {
@@ -272,15 +335,16 @@ begin {
             [string]$Repo,
             [string]$PrNumber,
             [string]$Branch,
+            [string]$PromptOverride,
             [switch]$AutoOpen
         )
 
         if ($AutoOpen) {
-            Open-ClaudeShell -Path $Path -Repo $Repo -PrNumber $PrNumber -Branch $Branch
+            Open-ClaudeShell -Path $Path -Repo $Repo -PrNumber $PrNumber -Branch $Branch -PromptOverride $PromptOverride
         } else {
             $resp = Read-Host "open in claude? (Y/n)"
             if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
-                Open-ClaudeShell -Path $Path -Repo $Repo -PrNumber $PrNumber -Branch $Branch
+                Open-ClaudeShell -Path $Path -Repo $Repo -PrNumber $PrNumber -Branch $Branch -PromptOverride $PromptOverride
             } else {
                 Write-Host "cd `"$Path`""
             }
@@ -290,56 +354,128 @@ begin {
 
 process {
     if ($PSCmdlet.ParameterSetName -eq 'ByBranch') {
-        $src = Join-Path (Join-Path (Join-Path $SourceRoot 'github') $Org) $Repo
+        $src    = Join-Path (Join-Path (Join-Path $SourceRoot   'github') $Org) $Repo
         $wtRoot = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $Org) $Repo
-        $wtPath = Join-Path $wtRoot $Branch
+
+        if ($Remove) {
+            $targetBranch = if ($ToBranch) { $ToBranch } else { $Branch }
+            $wtPath = Join-Path $wtRoot $targetBranch
+            Invoke-WorktreeRemove -RepoPath $src -WorktreePath $wtPath -AutoConfirm:$y
+            return
+        }
 
         [System.IO.Directory]::CreateDirectory($wtRoot) | Out-Null
 
         Ensure-RepoClonedAndUpdated -Provider 'github' -Org $Org -Repo $Repo -RepoSourcePath $src
 
-        $syncResult = Sync-RemoteBranch -RepoPath $src -Remote 'origin' -Branch $Branch
+        if ($ToBranch) {
+            # Sync the source branch from remote (no worktree needed for it)
+            $remoteExists = Test-RemoteBranchExists -RepoPath $src -Remote 'origin' -Branch $Branch
+            if ($remoteExists) {
+                Invoke-Git -RepoPath $src -Args @('fetch','origin',$Branch)
+                # Only force-update if it isn't checked out somewhere already
+                $sourceWt = Get-WorktreePathForBranch -RepoPath $src -Branch $Branch
+                if (-not $sourceWt) {
+                    Invoke-Git -RepoPath $src -Args @('branch','-f',$Branch,"origin/$Branch")
+                }
+            }
 
-        if ($syncResult.AlreadyExists) {
-            Write-Host "ready: $($syncResult.WorktreePath)"
-            Confirm-OpenClaudeShell -Path $syncResult.WorktreePath -Repo $Repo -Branch $Branch -AutoOpen:$y
+            $existingWt = Get-WorktreePathForBranch -RepoPath $src -Branch $ToBranch
+            if ($existingWt) {
+                $resp = Read-Host "worktree already exists at '$existingWt'. remove it? (y/N)"
+                if ($resp -match '^[Yy]$') {
+                    Invoke-WorktreeRemove -RepoPath $src -WorktreePath $existingWt -AutoConfirm
+                } else {
+                    Write-Host "ready: $existingWt"
+                    Confirm-OpenClaudeShell -Path $existingWt -Repo $Repo -Branch $ToBranch -PromptOverride $Prompt -AutoOpen:$y
+                    return
+                }
+            }
+
+            # Create ToBranch from Branch if it doesn't exist yet
+            $localExists = Test-LocalBranchExists -RepoPath $src -Branch $ToBranch
+            if (-not $localExists) {
+                Invoke-Git -RepoPath $src -Args @('branch',$ToBranch,$Branch)
+            }
+
+            $wtPath = Join-Path $wtRoot $ToBranch
+            Ensure-Worktree -RepoPath $src -WorktreePath $wtPath -Branch $ToBranch
+            Write-Host "ready: $wtPath"
+            Confirm-OpenClaudeShell -Path $wtPath -Repo $Repo -Branch $ToBranch -PromptOverride $Prompt -AutoOpen:$y
             return
         }
 
+        $wtPath     = Join-Path $wtRoot $Branch
+        $syncResult = Sync-RemoteBranch -RepoPath $src -Remote 'origin' -Branch $Branch
+
+        if ($syncResult.AlreadyExists) {
+            $resp = Read-Host "worktree already exists at '$($syncResult.WorktreePath)'. remove it? (y/N)"
+            if ($resp -match '^[Yy]$') {
+                Invoke-WorktreeRemove -RepoPath $src -WorktreePath $syncResult.WorktreePath -AutoConfirm
+            } else {
+                Write-Host "ready: $($syncResult.WorktreePath)"
+                Confirm-OpenClaudeShell -Path $syncResult.WorktreePath -Repo $Repo -Branch $Branch -PromptOverride $Prompt -AutoOpen:$y
+                return
+            }
+        }
+
         Ensure-Worktree -RepoPath $src -WorktreePath $wtPath -Branch $Branch
-
         Write-Host "ready: $wtPath"
-
-        Confirm-OpenClaudeShell -Path $wtPath -Repo $Repo -Branch $Branch -AutoOpen:$y
-
+        Confirm-OpenClaudeShell -Path $wtPath -Repo $Repo -Branch $Branch -PromptOverride $Prompt -AutoOpen:$y
         return
     }
 
     foreach ($u in $Url) {
-
         if ($u -notmatch '^https?://github\.com/(?<org>[^/]+)/(?<repo>[^/]+?)/pull/(?<pr>\d+)') {
+            Write-Warning "skipping unrecognised URL: $u"
             continue
         }
 
-        $org = $Matches.org
+        $org  = $Matches.org
         $repo = $Matches.repo
-        $pr = $Matches.pr
+        $pr   = $Matches.pr
 
-        $src = Join-Path (Join-Path (Join-Path $SourceRoot 'github') $org) $repo
+        $src    = Join-Path (Join-Path (Join-Path $SourceRoot   'github') $org) $repo
         $wtRoot = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $org) $repo
         $wtPath = Join-Path $wtRoot "pr-$pr"
+
+        if ($Remove) {
+            Invoke-WorktreeRemove -RepoPath $src -WorktreePath $wtPath -AutoConfirm:$y
+            continue
+        }
 
         [System.IO.Directory]::CreateDirectory($wtRoot) | Out-Null
 
         Ensure-RepoClonedAndUpdated -Provider 'github' -Org $org -Repo $repo -RepoSourcePath $src
+        Invoke-Git -RepoPath $src -Args @('worktree','prune')
 
-        $branch = "pr-$pr"
+        $branch     = Get-PrHeadBranch -Org $org -Repo $repo -PrNumber $pr
+        $existingWt = Get-WorktreePathForBranch -RepoPath $src -Branch $branch
 
-        Sync-PrBranch -RepoPath $src -PrNumber $pr -Branch $branch
+        if ($existingWt) {
+            # Normalize separators for comparison
+            $existingNorm = $existingWt.Replace('\','/')
+            $wtNorm       = $wtPath.Replace('\','/')
+
+            if ($existingNorm -ne $wtNorm) {
+                throw "branch '$branch' is already checked out at '$existingWt' — is there another PR against this branch?"
+            }
+
+            $resp = Read-Host "worktree already exists at '$existingWt'. remove it? (y/N)"
+            if ($resp -match '^[Yy]$') {
+                Invoke-WorktreeRemove -RepoPath $src -WorktreePath $existingWt -AutoConfirm
+                # fall through to re-sync and re-create below
+            } else {
+                Write-Host "ready: $existingWt"
+                Confirm-OpenClaudeShell -Path $existingWt -Repo $repo -PrNumber $pr -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                continue
+            }
+        }
+
+        Sync-PrBranch -RepoPath $src -Branch $branch
         Ensure-Worktree -RepoPath $src -WorktreePath $wtPath -Branch $branch
 
         Write-Host "ready: $wtPath"
-
-        Confirm-OpenClaudeShell -Path $wtPath -Repo $repo -PrNumber $pr -AutoOpen:$y
+        Confirm-OpenClaudeShell -Path $wtPath -Repo $repo -PrNumber $pr -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
     }
 }
