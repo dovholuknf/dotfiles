@@ -1,0 +1,60 @@
+{
+  "version": 4,
+  "configurePresets": [
+    {
+      "name": "local-path",
+      "hidden": true,
+      "environment": {
+        "PATH": "$env{LOCAL_MINGW};$env{LOCAL_CMAKE};$env{LOCAL_NINJA};C:/Program Files/Git/cmd;C:/Windows/System32;C:/Windows/System32/WindowsPowerShell/v1.0;C:/Windows;$env{PKG_CONFIG_PATH}"
+      }
+    },
+    {
+      "name": "clion-tools",
+      "hidden": true,
+      "inherits": ["local-path"],
+      "environment": {
+        "CLION_BIN": "C:/Program Files/JetBrains/CLion 2025.3.3/bin",
+        "LOCAL_MINGW": "$env{CLION_BIN}/mingw/bin",
+        "LOCAL_CMAKE": "$env{CLION_BIN}/cmake/win/x64/bin",
+        "LOCAL_NINJA": "$env{CLION_BIN}/ninja/win/x64",
+        "PKG_CONFIG_PATH": "D:/tools/msys64/usr/bin"
+      }
+    },
+    {
+      "name": "vs-tools",
+      "hidden": true,
+      "inherits": ["local-path"],
+      "environment": {
+        "VS_BIN": "C:/Program Files/Microsoft Visual Studio/18/Community",
+        "LOCAL_MINGW": "$env{VS_BIN}/VC/Tools/MSVC/14.50.35717/bin/Hostx64/x64",
+        "LOCAL_CMAKE": "$env{VS_BIN}/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin",
+        "LOCAL_NINJA": "$env{VS_BIN}/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja"
+      }
+    },
+    {
+      "name": "mingw-vcpkg-base",
+      "hidden": true,
+      "inherits": ["clion-tools"],
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "MinGW"
+        }
+      },
+      "environment": {
+        "VCPKG_ROOT": "D:/git/github/microsoft/vcpkg",
+        "VCPKG_BINARY_SOURCES": "clear;files,D:/work/vcpkg/binary-cache,readwrite",
+        "VCPKG_INSTALLED_DIR": "D:/work/vcpkg/vcpkg_install_dir",
+        "OPENSSL_ROOT_DIR": "D:/tools/msys64/mingw64"
+      },
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-static",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "PKG_CONFIG_EXECUTABLE": "D:/tools/msys64/mingw64/bin/pkg-config.exe",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ]
+}
