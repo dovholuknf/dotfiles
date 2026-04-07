@@ -47,6 +47,8 @@ function cdew () { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet() { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 function cdds() { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
 
+function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
+
 function update-path {
     param(
         [Parameter(Mandatory)]
@@ -107,6 +109,17 @@ function remove-dotfiles_onpath { update-path -EnvVarName DOVHOLUK_ONPATH -Remov
 $env:CHOCO_DEFAULT ="C:\ProgramData\chocolatey\bin"
 function add-choco { update-path -EnvVarName CHOCO_DEFAULT -First }
 function remove-choco { update-path -EnvVarName CHOCO_DEFAULT -Remove }
+
+$env:NODE_DEFAULT ="C:\Program Files\nodejs"
+$env:NPM_DEFAULT  ="C:\Users\clint\AppData\Roaming\npm"
+function add-node-npm {
+    update-path -EnvVarName NODE_DEFAULT -First
+    update-path -EnvVarName NPM_DEFAULT  -First
+}
+function remove-node-npm {
+    update-path -EnvVarName NODE_DEFAULT -Remove
+    update-path -EnvVarName NPM_DEFAULT  -Remove
+}
 
 function editsettings() {
   np "C:\Users\clint\AppData\Local\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"

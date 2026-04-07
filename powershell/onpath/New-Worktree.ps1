@@ -28,10 +28,10 @@ param(
     [Parameter(Mandatory = $true, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true, ParameterSetName = 'ByUrl')]
     [string[]]$Url,
 
-    [Parameter(Mandatory = $true, ParameterSetName = 'ByBranch')]
+    [Parameter(ParameterSetName = 'ByBranch')]
     [string]$Org,
 
-    [Parameter(Mandatory = $true, ParameterSetName = 'ByBranch')]
+    [Parameter(ParameterSetName = 'ByBranch')]
     [string]$Repo,
 
     [Parameter(Mandatory = $true, ParameterSetName = 'ByBranch')]
@@ -346,7 +346,11 @@ begin {
             if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
                 Open-ClaudeShell -Path $Path -Repo $Repo -PrNumber $PrNumber -Branch $Branch -PromptOverride $PromptOverride
             } else {
-                Write-Host "cd `"$Path`""
+                $cdResp = Read-Host "cd there? (Y/n)"
+                if ([string]::IsNullOrWhiteSpace($cdResp) -or $cdResp -match '^[Yy]$') {
+                    Set-Clipboard $Path
+                    Write-Host "path copied to clipboard — just paste after 'cd '" -ForegroundColor Cyan
+                }
             }
         }
     }
@@ -354,6 +358,20 @@ begin {
 
 process {
     if ($PSCmdlet.ParameterSetName -eq 'ByBranch') {
+        if (-not $Org -or -not $Repo) {
+            $remoteUrl = & git remote get-url origin 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "no -Org/-Repo supplied and 'git remote get-url origin' failed in '$(Get-Location)'"
+            }
+            if ($remoteUrl -match '(?:github\.com[:/])(?<org>[^/]+)/(?<repo>[^/]+?)(?:\.git)?$') {
+                if (-not $Org) { $Org = $Matches.org }
+                if (-not $Repo) { $Repo = $Matches.repo }
+            } else {
+                throw "could not parse org/repo from remote URL: $remoteUrl"
+            }
+            Write-Host "detected: $Org/$Repo" -ForegroundColor Cyan
+        }
+
         $src    = Join-Path (Join-Path (Join-Path $SourceRoot   'github') $Org) $Repo
         $wtRoot = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $Org) $Repo
 
@@ -395,7 +413,7 @@ process {
             # Create ToBranch from Branch if it doesn't exist yet
             $localExists = Test-LocalBranchExists -RepoPath $src -Branch $ToBranch
             if (-not $localExists) {
-                Invoke-Git -RepoPath $src -Args @('branch',$ToBranch,$Branch)
+                Invoke-Git -RepoPath $src -Args @('branch','--no-track',$ToBranch,$Branch)
             }
 
             $wtPath = Join-Path $wtRoot $ToBranch

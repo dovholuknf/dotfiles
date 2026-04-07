@@ -1,0 +1,24 @@
+{
+  "version": 4,
+  "include": [
+    "D:/worktrees/CMakeUserPreset.json"
+  ],
+  "configurePresets": [
+    {
+      "name": "cwdming",
+      "inherits": ["mingw-vcpkg-base"],
+      "binaryDir": "${sourceDir}/build/cwdming",
+      "cacheVariables": {
+        "_ZITI_SDK_DIR": "D:/git/github/openziti/ziti-sdk-c"
+      }
+    },
+    {
+      "name": "cwdming-win32crypto",
+      "inherits": ["mingw-vcpkg-base"],
+      "binaryDir": "${sourceDir}/build/cwdming-win32crypto",
+      "cacheVariables": {
+        "TLSUV_TLSLIB": "win32crypto"
+      }
+    }
+  ]
+}
