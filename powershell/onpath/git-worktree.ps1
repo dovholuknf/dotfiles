@@ -150,24 +150,105 @@ function Remove-Worktree {
     }
 }
 
-function Open-ClaudeShell {
-    param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride)
-    $p = if ($PromptOverride) { $PromptOverride } else {
-        "critique the changes from this branch ($Branch in $Repo). summarize changes commit by commit and pay attention to risks and critique overall design"
+function Get-ClaudePromptPresets {
+    param([string]$Repo, [string]$Branch)
+    return ,@(
+        [PSCustomObject]@{
+            Name = 'critique'
+            Text = "critique the changes from this branch ($Branch in $Repo). summarize changes commit by commit and pay attention to risks and critique overall design"
+        }
+        [PSCustomObject]@{
+            Name = 'continue'
+            Text = "look at the current state of this worktree ($Branch in $Repo). figure out what was being worked on and pick up where it left off"
+        }
+        [PSCustomObject]@{
+            Name = 'explore'
+            Text = "give me a tour of this branch ($Branch in $Repo). what's different from main? what's the shape of the changes? orientation only, no action yet"
+        }
+        [PSCustomObject]@{
+            Name = 'test'
+            Text = "run the test suite for this branch ($Branch in $Repo). if anything fails, investigate root cause before attempting fixes"
+        }
+        [PSCustomObject]@{
+            Name = 'blank'
+            Text = $null
+        }
+    )
+}
+
+function Select-ClaudePrompt {
+    param([string]$Repo, [string]$Branch)
+    $presets = Get-ClaudePromptPresets -Repo $Repo -Branch $Branch
+
+    Write-Host ""
+    Write-Color "choose prompt:" DarkGray
+    for ($i = 0; $i -lt $presets.Count; $i++) {
+        $c       = $presets[$i]
+        $preview = if ($null -eq $c.Text) { '(open claude with no initial prompt)' } else { $c.Text }
+        $marker  = if ($i -eq 0) { '*' } else { ' ' }
+        Write-Host ("  [{0}]{1} " -f ($i + 1), $marker) -NoNewline -ForegroundColor Cyan
+        Write-Host ("{0,-9}" -f $c.Name) -NoNewline -ForegroundColor White
+        Write-Host ("  {0}" -f $preview) -ForegroundColor DarkGray
     }
-    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("Set-Location '$Path'; claude `"$p`""))
+    $customIdx = $presets.Count + 1
+    Write-Host ("  [{0}]  " -f $customIdx) -NoNewline -ForegroundColor Cyan
+    Write-Host ("{0,-9}" -f 'custom')      -NoNewline -ForegroundColor White
+    Write-Host "  (type your own)"                     -ForegroundColor DarkGray
+    Write-Host ""
+
+    $resp = (Read-Host "choice [1]").Trim()
+    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = '1' }
+
+    if ($resp -eq "$customIdx") {
+        $custom = Read-Host "prompt"
+        return $custom
+    }
+
+    $idx = 0
+    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $presets.Count) {
+        Write-Color "invalid choice, using default" Yellow
+        return $presets[0].Text
+    }
+    return $presets[$idx - 1].Text
+}
+
+function Open-ClaudeShell {
+    param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptText)
+    if ([string]::IsNullOrEmpty($PromptText)) {
+        $cmd = "Set-Location '$Path'; claude"
+    } else {
+        # soft-ask claude to /rename the session. claude has no built-in tool for invoking
+        # slash commands, so this is best-effort — the model may output /rename itself, or
+        # just suggest a name for you to type.
+        $full    = "$PromptText`n`nalso: suggest a short descriptive name for this session and run /rename with it (or propose the name if you can't invoke the command)."
+        $escaped = $full -replace '"', '`"'
+        $cmd     = "Set-Location '$Path'; claude `"$escaped`""
+    }
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
     runas /user:claude "wt.exe -d `"$Path`" pwsh -NoExit -EncodedCommand $enc"
 }
 
 function Confirm-OpenOrCd {
     param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen)
+
     if ($AutoOpen) {
-        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptOverride $PromptOverride
+        $promptText = if ($PromptOverride) {
+            $PromptOverride
+        } else {
+            (Get-ClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text
+        }
+        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText
         return
     }
+
     $resp = Read-Host "open in claude? (Y/n)"
     if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
-        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptOverride $PromptOverride
+        $promptText = if ($PromptOverride) {
+            $PromptOverride
+        } else {
+            Select-ClaudePrompt -Repo $Repo -Branch $Branch
+        }
+        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText
     } else {
         $cd = Read-Host "cd there? (Y/n)"
         if ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$') {

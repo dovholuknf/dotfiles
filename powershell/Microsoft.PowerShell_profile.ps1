@@ -208,6 +208,22 @@ if (Test-Path($ChocolateyProfile)) {
   Import-Module "$ChocolateyProfile"
 }
 
+Function Prompt () {
+    If (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-Host "[Admin]" -NoNewLine -ForegroundColor "Red"
+    }
+    Write-Host $env:COMPUTERNAME -NoNewLine -ForegroundColor "White"
+    Write-Host ": " -NoNewLine
+    Write-Host $pwd.ProviderPath -ForegroundColor "Green"
+    Write-Host "PS>" -NoNewLine -ForegroundColor "DarkGray"
+    return " " 
+}
+function Set-ConsoleColor ($bc, $fc) {
+    $Host.UI.RawUI.BackgroundColor = $bc
+    $Host.UI.RawUI.ForegroundColor = $fc
+    Clear-Host
+}
+
 # ziti completion powershell | Out-String | Invoke-Expression
 add-go_current
 add-doxygen

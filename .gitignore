@@ -1,0 +1,79 @@
+# --- secrets / credentials ---
+*.pem
+*.key
+*.pfx
+*.p12
+*.pkcs12
+*.jks
+*.keystore
+*.crt
+*.cer
+id_rsa
+id_rsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+id_dsa
+id_dsa.*
+*.ppk
+known_hosts
+authorized_keys
+
+# --- env / dotenv ---
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# --- cloud / tool creds ---
+.aws/credentials
+.azure/
+.gcloud/
+.kube/config
+.docker/config.json
+.npmrc
+.pypirc
+.netrc
+_netrc
+.git-credentials
+
+# --- powershell secret / history ---
+*.psd1.secret
+*SecretStore*
+*.clixml
+PSReadLine/
+ConsoleHost_history.txt
+
+# --- shell history / sessions ---
+.bash_history
+.zsh_history
+.psql_history
+.mysql_history
+.lesshst
+.viminfo
+.wget-hsts
+
+# --- editor / OS noise ---
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- local-only overrides ---
+*.local
+*.local.*
+local.*
+secrets.*
+*.secret
+*.secret.*
+*private*
+
+# --- build / cache ---
+.vs/
+.vscode/*.log
+node_modules/
+__pycache__/
+*.pyc
