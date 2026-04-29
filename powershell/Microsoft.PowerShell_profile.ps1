@@ -7,9 +7,11 @@ $env:GH_ROOT="${env:GIT_ROOT}\github"
 $env:BB_ROOT="${env:GIT_ROOT}\bitbucket"
 $env:OZ_ROOT="${env:GH_ROOT}\openziti"
 $env:BB_DOV_ROOT="${env:BB_ROOT}\dovholuk"
-$env:DOTFILES="${env:GH_ROOT}\dovholuknf\dotfiles"
-$env:DOTFILES_ROOT="${env:DOTFILES}\powershell"
-$env:ON_PATH="${env:DOTFILES_ROOT}\onpath"
+$env:GH_DOVH="${env:GH_ROOT}\dovholuknf"
+$env:DOTFILES="${env:GH_DOVH}\dotfiles"
+$env:DOTAGENTS="${env:GH_DOVH}\dotagents"
+$env:DOTFILES_PWSH="${env:DOTFILES}\powershell"
+$env:ON_PATH="${env:DOTFILES_PWSH}\onpath"
 $env:ORIG_PATH=$env:PATH
 $env:PATH="${env:ON_PATH};$env:PATH;$env:BB_DOV_ROOT\dev_stuff\helper-scripts\windows"
 $env:NF_ROOT="${env:OZ_ROOT}\nf"
@@ -36,8 +38,10 @@ Set-Alias -name vi -value "vim.exe"
 
 
 function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
+function cdghdov () { cd $env:GH_DOVH }
+function cdda () { cd $env:DOTAGENTS }
 function cddot () { cd $env:DOTFILES }
-function cddf () { cd $env:DOTFILES_ROOT }
+function cdop () { cd $env:ON_PATH }
 function cdgh () { cd $env:GH_ROOT }
 function cdnf () { cd $env:NF_ROOT }
 function cdz () { cd $env:NF_ROOT\ziti }
@@ -47,7 +51,16 @@ function cdew () { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet() { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 function cdds() { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
 
-function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
+function gwt {
+    # 'cd' is special-cased: the script prints the worktree path, we Set-Location
+    # here (a child .ps1 can't change the parent shell's cwd).
+    if ($args.Count -ge 1 -and $args[0] -eq 'cd') {
+        $p = & "$env:ON_PATH\git-worktree.ps1" @args
+        if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p }
+    } else {
+        & "$env:ON_PATH\git-worktree.ps1" @args
+    }
+}
 
 function update-path {
     param(
@@ -131,7 +144,58 @@ function toclaude() {
         -i "C:\Users\clint\.ssh\id_ed25519"
 }
 function claudeshell() {
-    runas /user:claude wt.exe
+    $cwd = (Get-Location).Path
+
+    $presets = @(
+        @{ Key='1'; Name='active-work';   Label='active-work' }
+        @{ Key='2'; Name='pull-requests'; Label='pull-requests' }
+        @{ Key='3'; Name='tangent';       Label='tangent' }
+        @{ Key='4'; Name='worktrees';     Label='worktrees' }
+        @{ Key='5'; Name='__new__';       Label='new (brand-new window)' }
+        @{ Key='6'; Name='__custom__';    Label='custom (type your own)' }
+    )
+
+    Write-Host ""
+    Write-Host "choose wt window:" -ForegroundColor DarkGray
+    foreach ($p in $presets) {
+        $marker = if ($p.Key -eq '1') { '*' } else { ' ' }
+        Write-Host ("  [{0}]{1} {2}" -f $p.Key, $marker, $p.Label) -ForegroundColor Cyan
+    }
+    Write-Host ""
+
+    $resp = (Read-Host "choice [1]").Trim()
+    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = '1' }
+
+    $pick = $presets | Where-Object { $_.Key -eq $resp } | Select-Object -First 1
+    if (-not $pick) {
+        Write-Host "invalid choice, using active-work" -ForegroundColor Yellow
+        $window = 'active-work'
+    } elseif ($pick.Name -eq '__custom__') {
+        $window = (Read-Host "window name").Trim()
+        if ([string]::IsNullOrWhiteSpace($window)) { $window = $null }
+    } elseif ($pick.Name -eq '__new__') {
+        $window = $null
+    } else {
+        $window = $pick.Name
+    }
+
+    $themeFn = switch ($window) {
+        'active-work'   { 'ActiveWork' }
+        'pull-requests' { 'PullRequests' }
+        'tangent'       { 'Tangent' }
+        'worktrees'     { 'Worktrees' }
+        default         { $null }
+    }
+    $themePrefix = if ($themeFn) { "$themeFn; " } else { '' }
+    $cmd = "${themePrefix}Set-Location '$cwd'"
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+
+    if (-not [string]::IsNullOrWhiteSpace($window)) {
+        $wtArgs = "wt.exe -w $window new-tab -d `"$cwd`" pwsh -NoExit -EncodedCommand $enc"
+    } else {
+        $wtArgs = "wt.exe -d `"$cwd`" pwsh -NoExit -EncodedCommand $enc"
+    }
+    runas /user:claude $wtArgs
 }
 function systemshell() {
     # sudo psexec.exe -i -s -d wt.exe
@@ -224,8 +288,50 @@ function Set-ConsoleColor ($bc, $fc) {
     Clear-Host
 }
 
+function resolve {
+    param([Parameter(Mandatory)][string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $t = $item.LinkTarget
+    if (-not $t -and $item.Target) { $t = $item.Target | Select-Object -First 1 }
+    if (-not $t) { return $item.FullName }
+    if ([System.IO.Path]::IsPathRooted($t)) { return $t }
+    return [System.IO.Path]::GetFullPath((Join-Path (Split-Path $item.FullName -Parent) $t))
+}
+
+function ptail {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$Tail = 5
+    )
+    $real = resolve $Path
+    Get-Content -LiteralPath $real -Tail $Tail -Wait
+}
+
+function tziti {
+    ptail 'C:\Program Files (x86)\NetFoundry Inc\Ziti Desktop Edge\logs\service\ziti-tunneler.log'
+}
+
+function ltail {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Pattern,
+        [int]$Cols = 200
+    )
+    $real = (resolve $Path).Replace('\','/')
+    if ($Pattern) {
+        tail -f $real | grep --line-buffered $Pattern | cut -b "1-$Cols"
+    } else {
+        tail -f $real | cut -b "1-$Cols"
+    }
+}
+  
+Set-PSReadLineKeyHandler -Key Ctrl+d -Function DeleteCharOrExit
+
 # ziti completion powershell | Out-String | Invoke-Expression
 add-go_current
 add-doxygen
 add-dotnet
 add-linux_commands
+
+
+. $env:DOTFILES\powershell\wt-themes.ps1
