@@ -47,7 +47,7 @@ function Register-GwtSession {
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path $file -Encoding UTF8
 
     $global:GwtSessionId = $Id
-    Register-EngineEvent -SourceIdentifier 'PowerShell.Exiting' -SupportElement -Action {
+    Register-EngineEvent -SourceIdentifier 'PowerShell.Exiting' -Action {
         try {
             $f = Join-Path 'D:\worktrees\sessions' "$($global:GwtSessionId).json"
             if (Test-Path $f) { Remove-Item $f -Force }

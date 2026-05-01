@@ -29,8 +29,9 @@ param(
     [string]$SourceRoot    = 'D:\git',
     [string]$WorktreeRoot  = 'D:\worktrees',
     [switch]$y,
-    [switch]$Reselect,   # force re-prompt instead of reusing saved picks
+    [switch]$Reselect,      # force re-prompt instead of reusing saved picks
     [switch]$NoAgentSetup,  # skip the post-create dotagents CLAUDE.md symlink step
+    [switch]$All,           # 'sessions clean -All' also drops alive entries (default = stale only)
     [switch]$Help
 )
 
@@ -319,7 +320,8 @@ function Open-ClaudeShell {
         [string]$Repo,
         [string]$Branch,
         [string]$PromptText,
-        [string]$WindowName      # $null/empty = brand-new window; otherwise -w <name>
+        [string]$WindowName,        # $null/empty = brand-new window; otherwise -w <name>
+        [string]$ReuseSessionId     # if set, reuse an existing session entry (e.g. on restore) instead of minting a new one — prevents orphan accumulation
     )
     # claude stores sessions per-cwd under the invoking user's profile. gwt runs
     # claude as the 'claude' user, so probe that profile (not the current user's).
@@ -347,7 +349,9 @@ function Open-ClaudeShell {
     # command short — runas has a tight command-line length limit.
     $sessionDir  = 'D:\worktrees\sessions'
     [System.IO.Directory]::CreateDirectory($sessionDir) | Out-Null
-    $sessionId   = [guid]::NewGuid().ToString()
+    # Reuse an existing session id when caller passed one (e.g. restore) — keeps
+    # the entry count stable even if the spawned shell's Register-GwtSession fails.
+    $sessionId   = if ($ReuseSessionId) { $ReuseSessionId } else { [guid]::NewGuid().ToString() }
     $entry       = @{
         Id                = $sessionId
         Pid               = 0
@@ -362,9 +366,11 @@ function Open-ClaudeShell {
         ClaudeSessionName = $Branch
     }
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $sessionDir "$sessionId.json") -Encoding UTF8
-    # Source the registry file explicitly — don't depend on the spawned user's
-    # $PROFILE being set up. Path is the dotfiles location (visible to both users).
-    $regPrefix   = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Register-GwtSession -Id '$sessionId'; "
+
+    # Source the registry explicitly — don't depend on the spawned shell's
+    # profile being correctly set up. The path is the dotfiles location, so it
+    # works for both clint and the claude user. If you move dotfiles, update here.
+    $regPrefix = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Register-GwtSession -Id '$sessionId'; "
 
     if ([string]::IsNullOrEmpty($PromptText)) {
         $cmd = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag"
@@ -385,6 +391,11 @@ function Open-ClaudeShell {
     # first successful auth. Removes the per-launch password prompt during
     # bulk operations like `gwt sessions restore`. To clear: `cmdkey /delete:claude`
     runas /user:claude /savecred $wtArgs
+
+    # Stash the session id so callers (e.g. gwt sessions restore) can poll the
+    # session file for Pid != 0 to know the spawned shell came up. Script-scope
+    # avoids leaking the value onto stdout for callers that don't care.
+    $script:LastSpawnedSessionId = $sessionId
 }
 
 function Confirm-OpenOrCd {
@@ -737,6 +748,29 @@ switch ($Command) {
         return
     }
 
+    'update-registry' {
+        # Manual freshness/fetch for the fallback gwt-session-registry.ps1 at
+        # ~\.gwt\. No-op (with a hint) if the dotfiles copy exists — that's
+        # primary, you update it via git pull.
+        $primary  = 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'
+        $fallback = Join-Path $env:USERPROFILE '.gwt\gwt-session-registry.ps1'
+        $stamp    = "$fallback.last-fetched"
+        $url      = 'https://raw.githubusercontent.com/dovholuknf/dotfiles/main/powershell/gwt-session-registry.ps1'
+
+        if (Test-Path $primary) {
+            Write-Color "primary copy at $primary — update via git pull" DarkGray
+            return
+        }
+        New-Item -ItemType Directory -Path (Split-Path $fallback) -Force | Out-Null
+        try {
+            Invoke-WebRequest $url -OutFile $fallback -UseBasicParsing
+            Set-Content -Path $stamp -Value (Get-Date).ToString('o')
+            Write-Color "fetched -> $fallback" Green
+        } catch {
+            Write-Color "fetch failed: $_" Red
+        }
+    }
+
     'sessions' {
         # Shared location so both clint and the spawned claude user shells can read/write.
         $sessionDir = 'D:\worktrees\sessions'
@@ -781,35 +815,91 @@ switch ($Command) {
         # 'clean' = drop stale entries without relaunch.
         switch ($Target) {
             'restore' {
-                $stale = @($entries | Where-Object { -not $_.Alive })
-                if (-not $stale.Count) { Write-Color "no stale sessions to restore" DarkGray; return }
-                Write-Color "restoring $($stale.Count) stale session(s)..." Cyan
+                $allStale = @($entries | Where-Object { -not $_.Alive })
+                if (-not $allStale.Count) { Write-Color "no stale sessions to restore" DarkGray; return }
+
+                # dedupe by WorktreePath (keeps newest by SpawnedAt) — protects against
+                # accumulated leftover entries from failed prior launches blowing up the count.
+                $stale = $allStale |
+                         Group-Object WorktreePath |
+                         ForEach-Object { $_.Group | Sort-Object SpawnedAt -Descending | Select-Object -First 1 }
+
+                $dupes = $allStale.Count - @($stale).Count
+                Write-Color "found $($allStale.Count) stale entries, $($stale.Count) unique by worktree path" Cyan
+                if ($dupes -gt 0) {
+                    Write-Color "  ($dupes duplicates will be skipped — run 'gwt sessions clean' to drop them)" DarkGray
+                }
+                Write-Host ""
+                foreach ($s in $stale) { Write-Color "  $($s.Branch) -> $($s.WindowName)" DarkGray }
+                Write-Host ""
+                $resp = Read-Host "relaunch these $($stale.Count) session(s)? (Y/n)"
+                if (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
+                    Write-Color "aborted" Yellow
+                    return
+                }
+
                 foreach ($s in $stale) {
                     if (-not (Test-Path $s.WorktreePath)) {
                         Write-Color "  skip (worktree gone): $($s.Branch) @ $($s.WorktreePath)" Yellow
-                        Remove-Item $s.File -Force -ErrorAction SilentlyContinue
                         continue
                     }
                     Write-Color "  relaunch: $($s.Branch) -> window=$($s.WindowName)" Green
+
+                    # Open-ClaudeShell pre-writes a fresh entry with Pid=0 and stashes
+                    # the new session id in $script:LastSpawnedSessionId. The spawned
+                    # shell calls Register-GwtSession which patches Pid > 0, so polling
+                    # that file replaces the arbitrary Start-Sleep we used to do here.
                     Open-ClaudeShell -Path $s.WorktreePath -Repo $s.Repo -Branch $s.Branch `
-                                     -PromptText $s.PromptText -WindowName $s.WindowName
-                    # NOTE: stale entry kept on disk on purpose. The relaunched shell
-                    # creates a new alive entry; run 'gwt sessions clean' when ready
-                    # to drop the old stale ones.
-                    Start-Sleep -Milliseconds 200
+                                     -PromptText $s.PromptText -WindowName $s.WindowName `
+                                     -ReuseSessionId $s.Id
+                    $newId = $script:LastSpawnedSessionId
+                    if ($newId) {
+                        $newFile = Join-Path 'D:\worktrees\sessions' "$newId.json"
+                        $deadline = (Get-Date).AddSeconds(15)
+                        while ((Get-Date) -lt $deadline) {
+                            try {
+                                $e = Get-Content $newFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                                if ($e.Pid -gt 0) { break }
+                            } catch {}
+                            Start-Sleep -Milliseconds 100
+                        }
+                    }
                 }
             }
             'clean' {
-                $stale = @($entries | Where-Object { -not $_.Alive })
-                if (-not $stale.Count) { Write-Color "no stale sessions" DarkGray; return }
-                foreach ($s in $stale) {
+                # Default: drop only stale entries. With -All (the script-level switch),
+                # also drop alive entries (will not kill the underlying shell — just
+                # forgets the registry entry; the alive shell stays running).
+                $toDrop = if ($All) {
+                    @($entries)
+                } else {
+                    @($entries | Where-Object { -not $_.Alive })
+                }
+                $mode = if ($All) { 'all (alive + stale)' } else { 'stale only (default — pass -All to also drop alive entries)' }
+                Write-Color "cleaning: $mode" DarkGray
+                if (-not $toDrop.Count) { Write-Color "  nothing to drop" DarkGray; return }
+                foreach ($s in $toDrop) {
                     Remove-Item $s.File -Force -ErrorAction SilentlyContinue
-                    Write-Color "  removed: $($s.Branch) ($($s.WindowName))" DarkGray
+                    $tag = if ($s.Alive) { '(was alive — entry removed; running shell unaffected)' } else { '(stale)' }
+                    Write-Color "  removed: $($s.Branch) $tag" DarkGray
                 }
             }
             default {
                 if (-not $entries) { Write-Color "no sessions registered yet" DarkGray; return }
-                $byWindow = $entries | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
+
+                # Dedupe by WorktreePath: alive entries always win; among
+                # multiple stales, keep the newest by SpawnedAt. Counts the
+                # duplicates so the user knows there's cruft to clean up.
+                $deduped = $entries |
+                           Group-Object WorktreePath |
+                           ForEach-Object {
+                               $alive = $_.Group | Where-Object Alive | Select-Object -First 1
+                               if ($alive) { $alive }
+                               else { $_.Group | Sort-Object SpawnedAt -Descending | Select-Object -First 1 }
+                           }
+                $dupes = @($entries).Count - @($deduped).Count
+
+                $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
                 foreach ($g in $byWindow) {
                     Write-Host ""
                     Write-Color "[$($g.Name)]" Cyan
@@ -820,6 +910,9 @@ switch ($Command) {
                     }
                 }
                 Write-Host ""
+                if ($dupes -gt 0) {
+                    Write-Color "  $dupes duplicate entrie(s) hidden — run 'gwt sessions clean' to drop stale dupes" DarkGray
+                }
                 Write-Color "  gwt sessions restore   relaunch all stale sessions" DarkGray
                 Write-Color "  gwt sessions clean     drop stale entries without relaunching" DarkGray
             }
@@ -1076,6 +1169,10 @@ switch ($Command) {
         Write-Host "    gwt <url> " -NoNewline -ForegroundColor Cyan
         Write-Host "[-y]"
         Write-Host "        shorthand — bare URL auto-routes to 'pr'" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt update-registry" -ForegroundColor Cyan
+        Write-Host "        fetch fallback gwt-session-registry.ps1 from github into ~\.gwt\" -ForegroundColor DarkGray
+        Write-Host "        (no-op if dotfiles repo is cloned — update via git pull instead)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt sessions " -NoNewline -ForegroundColor Cyan
         Write-Host "[restore | clean]"
