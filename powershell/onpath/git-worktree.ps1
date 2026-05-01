@@ -22,6 +22,11 @@ param(
     [Parameter(Position=1)]
     [string]$Target,        # branch, PR number, or URL
 
+    [Parameter(Position=2)]
+    [string]$Match,         # 'gwt sessions restore <pattern>' filters by Branch/WorktreePath substring
+
+    [switch]$V,             # show runas chatter ("Attempting to start..." etc); off by default
+
     [string]$From,          # 'new': create branch from this source
     [string]$Org,
     [string]$Repo,
@@ -352,12 +357,28 @@ function Open-ClaudeShell {
     # Reuse an existing session id when caller passed one (e.g. restore) — keeps
     # the entry count stable even if the spawned shell's Register-GwtSession fails.
     $sessionId   = if ($ReuseSessionId) { $ReuseSessionId } else { [guid]::NewGuid().ToString() }
+    # If reusing an existing session id, preserve the prior FirstSpawnedAt so
+    # we don't lose the original-add timestamp on restore.
+    $existingFirst = $null
+    if ($ReuseSessionId) {
+        $existingFile = Join-Path $sessionDir "$ReuseSessionId.json"
+        if (Test-Path $existingFile) {
+            try {
+                $prev = Get-Content $existingFile -Raw | ConvertFrom-Json
+                if ($prev.FirstSpawnedAt) { $existingFirst = $prev.FirstSpawnedAt }
+                elseif ($prev.SpawnedAt)  { $existingFirst = $prev.SpawnedAt }
+            } catch {}
+        }
+    }
+    $now = (Get-Date).ToString('o')
     $entry       = @{
         Id                = $sessionId
         Pid               = 0
         StartTime         = $null
         WtSession         = $null
-        SpawnedAt         = $null
+        FirstSpawnedAt    = if ($existingFirst) { $existingFirst } else { $now }
+        LastSpawnedAt     = $null   # filled in by Register-GwtSession when shell comes up
+        SpawnedAt         = $null   # legacy alias, also filled by Register-GwtSession
         WorktreePath      = $Path
         Branch            = $Branch
         Repo              = $Repo
@@ -390,7 +411,16 @@ function Open-ClaudeShell {
     # /savecred reuses the password from Windows Credential Manager after the
     # first successful auth. Removes the per-launch password prompt during
     # bulk operations like `gwt sessions restore`. To clear: `cmdkey /delete:claude`
-    runas /user:claude /savecred $wtArgs
+    if ($V) {
+        runas /user:claude /savecred $wtArgs
+    } else {
+        # Hide runas chatter ("Attempting to start..." + base64 dump). Capture
+        # output and only print on non-zero exit so failures are still visible.
+        $runasOut = & runas /user:claude /savecred $wtArgs 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Color "  runas failed (exit $LASTEXITCODE): $runasOut" Red
+        }
+    }
 
     # Stash the session id so callers (e.g. gwt sessions restore) can poll the
     # session file for Pid != 0 to know the spawned shell came up. Script-scope
@@ -788,17 +818,26 @@ switch ($Command) {
             return
         }
 
+        # One batched CIM query for all running processes — keyed by PID for O(1) lookup.
+        # Avoids per-entry WMI calls which were ~200ms each (13 entries = 2.6s).
+        $procMap = @{}
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+            $procMap[[int]$_.ProcessId] = $_
+        }
+
         $parseFails = 0
         $entries = $jsonFiles | ForEach-Object {
             try {
                 $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
                 $alive = $false
-                if ($e.Pid) {
-                    $p = Get-Process -Id $e.Pid -ErrorAction SilentlyContinue
-                    if ($p -and $e.StartTime) {
-                        $alive = ($p.StartTime.ToString('o') -eq $e.StartTime)
-                    } elseif ($p) {
-                        $alive = $true
+                if ($e.Pid -and $e.Pid -ne 0) {
+                    $cim = $procMap[[int]$e.Pid]
+                    if ($cim) {
+                        if ($e.StartTime -and $cim.CreationDate) {
+                            $alive = [math]::Abs(($cim.CreationDate - [datetime]::Parse($e.StartTime)).TotalSeconds) -lt 2
+                        } else {
+                            $alive = $true
+                        }
                     }
                 }
                 $e | Add-Member -NotePropertyName Alive -NotePropertyValue $alive -PassThru |
@@ -815,33 +854,79 @@ switch ($Command) {
         # 'clean' = drop stale entries without relaunch.
         switch ($Target) {
             'restore' {
+                # Idempotency: only consider STALE entries — alive ones are already up.
                 $allStale = @($entries | Where-Object { -not $_.Alive })
-                if (-not $allStale.Count) { Write-Color "no stale sessions to restore" DarkGray; return }
+                if (-not $allStale.Count) { Write-Color "no stale sessions to restore (all alive — nothing to do)" DarkGray; return }
 
-                # dedupe by WorktreePath (keeps newest by SpawnedAt) — protects against
+                # dedupe by WorktreePath (keeps newest by LastSpawnedAt) — protects against
                 # accumulated leftover entries from failed prior launches blowing up the count.
+                # Then sort ASC by FirstSpawnedAt so restore replays in original-add order.
                 $stale = $allStale |
                          Group-Object WorktreePath |
-                         ForEach-Object { $_.Group | Sort-Object SpawnedAt -Descending | Select-Object -First 1 }
+                         ForEach-Object {
+                             $_.Group |
+                             Sort-Object @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} -Descending |
+                             Select-Object -First 1
+                         } |
+                         Sort-Object @{Expression={ if ($_.FirstSpawnedAt) { $_.FirstSpawnedAt } else { $_.SpawnedAt } }}
+
+                # Optional 3rd positional arg = substring filter (Branch, WorktreePath, or WindowName).
+                if ($Match) {
+                    $filtered = @($stale | Where-Object {
+                        $_.Branch -like "*$Match*" -or
+                        $_.WorktreePath -like "*$Match*" -or
+                        $_.WindowName -like "*$Match*"
+                    })
+                    if (-not $filtered.Count) {
+                        Write-Color "no stale entries match '$Match'" Yellow
+                        return
+                    }
+                    $stale = $filtered
+                    Write-Color "filter '$Match' -> $($stale.Count) match(es)" Cyan
+                }
 
                 $dupes = $allStale.Count - @($stale).Count
-                Write-Color "found $($allStale.Count) stale entries, $($stale.Count) unique by worktree path" Cyan
-                if ($dupes -gt 0) {
-                    Write-Color "  ($dupes duplicates will be skipped — run 'gwt sessions clean' to drop them)" DarkGray
+                if (-not $Match -and $dupes -gt 0) {
+                    Write-Color "skipping $dupes duplicate(s) — run 'gwt sessions clean' to drop them" DarkGray
                 }
+
                 Write-Host ""
                 foreach ($s in $stale) { Write-Color "  $($s.Branch) -> $($s.WindowName)" DarkGray }
                 Write-Host ""
-                $resp = Read-Host "relaunch these $($stale.Count) session(s)? (Y/n)"
-                if (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
-                    Write-Color "aborted" Yellow
-                    return
+
+                # Pick mode: open all, prompt per-entry, or nothing.
+                # If filter narrowed to a single entry, skip the all/per dance.
+                $perEntry = $false
+                if (@($stale).Count -eq 1) {
+                    $resp = Read-Host "open this 1 session? (Y/n)"
+                    if (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
+                        Write-Color "aborted" Yellow
+                        return
+                    }
+                } else {
+                    $resp = Read-Host "open all $(@($stale).Count) sessions? (Y/n)"
+                    if (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
+                        $resp2 = Read-Host "prompt for each individually instead? (y/N)"
+                        if ($resp2 -match '^[Yy]$') {
+                            $perEntry = $true
+                        } else {
+                            Write-Color "aborted" Yellow
+                            return
+                        }
+                    }
                 }
 
                 foreach ($s in $stale) {
                     if (-not (Test-Path $s.WorktreePath)) {
                         Write-Color "  skip (worktree gone): $($s.Branch) @ $($s.WorktreePath)" Yellow
                         continue
+                    }
+                    if ($perEntry) {
+                        $r = Read-Host "open '$($s.Branch)' -> $($s.WindowName)? (y/N)"
+                        if (-not ($r -match '^[Yy]$')) {
+                            Write-Color "    skipped" DarkGray
+                            continue
+                        }
                     }
                     Write-Color "  relaunch: $($s.Branch) -> window=$($s.WindowName)" Green
 
@@ -866,6 +951,50 @@ switch ($Command) {
                     }
                 }
             }
+            'close' {
+                # Kill the underlying pwsh process for ALIVE entries (the wt tab dies
+                # with it). Doesn't touch the registry entry — it'll show STALE next
+                # listing. Optional substring filter narrows to specific entries.
+                $alive = @($entries | Where-Object Alive)
+                if (-not $alive.Count) { Write-Color "no alive sessions to close" DarkGray; return }
+
+                if ($Match) {
+                    $alive = @($alive | Where-Object {
+                        $_.Branch -like "*$Match*" -or
+                        $_.WorktreePath -like "*$Match*" -or
+                        $_.WindowName -like "*$Match*"
+                    })
+                    if (-not $alive.Count) { Write-Color "no alive entries match '$Match'" Yellow; return }
+                    Write-Color "filter '$Match' -> $($alive.Count) match(es)" Cyan
+                }
+
+                Write-Host ""
+                foreach ($s in $alive) { Write-Color "  $($s.Branch) (pid $($s.Pid)) -> $($s.WindowName)" DarkGray }
+                Write-Host ""
+
+                $resp = Read-Host "close $($alive.Count) session(s)? this kills the tab and claude inside it (y/N)"
+                if (-not ($resp -match '^[Yy]$')) { Write-Color "aborted" Yellow; return }
+
+                foreach ($s in $alive) {
+                    # Kill the whole process tree (/T) — pwsh has claude as a child,
+                    # and wt keeps the tab open as long as ANY process in it is alive.
+                    # Try as the current user (clint) first; if that fails (cross-user
+                    # access denied), fall back to runas /user:claude as the owner.
+                    $killed = $false
+                    $null = & taskkill /T /F /PID $s.Pid 2>&1
+                    if ($LASTEXITCODE -eq 0) { $killed = $true }
+                    if (-not $killed) {
+                        $null = & runas /user:claude /savecred "taskkill /T /F /PID $($s.Pid)" 2>&1
+                        if ($LASTEXITCODE -eq 0) { $killed = $true }
+                    }
+                    if ($killed) {
+                        Write-Color "  closed: $($s.Branch) (pid $($s.Pid))" Green
+                    } else {
+                        Write-Color "  failed to close: $($s.Branch) (pid $($s.Pid)) — exit $LASTEXITCODE" Red
+                    }
+                }
+            }
+
             'clean' {
                 # Default: drop only stale entries. With -All (the script-level switch),
                 # also drop alive entries (will not kill the underlying shell — just
@@ -1175,10 +1304,20 @@ switch ($Command) {
         Write-Host "        (no-op if dotfiles repo is cloned — update via git pull instead)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt sessions " -NoNewline -ForegroundColor Cyan
-        Write-Host "[restore | clean]"
+        Write-Host "[restore [<match>] | close [<match>] | clean [-All]]"
         Write-Host "        list registered Claude sessions; mark live vs. stale" -ForegroundColor DarkGray
-        Write-Host "        restore  relaunch each stale session into its original window" -ForegroundColor DarkGray
-        Write-Host "        clean    drop stale entries without relaunching" -ForegroundColor DarkGray
+        Write-Host "        restore         relaunch stale sessions into their original windows" -ForegroundColor DarkGray
+        Write-Host "                        prompts: open all? (Y/n) -> if no, individually? (y/N)" -ForegroundColor DarkGray
+        Write-Host "                        skips entries that are already alive (idempotent)" -ForegroundColor DarkGray
+        Write-Host "        restore <match> filter to entries whose Branch or path contains <match>" -ForegroundColor DarkGray
+        Write-Host "        close           kill the pwsh + claude process for each alive session" -ForegroundColor DarkGray
+        Write-Host "                        (registry entries stay, will show STALE next listing)" -ForegroundColor DarkGray
+        Write-Host "        close <match>   close only matching alive sessions" -ForegroundColor DarkGray
+        Write-Host "        clean           drop only stale entries (default)" -ForegroundColor DarkGray
+        Write-Host "        clean -All      drop everything (alive entries too — running shells unaffected)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  GLOBAL FLAGS" -ForegroundColor DarkGray
+        Write-Host "    -V              show runas chatter on launch (the 'Attempting to start...' noise)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt claude " -NoNewline -ForegroundColor Cyan
         Write-Host "[<branch>|.] [-Prompt <str>] [-Reselect] [-y]"

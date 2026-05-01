@@ -21,11 +21,32 @@ function Register-GwtSession {
     # patch in this shell's PID + start time + WT_SESSION, then register an exit
     # hook to delete the file on clean exit. Keeps the encoded command short
     # enough for runas (which has a tight command-line length limit).
+    #
+    # If -Id is omitted, scans the registry for an entry whose WorktreePath
+    # matches the current cwd and isn't already alive — handy for manually
+    # claiming a session entry from inside an already-running shell.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string]$Id
+        [string]$Id
     )
     _Ensure-GwtSessionDir
+
+    if (-not $Id) {
+        $cwd = (Get-Location).Path
+        $candidate = Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                if ($e.WorktreePath -eq $cwd) { return $e }
+            } catch {}
+        } | Select-Object -First 1
+        if (-not $candidate) {
+            Write-Warning "gwt-session: no entry found for cwd '$cwd' — pass -Id explicitly or check 'gwt sessions'"
+            return
+        }
+        $Id = $candidate.Id
+        Write-Host "claiming entry $Id (branch=$($candidate.Branch), window=$($candidate.WindowName))" -ForegroundColor DarkGray
+    }
+
     $file = Join-Path $script:GwtSessionDir "$Id.json"
     if (-not (Test-Path $file)) {
         Write-Warning "gwt-session: no pre-written entry at $file — registration skipped"
@@ -43,31 +64,40 @@ function Register-GwtSession {
     $entry.Pid       = $PID
     $entry.StartTime = if ($proc) { $proc.StartTime.ToString('o') } else { $null }
     $entry.WtSession = $env:WT_SESSION
-    $entry.SpawnedAt = (Get-Date).ToString('o')
+    # Preserve FirstSpawnedAt (first registration); always update LastSpawnedAt.
+    $now = (Get-Date).ToString('o')
+    if (-not $entry.PSObject.Properties['FirstSpawnedAt'] -or [string]::IsNullOrEmpty($entry.FirstSpawnedAt)) {
+        $entry | Add-Member -NotePropertyName FirstSpawnedAt -NotePropertyValue $now -Force
+    }
+    $entry | Add-Member -NotePropertyName LastSpawnedAt -NotePropertyValue $now -Force
+    # SpawnedAt stays as a backwards-compat alias for LastSpawnedAt.
+    $entry.SpawnedAt = $now
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path $file -Encoding UTF8
 
     $global:GwtSessionId = $Id
-    Register-EngineEvent -SourceIdentifier 'PowerShell.Exiting' -Action {
-        try {
-            $f = Join-Path 'D:\worktrees\sessions' "$($global:GwtSessionId).json"
-            if (Test-Path $f) { Remove-Item $f -Force }
-        } catch {}
-    } | Out-Null
+    # NOTE: no PowerShell.Exiting hook — entries are kept on shell close so
+    # you can decide when to drop them (gwt sessions clean / clean -All).
+    # On reboot, the PID becomes invalid and the entry naturally goes STALE.
 }
 
-# Read all session entries. Adds an .Alive boolean based on PID + StartTime.
+# Read all session entries. Adds an .Alive boolean based on PID (and StartTime
+# when readable — cross-user process StartTime access is denied by Windows, so
+# we fall back to "process exists" as the liveness signal).
 function Get-GwtSessions {
     _Ensure-GwtSessionDir
     Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
         try {
             $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
             $alive = $false
-            if ($e.Pid) {
-                $p = Get-Process -Id $e.Pid -ErrorAction SilentlyContinue
-                if ($p -and $e.StartTime) {
-                    $alive = ($p.StartTime.ToString('o') -eq $e.StartTime)
-                } elseif ($p) {
-                    $alive = $true
+            if ($e.Pid -and $e.Pid -ne 0) {
+                # CimInstance works cross-user; Get-Process doesn't see other users' procs.
+                $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$($e.Pid)" -ErrorAction SilentlyContinue
+                if ($cim) {
+                    if ($e.StartTime -and $cim.CreationDate) {
+                        $alive = [math]::Abs(($cim.CreationDate - [datetime]::Parse($e.StartTime)).TotalSeconds) -lt 2
+                    } else {
+                        $alive = $true
+                    }
                 }
             }
             $e | Add-Member -NotePropertyName Alive -NotePropertyValue $alive -PassThru |
