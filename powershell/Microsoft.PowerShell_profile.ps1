@@ -187,7 +187,29 @@ function claudeshell() {
         default         { $null }
     }
     $themePrefix = if ($themeFn) { "$themeFn; " } else { '' }
-    $cmd = "${themePrefix}Set-Location '$cwd'"
+
+    # Pre-write a session entry so the spawned shell shows up in `gwt sessions`.
+    # Mirrors Open-ClaudeShell's session-tracking behavior in git-worktree.ps1.
+    $sessionDir = 'D:\worktrees\sessions'
+    [System.IO.Directory]::CreateDirectory($sessionDir) | Out-Null
+    $sessionId  = [guid]::NewGuid().ToString()
+    $entry      = @{
+        Id                = $sessionId
+        Pid               = 0
+        StartTime         = $null
+        WtSession         = $null
+        SpawnedAt         = $null
+        WorktreePath      = $cwd
+        Branch            = 'claudeshell'
+        Repo              = (Split-Path $cwd -Leaf)
+        WindowName        = $window
+        PromptText        = $null
+        ClaudeSessionName = 'claudeshell'
+    }
+    ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $sessionDir "$sessionId.json") -Encoding UTF8
+    $regPrefix = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Register-GwtSession -Id '$sessionId'; "
+
+    $cmd = "${regPrefix}${themePrefix}Set-Location '$cwd'"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
 
     if (-not [string]::IsNullOrWhiteSpace($window)) {
