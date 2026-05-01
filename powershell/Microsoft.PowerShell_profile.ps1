@@ -40,7 +40,7 @@ Set-Alias -name vi -value "vim.exe"
 function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
 function cdghdov () { cd $env:GH_DOVH }
 function cdda () { cd $env:DOTAGENTS }
-function cddot () { cd $env:DOTFILES }
+function cddf () { cd $env:DOTFILES }
 function cdop () { cd $env:ON_PATH }
 function cdgh () { cd $env:GH_ROOT }
 function cdnf () { cd $env:NF_ROOT }
@@ -195,7 +195,7 @@ function claudeshell() {
     } else {
         $wtArgs = "wt.exe -d `"$cwd`" pwsh -NoExit -EncodedCommand $enc"
     }
-    runas /user:claude $wtArgs
+    runas /user:claude /savecred $wtArgs
 }
 function systemshell() {
     # sudo psexec.exe -i -s -d wt.exe
@@ -335,3 +335,6 @@ add-linux_commands
 
 
 . $env:DOTFILES\powershell\wt-themes.ps1
+. $env:DOTFILES\powershell\gwt-session-registry.ps1
+
+# comment

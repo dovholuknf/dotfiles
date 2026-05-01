@@ -341,11 +341,36 @@ function Open-ClaudeShell {
     $themeFn     = Get-ThemeFnForWindow -WindowName $WindowName
     $themePrefix = if ($themeFn) { "$themeFn; " } else { '' }
 
+    # Session registration: pre-write the entry from here (clint user) with the
+    # session metadata + a placeholder PID. The spawned shell only patches in its
+    # real PID/StartTime via Register-GwtSession -Id <guid>. Keeps the encoded
+    # command short — runas has a tight command-line length limit.
+    $sessionDir  = 'D:\worktrees\sessions'
+    [System.IO.Directory]::CreateDirectory($sessionDir) | Out-Null
+    $sessionId   = [guid]::NewGuid().ToString()
+    $entry       = @{
+        Id                = $sessionId
+        Pid               = 0
+        StartTime         = $null
+        WtSession         = $null
+        SpawnedAt         = $null
+        WorktreePath      = $Path
+        Branch            = $Branch
+        Repo              = $Repo
+        WindowName        = $WindowName
+        PromptText        = $PromptText
+        ClaudeSessionName = $Branch
+    }
+    ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $sessionDir "$sessionId.json") -Encoding UTF8
+    # Source the registry file explicitly — don't depend on the spawned user's
+    # $PROFILE being set up. Path is the dotfiles location (visible to both users).
+    $regPrefix   = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Register-GwtSession -Id '$sessionId'; "
+
     if ([string]::IsNullOrEmpty($PromptText)) {
-        $cmd = "${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag"
+        $cmd = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag"
     } else {
         $escaped = $PromptText -replace '"', '`"'
-        $cmd     = "${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag `"$escaped`""
+        $cmd     = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag `"$escaped`""
     }
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
     # -w <name>: reuse (or create) the named window so worktrees stack as tabs.
@@ -356,7 +381,10 @@ function Open-ClaudeShell {
     } else {
         $wtArgs = "wt.exe -d `"$Path`" pwsh -NoExit -EncodedCommand $enc"
     }
-    runas /user:claude $wtArgs
+    # /savecred reuses the password from Windows Credential Manager after the
+    # first successful auth. Removes the per-launch password prompt during
+    # bulk operations like `gwt sessions restore`. To clear: `cmdkey /delete:claude`
+    runas /user:claude /savecred $wtArgs
 }
 
 function Confirm-OpenOrCd {
@@ -543,14 +571,40 @@ switch ($Command) {
                 Invoke-Git $ctx.Src @('branch','--no-track',$Target,'origin/main')
             }
         } else {
-            # branch exists locally — check for stale tracking (remote deleted)
+            # branch exists locally — reconcile with remote so we don't silently
+            # check out a stale local copy that diverges from origin.
+            & git -C $ctx.Src rev-parse --verify "origin/$Target" 2>&1 | Out-Null
+            $remoteHas = $LASTEXITCODE -eq 0
+
             & git -C $ctx.Src rev-parse --abbrev-ref "${Target}@{upstream}" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                & git -C $ctx.Src rev-parse --verify "origin/$Target" 2>&1 | Out-Null
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Color "stale branch '$Target' (upstream gone) — resetting to origin/main" Cyan
-                    Invoke-Git $ctx.Src @('branch','--unset-upstream',$Target)
-                    Invoke-Git $ctx.Src @('branch','-f',$Target,'origin/main')
+            $hasUpstream = $LASTEXITCODE -eq 0
+
+            if ($hasUpstream -and -not $remoteHas) {
+                Write-Color "stale branch '$Target' (upstream gone) — resetting to origin/main" Cyan
+                Invoke-Git $ctx.Src @('branch','--unset-upstream',$Target)
+                Invoke-Git $ctx.Src @('branch','-f',$Target,'origin/main')
+            } elseif ($remoteHas) {
+                $localSha  = ((& git -C $ctx.Src rev-parse $Target) | Out-String).Trim()
+                $remoteSha = ((& git -C $ctx.Src rev-parse "origin/$Target") | Out-String).Trim()
+                if ($localSha -ne $remoteSha) {
+                    $ahead  = [int]((& git -C $ctx.Src rev-list --count "origin/$Target..$Target") | Out-String).Trim()
+                    $behind = [int]((& git -C $ctx.Src rev-list --count "$Target..origin/$Target") | Out-String).Trim()
+                    if ($ahead -eq 0 -and $behind -gt 0) {
+                        Write-Color "local '$Target' is $behind commits behind origin — fast-forwarding" Cyan
+                        Invoke-Git $ctx.Src @('branch','-f',$Target,"origin/$Target")
+                        if (-not $hasUpstream) {
+                            Invoke-Git $ctx.Src @('branch','--set-upstream-to',"origin/$Target",$Target)
+                        }
+                    } elseif ($ahead -gt 0 -and $behind -gt 0) {
+                        Write-Color "local '$Target' has diverged from origin ($ahead ahead, $behind behind)." Yellow
+                        $resp = if ($y) { 'y' } else { Read-Host "discard local and reset to origin/$Target? (Y/n)" }
+                        if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
+                            Invoke-Git $ctx.Src @('branch','-f',$Target,"origin/$Target")
+                        } else {
+                            throw "keeping local '$Target'. Resolve manually, or re-run with -y to auto-discard."
+                        }
+                    }
+                    # ahead-only: keep local as-is, user has unpushed work
                 }
             }
         }
@@ -681,6 +735,95 @@ switch ($Command) {
 
         Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
         return
+    }
+
+    'sessions' {
+        # Shared location so both clint and the spawned claude user shells can read/write.
+        $sessionDir = 'D:\worktrees\sessions'
+        Write-Color "gwt sessions: scanning '$sessionDir'" DarkGray
+        if (-not (Test-Path $sessionDir)) {
+            Write-Color "  directory does not exist (or not readable from this user)" Yellow
+            Write-Color "  hint: run 'icacls $sessionDir' to inspect ACL, or create it via mkdir" DarkGray
+            return
+        }
+
+        $jsonFiles = @(Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)
+        Write-Color "  found $($jsonFiles.Count) *.json file(s)" DarkGray
+        if ($jsonFiles.Count -eq 0) {
+            Write-Color "  (empty — no sessions have been registered yet)" DarkGray
+            return
+        }
+
+        $parseFails = 0
+        $entries = $jsonFiles | ForEach-Object {
+            try {
+                $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                $alive = $false
+                if ($e.Pid) {
+                    $p = Get-Process -Id $e.Pid -ErrorAction SilentlyContinue
+                    if ($p -and $e.StartTime) {
+                        $alive = ($p.StartTime.ToString('o') -eq $e.StartTime)
+                    } elseif ($p) {
+                        $alive = $true
+                    }
+                }
+                $e | Add-Member -NotePropertyName Alive -NotePropertyValue $alive -PassThru |
+                     Add-Member -NotePropertyName File  -NotePropertyValue $_.FullName -PassThru
+            } catch {
+                $parseFails++
+                Write-Color "  failed to parse $($_.Name): $_" Yellow
+            }
+        }
+        if ($parseFails -gt 0) { Write-Color "  $parseFails file(s) failed to parse (skipped)" Yellow }
+        Write-Color "  parsed $(@($entries).Count) entry/entries" DarkGray
+
+        # subcommand under 'sessions': default = list. 'restore' = relaunch stale.
+        # 'clean' = drop stale entries without relaunch.
+        switch ($Target) {
+            'restore' {
+                $stale = @($entries | Where-Object { -not $_.Alive })
+                if (-not $stale.Count) { Write-Color "no stale sessions to restore" DarkGray; return }
+                Write-Color "restoring $($stale.Count) stale session(s)..." Cyan
+                foreach ($s in $stale) {
+                    if (-not (Test-Path $s.WorktreePath)) {
+                        Write-Color "  skip (worktree gone): $($s.Branch) @ $($s.WorktreePath)" Yellow
+                        Remove-Item $s.File -Force -ErrorAction SilentlyContinue
+                        continue
+                    }
+                    Write-Color "  relaunch: $($s.Branch) -> window=$($s.WindowName)" Green
+                    Open-ClaudeShell -Path $s.WorktreePath -Repo $s.Repo -Branch $s.Branch `
+                                     -PromptText $s.PromptText -WindowName $s.WindowName
+                    # NOTE: stale entry kept on disk on purpose. The relaunched shell
+                    # creates a new alive entry; run 'gwt sessions clean' when ready
+                    # to drop the old stale ones.
+                    Start-Sleep -Milliseconds 200
+                }
+            }
+            'clean' {
+                $stale = @($entries | Where-Object { -not $_.Alive })
+                if (-not $stale.Count) { Write-Color "no stale sessions" DarkGray; return }
+                foreach ($s in $stale) {
+                    Remove-Item $s.File -Force -ErrorAction SilentlyContinue
+                    Write-Color "  removed: $($s.Branch) ($($s.WindowName))" DarkGray
+                }
+            }
+            default {
+                if (-not $entries) { Write-Color "no sessions registered yet" DarkGray; return }
+                $byWindow = $entries | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
+                foreach ($g in $byWindow) {
+                    Write-Host ""
+                    Write-Color "[$($g.Name)]" Cyan
+                    foreach ($s in $g.Group) {
+                        $tag = if ($s.Alive) { 'ALIVE' } else { 'STALE' }
+                        $col = if ($s.Alive) { 'Green' } else { 'Red' }
+                        Write-Color ("  [{0}] {1,-30} @ {2}" -f $tag, $s.Branch, $s.WorktreePath) $col
+                    }
+                }
+                Write-Host ""
+                Write-Color "  gwt sessions restore   relaunch all stale sessions" DarkGray
+                Write-Color "  gwt sessions clean     drop stale entries without relaunching" DarkGray
+            }
+        }
     }
 
     'claude' {
@@ -933,6 +1076,12 @@ switch ($Command) {
         Write-Host "    gwt <url> " -NoNewline -ForegroundColor Cyan
         Write-Host "[-y]"
         Write-Host "        shorthand — bare URL auto-routes to 'pr'" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt sessions " -NoNewline -ForegroundColor Cyan
+        Write-Host "[restore | clean]"
+        Write-Host "        list registered Claude sessions; mark live vs. stale" -ForegroundColor DarkGray
+        Write-Host "        restore  relaunch each stale session into its original window" -ForegroundColor DarkGray
+        Write-Host "        clean    drop stale entries without relaunching" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt claude " -NoNewline -ForegroundColor Cyan
         Write-Host "[<branch>|.] [-Prompt <str>] [-Reselect] [-y]"
