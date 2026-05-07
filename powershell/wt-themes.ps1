@@ -1,4 +1,4 @@
-# wt-themes.ps1 — live retheme Windows Terminal tabs via OSC escape sequences.
+# wt-themes.ps1 -- live retheme Windows Terminal tabs via OSC escape sequences.
 #
 # usage (from $PROFILE):
 #   . "$PSScriptRoot\wt-themes.ps1"
@@ -8,7 +8,7 @@
 #   Reset-Theme                                       # restore WT profile defaults
 #   Set-Bg <#hex>                                     # quick bg-only override
 #
-# to eyeball a theme, paste this line (safe to run) — exercises every PSReadLine
+# to eyeball a theme, paste this line (safe to run) -- exercises every PSReadLine
 # token type so you can spot anything illegible and tune the theme's psr block:
 #
 #   if ($true -and [int]42 -gt 10) { Get-ChildItem -Path '.' | Where-Object { $_.Length -gt 1024 -and $_.Name -eq "foo.txt" } } # sample comment
@@ -18,7 +18,7 @@
 #                 Where-Object) · Parameter (-Path) · String ('.', "foo.txt")
 #                 · Member (.Length, .Name) · Comment (# sample comment)
 #
-# trickier tokens — these need a specific situation, not a one-liner:
+# trickier tokens -- these need a specific situation, not a one-liner:
 #
 #   Error               type an unterminated string: "hello      (red highlight while editing)
 #   Selection           select text with Shift+arrows or mouse  (highlight bg)
@@ -26,7 +26,7 @@
 #   InlinePrediction    re-type the start of a recent command    (dim ghost text)
 #   ListPrediction*     requires: Set-PSReadLineOption -PredictionViewStyle ListView
 #   Emphasis            shows in dynamic help / completions      (hard to force)
-#   Default             plain fg text — just the theme's fg
+#   Default             plain fg text -- just the theme's fg
 
 function Set-Bg([string]$Hex) {
     [Console]::Write([char]27 + "]11;$Hex" + [char]7)
@@ -50,7 +50,7 @@ function Apply-Theme([hashtable]$t) {
         if ($t.ansi[$i]) { [Console]::Write("$e]4;$i;$($t.ansi[$i])$b") }
     }
 
-    # xterm grayscale ramp 232..255 — remap to a theme-tinted bg-to-fg gradient
+    # xterm grayscale ramp 232..255 -- remap to a theme-tinted bg-to-fg gradient
     # so apps that render with 256-color greys (e.g. Claude Code's user-message
     # strip) pick up a harmonized shade instead of neutral grey.
     if ($t.bg -and $t.fg) {
@@ -134,8 +134,8 @@ $theme_active_work = @{
     sel_fg = '#f0f8e8'
     ansi = @(
         '#0a2010',  # 0
-        '#e06868',  # 1 red — pops against green
-        '#78d878',  # 2 green — brighter than bg
+        '#e06868',  # 1 red -- pops against green
+        '#78d878',  # 2 green -- brighter than bg
         '#e0c070',  # 3
         '#7098e0',  # 4
         '#d088c8',  # 5
@@ -173,7 +173,7 @@ $theme_pull_requests = @{
         '#e07080',  # 1
         '#80d088',  # 2
         '#e0c070',  # 3
-        '#80a8ff',  # 4 blue — clearly brighter than bg
+        '#80a8ff',  # 4 blue -- clearly brighter than bg
         '#c080d0',  # 5
         '#70c8e0',  # 6
         '#c8d0e0',  # 7
@@ -206,10 +206,10 @@ $theme_tangent = @{
     sel_fg = '#f8e8e8'
     ansi = @(
         '#300810',  # 0
-        '#ff7888',  # 1 red — brighter than bg crimson
-        '#a8c878',  # 2 green — olive-toned for warmth harmony
+        '#ff7888',  # 1 red -- brighter than bg crimson
+        '#a8c878',  # 2 green -- olive-toned for warmth harmony
         '#e8b858',  # 3
-        '#80a0e8',  # 4 blue — cool contrast accent
+        '#80a0e8',  # 4 blue -- cool contrast accent
         '#e090c0',  # 5
         '#60c8c0',  # 6
         '#e8c8c8',  # 7
@@ -241,7 +241,7 @@ function Tangent      { Apply-Theme $theme_tangent }
 function Worktrees    { Apply-Theme $theme_worktrees }
 
 # Emits the sample with ANSI truecolor SGR codes to mimic PSReadLine's highlighting
-# against the current theme. Not the real edit buffer — just a faithful rendering.
+# against the current theme. Not the real edit buffer -- just a faithful rendering.
 function Show-ThemeSample {
     $t = $global:CurrentTheme
     if (-not $t) {

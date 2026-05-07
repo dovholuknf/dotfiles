@@ -1,4 +1,4 @@
-# git-worktree.ps1 — unified worktree lifecycle manager
+# git-worktree.ps1 -- unified worktree lifecycle manager
 #
 # profile alias: function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
 #
@@ -42,6 +42,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Spawning, theming, hook dispatch, session-tracking, and listing/recovery
+# helpers all live in claude-shell.ps1 -- shared between gwt and claudeshell.
+. (Join-Path $PSScriptRoot '..\claude-shell.ps1')
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 function Write-Color {
@@ -68,34 +72,85 @@ function Invoke-GitCapture {
     } finally { Pop-Location }
 }
 
+function _HostShort {
+    param([string]$h)
+    switch ($h) {
+        'github.com'    { 'github'    }
+        'bitbucket.org' { 'bitbucket' }
+        'gitlab.com'    { 'gitlab'    }
+        default         { $h }
+    }
+}
+
 function Resolve-RepoContext {
-    if (-not $script:Org -or -not $script:Repo) {
+    if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
         $remoteUrl = & git remote get-url origin 2>&1
         if ($LASTEXITCODE -ne 0) {
-            throw "not inside a git repo ('$(Get-Location)') — cd into a repo or pass -Org and -Repo"
+            throw "not inside a git repo ('$(Get-Location)') -- cd into a repo or pass -Org and -Repo"
         }
-        if ($remoteUrl -match '(?:github\.com[:/])(?<org>[^/]+)/(?<repo>[^/]+?)(?:\.git)?$') {
-            if (-not $script:Org) { $script:Org = $Matches.org }
-            if (-not $script:Repo) { $script:Repo = $Matches.repo }
+        # accept github, bitbucket, gitlab, custom forges. Capture host + last
+        # two path components from any of:
+        #   git@host:org/repo(.git)
+        #   https://host/org/repo(.git)
+        #   ssh://git@host/org/repo(.git)
+        if ($remoteUrl -match '(?:^|@|//)(?<host>[^/:@\s]+)[:/](?<org>[^/:@\s]+)/(?<repo>[^/\s]+?)(?:\.git)?/?\s*$') {
+            if (-not $script:Org)        { $script:Org        = $Matches.org }
+            if (-not $script:Repo)       { $script:Repo       = $Matches.repo }
+            if (-not $script:RemoteHost) { $script:RemoteHost = $Matches.host }
         } else {
-            throw "could not parse org/repo from remote URL: $remoteUrl — try passing -Org and -Repo explicitly"
+            throw "could not parse host/org/repo from remote URL: $remoteUrl -- try passing -Org and -Repo explicitly"
         }
-        Write-Color "detected: $($script:Org)/$($script:Repo)" Cyan
+        Write-Color "detected: $($script:RemoteHost) $($script:Org)/$($script:Repo)" Cyan
     }
+    $hostShort = _HostShort $script:RemoteHost
+    $src       = Join-Path (Join-Path (Join-Path $SourceRoot   $hostShort) $script:Org) $script:Repo
+    $wtroot    = Join-Path (Join-Path (Join-Path $WorktreeRoot $hostShort) $script:Org) $script:Repo
+
+    # Layout check: if cwd doesn't fit the canonical <SourceRoot>\<host>\<org>\<repo>
+    # or <WorktreeRoot>\<host>\<org>\<repo>\* pattern, warn and prompt for confirmation.
+    # Default is to abort -- gwt computes paths from the canonical layout, so a
+    # non-canonical cwd often means you'd be operating on the wrong clone.
+    # -y bypasses this prompt.
+    if (-not $script:WarnedLayout) {
+        $cwd = (Get-Location).Path.TrimEnd('\') + '\'
+        $sb  = $src.TrimEnd('\')    + '\'
+        $wb  = $wtroot.TrimEnd('\') + '\'
+        $cmp = [System.StringComparison]::OrdinalIgnoreCase
+        $inSrc = $cwd.StartsWith($sb, $cmp)
+        $inWt  = $cwd.StartsWith($wb, $cmp)
+        if (-not ($inSrc -or $inWt)) {
+            Write-Color "warning: cwd doesn't fit the canonical gwt layout" Yellow
+            Write-Color "  cwd:       $((Get-Location).Path)" DarkGray
+            Write-Color "  expected:  $src" DarkGray
+            Write-Color "  or under:  $wtroot\<branch>" DarkGray
+            Write-Color "  gwt will use the canonical paths above, NOT your cwd." DarkGray
+            if (-not $y) {
+                $resp = Read-Host "proceed using canonical paths? (y/N)"
+                if (-not ($resp -match '^[Yy]$')) {
+                    throw "aborted -- cd to the canonical clone first, or pass -y to override"
+                }
+            }
+        }
+        $script:WarnedLayout = $true
+    }
+
     return @{
-        Org    = $script:Org
-        Repo   = $script:Repo
-        Src    = Join-Path (Join-Path (Join-Path $SourceRoot   'github') $script:Org) $script:Repo
-        WtRoot = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $script:Org) $script:Repo
+        Org        = $script:Org
+        Repo       = $script:Repo
+        RemoteHost = $script:RemoteHost
+        HostShort  = $hostShort
+        Src        = $src
+        WtRoot     = $wtroot
     }
 }
 
 function Ensure-RepoClonedAndUpdated {
-    param([string]$Org, [string]$Repo, [string]$Src)
+    param([string]$Org, [string]$Repo, [string]$Src, [string]$RemoteHost = 'github.com')
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Src)) | Out-Null
     if (-not (Test-Path $Src)) {
-        & git clone "git@github.com:$Org/$Repo.git" $Src 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "clone failed: git@github.com:$Org/$Repo.git" }
+        $url = "git@${RemoteHost}:$Org/$Repo.git"
+        & git clone $url $Src 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "clone failed: $url" }
     }
     Invoke-Git $Src @('fetch','origin','--prune')
     Invoke-Git $Src @('checkout','main')
@@ -128,7 +183,7 @@ function Ensure-Worktree {
     # valid worktrees have a `.git` file (not dir) pointing at the gitdir
     if (Test-Path (Join-Path $WtPath '.git')) { return }
     if (Test-Path $WtPath) {
-        Write-Color "path '$WtPath' exists but isn't a valid worktree — cleaning up residue" Yellow
+        Write-Color "path '$WtPath' exists but isn't a valid worktree -- cleaning up residue" Yellow
         try {
             Remove-Item $WtPath -Recurse -Force -ErrorAction Stop
         } catch {
@@ -144,7 +199,7 @@ function Invoke-AgentSetup {
     if ($script:NoAgentSetup) { return }
     $setupScript = 'D:\git\github\dovholuknf\dotagents\scripts\setup-agents.ps1'
     if (-not (Test-Path $setupScript)) {
-        Write-Color "dotagents setup-agents.ps1 not found at '$setupScript' — skipping CLAUDE.md symlink" Yellow
+        Write-Color "dotagents setup-agents.ps1 not found at '$setupScript' -- skipping CLAUDE.md symlink" Yellow
         return
     }
     & pwsh -NoProfile -File $setupScript -Path $Path
@@ -184,109 +239,6 @@ function Remove-Worktree {
     }
 }
 
-function Get-ClaudePromptPresets {
-    param([string]$Repo, [string]$Branch)
-    return ,@(
-        [PSCustomObject]@{
-            Name = 'blank'
-            Text = $null
-        }
-        [PSCustomObject]@{
-            Name = 'critique'
-            Text = "critique the changes from this branch ($Branch in $Repo). summarize changes commit by commit and pay attention to risks and critique overall design"
-        }
-        [PSCustomObject]@{
-            Name = 'continue'
-            Text = "look at the current state of this worktree ($Branch in $Repo). figure out what was being worked on and pick up where it left off"
-        }
-        [PSCustomObject]@{
-            Name = 'explore'
-            Text = "give me a tour of this branch ($Branch in $Repo). what's different from main? what's the shape of the changes? orientation only, no action yet"
-        }
-        [PSCustomObject]@{
-            Name = 'test'
-            Text = "run the test suite for this branch ($Branch in $Repo). if anything fails, investigate root cause before attempting fixes"
-        }
-    )
-}
-
-function Select-ClaudePrompt {
-    param([string]$Repo, [string]$Branch)
-    $presets = Get-ClaudePromptPresets -Repo $Repo -Branch $Branch
-
-    Write-Host ""
-    Write-Color "choose prompt:" DarkGray
-    for ($i = 0; $i -lt $presets.Count; $i++) {
-        $c       = $presets[$i]
-        $preview = if ($null -eq $c.Text) { '(open claude with no initial prompt)' } else { $c.Text }
-        $marker  = if ($i -eq 0) { '*' } else { ' ' }
-        Write-Host ("  [{0}]{1} " -f ($i + 1), $marker) -NoNewline -ForegroundColor Cyan
-        Write-Host ("{0,-9}" -f $c.Name) -NoNewline -ForegroundColor White
-        Write-Host ("  {0}" -f $preview) -ForegroundColor DarkGray
-    }
-    $customIdx = $presets.Count + 1
-    Write-Host ("  [{0}]  " -f $customIdx) -NoNewline -ForegroundColor Cyan
-    Write-Host ("{0,-9}" -f 'custom')      -NoNewline -ForegroundColor White
-    Write-Host "  (type your own)"                     -ForegroundColor DarkGray
-    Write-Host ""
-
-    $resp = (Read-Host "choice [1]").Trim()
-    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = '1' }
-
-    if ($resp -eq "$customIdx") {
-        $custom = Read-Host "prompt"
-        return $custom
-    }
-
-    $idx = 0
-    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $presets.Count) {
-        Write-Color "invalid choice, using default" Yellow
-        return $presets[0].Text
-    }
-    return $presets[$idx - 1].Text
-}
-
-function Select-WtWindow {
-    $presets = @(
-        [PSCustomObject]@{ Name = 'active-work';   Desc = 'attach to "active-work" window' }
-        [PSCustomObject]@{ Name = 'pull-requests'; Desc = 'attach to "pull-requests" window' }
-        [PSCustomObject]@{ Name = 'tangent';       Desc = 'attach to "tangent" window' }
-        [PSCustomObject]@{ Name = 'worktrees';     Desc = 'attach to "worktrees" window (default)' }
-        [PSCustomObject]@{ Name = '__new__';       Desc = 'open in a brand-new wt window (no attach)' }
-        [PSCustomObject]@{ Name = '__custom__';    Desc = 'type your own window name' }
-    )
-    Write-Host ""
-    Write-Color "choose wt window:" DarkGray
-    for ($i = 0; $i -lt $presets.Count; $i++) {
-        $marker = if ($i -eq 0) { '*' } else { ' ' }
-        Write-Host ("  [{0}]{1} " -f ($i + 1), $marker) -NoNewline -ForegroundColor Cyan
-        $label = switch ($presets[$i].Name) {
-            '__new__'    { 'new' }
-            '__custom__' { 'custom' }
-            default      { $presets[$i].Name }
-        }
-        Write-Host ("{0,-14}" -f $label) -NoNewline -ForegroundColor White
-        Write-Host ("  {0}" -f $presets[$i].Desc) -ForegroundColor DarkGray
-    }
-    Write-Host ""
-
-    $resp = (Read-Host "choice [1]").Trim()
-    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = '1' }
-
-    $idx = 0
-    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $presets.Count) {
-        Write-Color "invalid choice, using default" Yellow
-        return $presets[0].Name
-    }
-    $choice = $presets[$idx - 1].Name
-    if ($choice -eq '__custom__') {
-        $name = (Read-Host "window name").Trim()
-        if ([string]::IsNullOrWhiteSpace($name)) { return '__new__' }
-        return $name
-    }
-    return $choice
-}
-
 function Get-GwtStatePath {
     param([string]$WorktreePath)
     $slug = ($WorktreePath -replace '[:\\/]', '-').Trim('-')
@@ -308,158 +260,8 @@ function Save-GwtState {
     ($State | ConvertTo-Json -Compress) | Set-Content -Path $p -Encoding UTF8
 }
 
-function Get-ThemeFnForWindow {
-    param([string]$WindowName)
-    switch ($WindowName) {
-        'active-work'   { 'ActiveWork' }
-        'pull-requests' { 'PullRequests' }
-        'tangent'       { 'Tangent' }
-        'worktrees'     { 'Worktrees' }
-        default         { $null }  # custom names / new windows: no theme
-    }
-}
 
-function Open-ClaudeShell {
-    param(
-        [string]$Path,
-        [string]$Repo,
-        [string]$Branch,
-        [string]$PromptText,
-        [string]$WindowName,        # $null/empty = brand-new window; otherwise -w <name>
-        [string]$ReuseSessionId     # if set, reuse an existing session entry (e.g. on restore) instead of minting a new one — prevents orphan accumulation
-    )
-    # claude stores sessions per-cwd under the invoking user's profile. gwt runs
-    # claude as the 'claude' user, so probe that profile (not the current user's).
-    # path slug: replace ':' and '\' and '/' with '-'  (e.g. D:\worktrees\foo -> D--worktrees-foo)
-    $slug       = ($Path -replace '[:\\/]','-')
-    $projDir    = "C:\Users\claude\.claude\projects\$slug"
-    $hasSession = (Test-Path $projDir) -and @(Get-ChildItem $projDir -Filter *.jsonl -ErrorAction SilentlyContinue).Count -gt 0
-    $contFlag   = if ($hasSession) { ' --continue' } else { '' }
 
-    # only set a name on fresh sessions — --continue carries the existing name forward
-    $nameFlag = if ($hasSession -or [string]::IsNullOrWhiteSpace($Branch)) { '' } else {
-        $escapedName = $Branch -replace '"', '`"'
-        " --name `"$escapedName`""
-    }
-
-    # Apply the full wt-themes color scheme (ANSI palette, grayscale ramp, psr
-    # colors) matching the window category. Requires wt-themes.ps1 to be sourced
-    # from the spawned shell's $PROFILE — it is in this setup.
-    $themeFn     = Get-ThemeFnForWindow -WindowName $WindowName
-    $themePrefix = if ($themeFn) { "$themeFn; " } else { '' }
-
-    # Session registration: pre-write the entry from here (clint user) with the
-    # session metadata + a placeholder PID. The spawned shell only patches in its
-    # real PID/StartTime via Register-GwtSession -Id <guid>. Keeps the encoded
-    # command short — runas has a tight command-line length limit.
-    $sessionDir  = 'D:\worktrees\sessions'
-    [System.IO.Directory]::CreateDirectory($sessionDir) | Out-Null
-    # Reuse an existing session id when caller passed one (e.g. restore) — keeps
-    # the entry count stable even if the spawned shell's Register-GwtSession fails.
-    $sessionId   = if ($ReuseSessionId) { $ReuseSessionId } else { [guid]::NewGuid().ToString() }
-    # If reusing an existing session id, preserve the prior FirstSpawnedAt so
-    # we don't lose the original-add timestamp on restore.
-    $existingFirst = $null
-    if ($ReuseSessionId) {
-        $existingFile = Join-Path $sessionDir "$ReuseSessionId.json"
-        if (Test-Path $existingFile) {
-            try {
-                $prev = Get-Content $existingFile -Raw | ConvertFrom-Json
-                if ($prev.FirstSpawnedAt) { $existingFirst = $prev.FirstSpawnedAt }
-                elseif ($prev.SpawnedAt)  { $existingFirst = $prev.SpawnedAt }
-            } catch {}
-        }
-    }
-    $now = (Get-Date).ToString('o')
-    $entry       = @{
-        Id                = $sessionId
-        Pid               = 0
-        StartTime         = $null
-        WtSession         = $null
-        FirstSpawnedAt    = if ($existingFirst) { $existingFirst } else { $now }
-        LastSpawnedAt     = $null   # filled in by Register-GwtSession when shell comes up
-        SpawnedAt         = $null   # legacy alias, also filled by Register-GwtSession
-        WorktreePath      = $Path
-        Branch            = $Branch
-        Repo              = $Repo
-        WindowName        = $WindowName
-        PromptText        = $PromptText
-        ClaudeSessionName = $Branch
-    }
-    ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $sessionDir "$sessionId.json") -Encoding UTF8
-
-    # Source the registry explicitly — don't depend on the spawned shell's
-    # profile being correctly set up. The path is the dotfiles location, so it
-    # works for both clint and the claude user. If you move dotfiles, update here.
-    $regPrefix = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Register-GwtSession -Id '$sessionId'; "
-
-    if ([string]::IsNullOrEmpty($PromptText)) {
-        $cmd = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag"
-    } else {
-        $escaped = $PromptText -replace '"', '`"'
-        $cmd     = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag `"$escaped`""
-    }
-    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
-    # -w <name>: reuse (or create) the named window so worktrees stack as tabs.
-    # window names are bound to the 'claude' user, so this only merges tabs across
-    # gwt-spawned shells — it won't attach to your regular-user wt.
-    if (-not [string]::IsNullOrWhiteSpace($WindowName)) {
-        $wtArgs = "wt.exe -w $WindowName new-tab -d `"$Path`" pwsh -NoExit -EncodedCommand $enc"
-    } else {
-        $wtArgs = "wt.exe -d `"$Path`" pwsh -NoExit -EncodedCommand $enc"
-    }
-    # /savecred reuses the password from Windows Credential Manager after the
-    # first successful auth. Removes the per-launch password prompt during
-    # bulk operations like `gwt sessions restore`. To clear: `cmdkey /delete:claude`
-    if ($V) {
-        runas /user:claude /savecred $wtArgs
-    } else {
-        # Hide runas chatter ("Attempting to start..." + base64 dump). Capture
-        # output and only print on non-zero exit so failures are still visible.
-        $runasOut = & runas /user:claude /savecred $wtArgs 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Color "  runas failed (exit $LASTEXITCODE): $runasOut" Red
-        }
-    }
-
-    # Stash the session id so callers (e.g. gwt sessions restore) can poll the
-    # session file for Pid != 0 to know the spawned shell came up. Script-scope
-    # avoids leaking the value onto stdout for callers that don't care.
-    $script:LastSpawnedSessionId = $sessionId
-}
-
-function Confirm-OpenOrCd {
-    param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen)
-
-    if ($AutoOpen) {
-        $promptText = if ($PromptOverride) {
-            $PromptOverride
-        } else {
-            (Get-ClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text
-        }
-        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work'
-        return
-    }
-
-    $resp = Read-Host "open in claude? (Y/n)"
-    if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
-        $window = Select-WtWindow
-        if ($window -eq '__new__') { $window = $null }
-
-        $promptText = if ($PromptOverride) {
-            $PromptOverride
-        } else {
-            Select-ClaudePrompt -Repo $Repo -Branch $Branch
-        }
-        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window
-    } else {
-        $cd = Read-Host "cd there? (Y/n)"
-        if ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$') {
-            Set-Clipboard $Path
-            Write-Color "path copied to clipboard — just paste after 'cd '" Cyan
-        }
-    }
-}
 
 # Returns worktree info objects: Branch, Path, Status, Reason
 # Status: MAIN | ACTIVE | ACTIVE-NO-REMOTE | PRUNE | DIRTY-MERGED
@@ -565,7 +367,7 @@ switch ($Command) {
         if (-not $Target) { throw "'new' requires a branch name" }
         $ctx = Resolve-RepoContext
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
-        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
 
         if ($From) {
             if (Test-RemoteBranchExists $ctx.Src $From) {
@@ -595,7 +397,7 @@ switch ($Command) {
                 # The initial fetch in Ensure-RepoClonedAndUpdated normally already
                 # brings down origin/<Target>. Only re-fetch explicitly if it's
                 # missing (e.g. repos with restricted fetch refspecs). Use a fully
-                # qualified refspec — bare-name lhs can resolve to nothing and
+                # qualified refspec -- bare-name lhs can resolve to nothing and
                 # cause git to delete the dest tracking ref.
                 & git -C $ctx.Src rev-parse --verify "origin/$Target" 2>&1 | Out-Null
                 if ($LASTEXITCODE -ne 0) {
@@ -605,14 +407,14 @@ switch ($Command) {
                 if ($LASTEXITCODE -eq 0) {
                     Invoke-Git $ctx.Src @('branch','--track',$Target,"origin/$Target")
                 } else {
-                    Write-Color "remote branch '$Target' could not be fetched — branching off origin/main" Yellow
+                    Write-Color "remote branch '$Target' could not be fetched -- branching off origin/main" Yellow
                     Invoke-Git $ctx.Src @('branch','--no-track',$Target,'origin/main')
                 }
             } else {
                 Invoke-Git $ctx.Src @('branch','--no-track',$Target,'origin/main')
             }
         } else {
-            # branch exists locally — reconcile with remote so we don't silently
+            # branch exists locally -- reconcile with remote so we don't silently
             # check out a stale local copy that diverges from origin.
             & git -C $ctx.Src rev-parse --verify "origin/$Target" 2>&1 | Out-Null
             $remoteHas = $LASTEXITCODE -eq 0
@@ -621,7 +423,7 @@ switch ($Command) {
             $hasUpstream = $LASTEXITCODE -eq 0
 
             if ($hasUpstream -and -not $remoteHas) {
-                Write-Color "stale branch '$Target' (upstream gone) — resetting to origin/main" Cyan
+                Write-Color "stale branch '$Target' (upstream gone) -- resetting to origin/main" Cyan
                 Invoke-Git $ctx.Src @('branch','--unset-upstream',$Target)
                 Invoke-Git $ctx.Src @('branch','-f',$Target,'origin/main')
             } elseif ($remoteHas) {
@@ -631,7 +433,7 @@ switch ($Command) {
                     $ahead  = [int]((& git -C $ctx.Src rev-list --count "origin/$Target..$Target") | Out-String).Trim()
                     $behind = [int]((& git -C $ctx.Src rev-list --count "$Target..origin/$Target") | Out-String).Trim()
                     if ($ahead -eq 0 -and $behind -gt 0) {
-                        Write-Color "local '$Target' is $behind commits behind origin — fast-forwarding" Cyan
+                        Write-Color "local '$Target' is $behind commits behind origin -- fast-forwarding" Cyan
                         Invoke-Git $ctx.Src @('branch','-f',$Target,"origin/$Target")
                         if (-not $hasUpstream) {
                             Invoke-Git $ctx.Src @('branch','--set-upstream-to',"origin/$Target",$Target)
@@ -653,6 +455,7 @@ switch ($Command) {
         $wtPath = Join-Path $ctx.WtRoot $Target
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
+        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
         Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
     }
 
@@ -673,7 +476,7 @@ switch ($Command) {
         $wtPath = Join-Path $ctx.WtRoot "pr-$prNum"
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
 
-        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
         Invoke-Git $ctx.Src @('worktree','prune')
 
         $branch     = Get-PrHeadBranch -Org $ctx.Org -Repo $ctx.Repo -PrNumber $prNum
@@ -681,7 +484,7 @@ switch ($Command) {
 
         if ($existingWt) {
             if ($existingWt.Replace('\','/') -ne $wtPath.Replace('\','/')) {
-                throw "branch '$branch' already checked out at '$existingWt' — is there another PR against this branch?"
+                throw "branch '$branch' already checked out at '$existingWt' -- is there another PR against this branch?"
             }
             $resp = Read-Host "worktree already exists at '$existingWt'. remove it? (y/N)"
             if ($resp -match '^[Yy]$') {
@@ -696,6 +499,7 @@ switch ($Command) {
         Sync-PrBranch $ctx.Src $branch
         Ensure-Worktree $ctx.Src $wtPath $branch
         Write-Color "ready: $wtPath" Green
+        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
         Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
     }
 
@@ -704,11 +508,11 @@ switch ($Command) {
 
         $current = (& git rev-parse --abbrev-ref HEAD 2>&1 | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or -not $current -or $current -eq 'HEAD') {
-            throw "can't detect current branch — are you inside a git worktree?"
+            throw "can't detect current branch -- are you inside a git worktree?"
         }
         $currentWt = (& git rev-parse --show-toplevel 2>&1 | Out-String).Trim()
 
-        # capture dirty state as a patch (tracked changes only — git diff excludes untracked)
+        # capture dirty state as a patch (tracked changes only -- git diff excludes untracked)
         $patchFile = $null
         $untracked = @()
         $status    = & git -C $currentWt status --porcelain 2>&1
@@ -720,7 +524,7 @@ switch ($Command) {
             Write-Color "captured working changes: $patchFile" Cyan
         }
 
-        # untracked files can't be represented in a patch — prompt whether to copy them
+        # untracked files can't be represented in a patch -- prompt whether to copy them
         $carryUntracked = @()
         if ($untracked.Count) {
             Write-Color "found $($untracked.Count) untracked file(s):" Yellow
@@ -735,12 +539,12 @@ switch ($Command) {
 
         $ctx = Resolve-RepoContext
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
-        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
 
         if (Test-LocalBranchExists $ctx.Src $Target) {
-            throw "branch '$Target' already exists — pick a different name"
+            throw "branch '$Target' already exists -- pick a different name"
         }
-        # branch off whatever $current currently points to locally — do NOT force-update it
+        # branch off whatever $current currently points to locally -- do NOT force-update it
         Invoke-Git $ctx.Src @('branch','--no-track',$Target,$current)
 
         $wtPath = Join-Path $ctx.WtRoot $Target
@@ -767,20 +571,21 @@ switch ($Command) {
             Write-Color "applying carried changes..." Cyan
             & git -C $wtPath apply --index $patchFile 2>&1 | Out-String | Write-Host
             if ($LASTEXITCODE -ne 0) {
-                Write-Color "patch did not apply cleanly — left at: $patchFile" Red
+                Write-Color "patch did not apply cleanly -- left at: $patchFile" Red
             } else {
                 Write-Color "carried changes applied (staged)." Green
                 Remove-Item $patchFile -Force
             }
         }
 
+        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
         Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
         return
     }
 
     'update-registry' {
         # Manual freshness/fetch for the fallback gwt-session-registry.ps1 at
-        # ~\.gwt\. No-op (with a hint) if the dotfiles copy exists — that's
+        # ~\.gwt\. No-op (with a hint) if the dotfiles copy exists -- that's
         # primary, you update it via git pull.
         $primary  = 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'
         $fallback = Join-Path $env:USERPROFILE '.gwt\gwt-session-registry.ps1'
@@ -788,7 +593,7 @@ switch ($Command) {
         $url      = 'https://raw.githubusercontent.com/dovholuknf/dotfiles/main/powershell/gwt-session-registry.ps1'
 
         if (Test-Path $primary) {
-            Write-Color "primary copy at $primary — update via git pull" DarkGray
+            Write-Color "primary copy at $primary -- update via git pull" DarkGray
             return
         }
         New-Item -ItemType Directory -Path (Split-Path $fallback) -Force | Out-Null
@@ -814,11 +619,11 @@ switch ($Command) {
         $jsonFiles = @(Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)
         Write-Color "  found $($jsonFiles.Count) *.json file(s)" DarkGray
         if ($jsonFiles.Count -eq 0) {
-            Write-Color "  (empty — no sessions have been registered yet)" DarkGray
+            Write-Color "  (empty -- no sessions have been registered yet)" DarkGray
             return
         }
 
-        # One batched CIM query for all running processes — keyed by PID for O(1) lookup.
+        # One batched CIM query for all running processes -- keyed by PID for O(1) lookup.
         # Avoids per-entry WMI calls which were ~200ms each (13 entries = 2.6s).
         $procMap = @{}
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
@@ -829,6 +634,9 @@ switch ($Command) {
         $entries = $jsonFiles | ForEach-Object {
             try {
                 $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                # normalize path slashes -- legacy entries used '/', new ones use '\';
+                # without this, dedupe by WorktreePath misses the duplicates.
+                if ($e.WorktreePath) { $e.WorktreePath = ($e.WorktreePath -replace '/', '\').TrimEnd('\') }
                 $alive = $false
                 if ($e.Pid -and $e.Pid -ne 0) {
                     $cim = $procMap[[int]$e.Pid]
@@ -854,11 +662,11 @@ switch ($Command) {
         # 'clean' = drop stale entries without relaunch.
         switch ($Target) {
             'restore' {
-                # Idempotency: only consider STALE entries — alive ones are already up.
+                # Idempotency: only consider STALE entries -- alive ones are already up.
                 $allStale = @($entries | Where-Object { -not $_.Alive })
-                if (-not $allStale.Count) { Write-Color "no stale sessions to restore (all alive — nothing to do)" DarkGray; return }
+                if (-not $allStale.Count) { Write-Color "no stale sessions to restore (all alive -- nothing to do)" DarkGray; return }
 
-                # dedupe by WorktreePath (keeps newest by LastSpawnedAt) — protects against
+                # dedupe by WorktreePath (keeps newest by LastSpawnedAt) -- protects against
                 # accumulated leftover entries from failed prior launches blowing up the count.
                 # Then sort ASC by FirstSpawnedAt so restore replays in original-add order.
                 $stale = $allStale |
@@ -887,7 +695,7 @@ switch ($Command) {
 
                 $dupes = $allStale.Count - @($stale).Count
                 if (-not $Match -and $dupes -gt 0) {
-                    Write-Color "skipping $dupes duplicate(s) — run 'gwt sessions clean' to drop them" DarkGray
+                    Write-Color "skipping $dupes duplicate(s) -- run 'gwt sessions clean' to drop them" DarkGray
                 }
 
                 Write-Host ""
@@ -953,7 +761,7 @@ switch ($Command) {
             }
             'close' {
                 # Kill the underlying pwsh process for ALIVE entries (the wt tab dies
-                # with it). Doesn't touch the registry entry — it'll show STALE next
+                # with it). Doesn't touch the registry entry -- it'll show STALE next
                 # listing. Optional substring filter narrows to specific entries.
                 $alive = @($entries | Where-Object Alive)
                 if (-not $alive.Count) { Write-Color "no alive sessions to close" DarkGray; return }
@@ -976,7 +784,7 @@ switch ($Command) {
                 if (-not ($resp -match '^[Yy]$')) { Write-Color "aborted" Yellow; return }
 
                 foreach ($s in $alive) {
-                    # Kill the whole process tree (/T) — pwsh has claude as a child,
+                    # Kill the whole process tree (/T) -- pwsh has claude as a child,
                     # and wt keeps the tab open as long as ANY process in it is alive.
                     # Try as the current user (clint) first; if that fails (cross-user
                     # access denied), fall back to runas /user:claude as the owner.
@@ -990,26 +798,26 @@ switch ($Command) {
                     if ($killed) {
                         Write-Color "  closed: $($s.Branch) (pid $($s.Pid))" Green
                     } else {
-                        Write-Color "  failed to close: $($s.Branch) (pid $($s.Pid)) — exit $LASTEXITCODE" Red
+                        Write-Color "  failed to close: $($s.Branch) (pid $($s.Pid)) -- exit $LASTEXITCODE" Red
                     }
                 }
             }
 
             'clean' {
                 # Default: drop only stale entries. With -All (the script-level switch),
-                # also drop alive entries (will not kill the underlying shell — just
+                # also drop alive entries (will not kill the underlying shell -- just
                 # forgets the registry entry; the alive shell stays running).
                 $toDrop = if ($All) {
                     @($entries)
                 } else {
                     @($entries | Where-Object { -not $_.Alive })
                 }
-                $mode = if ($All) { 'all (alive + stale)' } else { 'stale only (default — pass -All to also drop alive entries)' }
+                $mode = if ($All) { 'all (alive + stale)' } else { 'stale only (default -- pass -All to also drop alive entries)' }
                 Write-Color "cleaning: $mode" DarkGray
                 if (-not $toDrop.Count) { Write-Color "  nothing to drop" DarkGray; return }
                 foreach ($s in $toDrop) {
                     Remove-Item $s.File -Force -ErrorAction SilentlyContinue
-                    $tag = if ($s.Alive) { '(was alive — entry removed; running shell unaffected)' } else { '(stale)' }
+                    $tag = if ($s.Alive) { '(was alive -- entry removed; running shell unaffected)' } else { '(stale)' }
                     Write-Color "  removed: $($s.Branch) $tag" DarkGray
                 }
             }
@@ -1040,7 +848,7 @@ switch ($Command) {
                 }
                 Write-Host ""
                 if ($dupes -gt 0) {
-                    Write-Color "  $dupes duplicate entrie(s) hidden — run 'gwt sessions clean' to drop stale dupes" DarkGray
+                    Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean' to drop stale dupes" DarkGray
                 }
                 Write-Color "  gwt sessions restore   relaunch all stale sessions" DarkGray
                 Write-Color "  gwt sessions clean     drop stale entries without relaunching" DarkGray
@@ -1052,17 +860,22 @@ switch ($Command) {
         if (-not $Target -or $Target -eq '.') {
             $Target = (& git rev-parse --abbrev-ref HEAD 2>&1 | Out-String).Trim()
             if ($LASTEXITCODE -ne 0 -or -not $Target -or $Target -eq 'HEAD') {
-                throw "'claude' requires a branch name — and you don't appear to be inside a worktree"
+                throw "'claude' requires a branch name -- and you don't appear to be inside a worktree"
             }
         }
         $ctx    = Resolve-RepoContext
         $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
         if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
-        if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing — run 'gwt prune'" }
+        if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing -- run 'gwt prune'" }
+
+        # Active-session check FIRST, before any state/picks prompts.
+        if (-not (Confirm-NoAliveSessionAt -Path $wtPath)) { return }
+
+        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
 
         $state = if ($Reselect) { $null } else { Load-GwtState $wtPath }
 
-        # confirm re-use of saved picks — 'n' falls through to re-prompt
+        # confirm re-use of saved picks -- 'n' falls through to re-prompt
         if ($state -and -not $y) {
             $winDesc = if ($state.Window -and $state.Window -ne '') { $state.Window } else { 'new window' }
             $resp    = Read-Host "resume last picks? (window=$winDesc, prompt=$($state.PromptName)) (Y/n)"
@@ -1093,7 +906,9 @@ switch ($Command) {
             }
         }
 
-        Open-ClaudeShell -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptText $promptText -WindowName $window
+        # -Force here suppresses Open-ClaudeShell's redundant alive-session guard;
+        # we already prompted at the top of this block.
+        Open-ClaudeShell -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptText $promptText -WindowName $window -Force
     }
 
     'cd' {
@@ -1101,8 +916,8 @@ switch ($Command) {
         $ctx    = Resolve-RepoContext
         $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
         if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
-        if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing — run 'gwt prune'" }
-        # print ONLY the path to stdout — the profile's gwt wrapper captures this and Set-Locations it.
+        if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing -- run 'gwt prune'" }
+        # print ONLY the path to stdout -- the profile's gwt wrapper captures this and Set-Locations it.
         # Write-Color uses Write-Host which bypasses the pipeline, so detection banners are fine.
         Write-Output $wtPath
     }
@@ -1111,31 +926,152 @@ switch ($Command) {
         if (-not $Target) { throw "'rm' requires a branch name" }
         $ctx    = Resolve-RepoContext
         $wtPath = Join-Path $ctx.WtRoot $Target
+        $normWt = ($wtPath -replace '/', '\').TrimEnd('\').ToLower()
+
+        # Refuse if a session is still alive on this worktree (unless -y/-Force).
+        $sessionsDir = 'D:\worktrees\sessions'
+        $procMap = @{}
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+            $procMap[[int]$_.ProcessId] = $_
+        }
+        $aliveHits = @()
+        if (Test-Path $sessionsDir) {
+            Get-ChildItem $sessionsDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+                try {
+                    $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                    if (-not $e.WorktreePath) { return }
+                    if ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -ne $normWt) { return }
+                    if ($e.Pid -and $e.Pid -ne 0 -and $procMap[[int]$e.Pid]) {
+                        $aliveHits += $e
+                    }
+                } catch {}
+            }
+        }
+        if ($aliveHits.Count -gt 0 -and -not $y) {
+            Write-Color "a session is still alive for this worktree -- close the tab first or pass -y" Yellow
+            foreach ($s in $aliveHits) {
+                Write-Color ("  pid={0}  branch={1}  window={2}" -f $s.Pid, $s.Branch, $s.WindowName) DarkGray
+            }
+            return
+        }
+
+        # 1. remove the git worktree
         Remove-Worktree -Src $ctx.Src -WtPath $wtPath -AutoConfirm:$y
+
+        # 2. drop session entries pointing at this worktree
+        if (Test-Path $sessionsDir) {
+            Get-ChildItem $sessionsDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+                try {
+                    $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                    if (-not $e.WorktreePath) { return }
+                    if ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -eq $normWt) {
+                        Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+                        Write-Color "  dropped session entry: $($_.Name)" DarkGray
+                    }
+                } catch {}
+            }
+        }
+
+        # 3. drop the per-worktree picks state
+        $slug      = ($wtPath -replace '[:\\/]', '-').Trim('-')
+        $stateFile = Join-Path $env:LOCALAPPDATA "gwt\state\$slug.json"
+        if (Test-Path $stateFile) {
+            Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+            Write-Color "  dropped picks state: $stateFile" DarkGray
+        }
+
+        # 4. claude project history -- left in place by default; tell user where to find it
+        $claudeSlug = ($wtPath -replace '[:\\/]', '-')
+        $claudeDir  = "C:\Users\claude\.claude\projects\$claudeSlug"
+        if (Test-Path $claudeDir) {
+            Write-Color "  claude session history kept at: $claudeDir" DarkGray
+            Write-Color "  (delete manually if you want a clean slate)" DarkGray
+        }
     }
 
     { $_ -in 'ls','list' } {
-        $ctx      = Resolve-RepoContext
-        $statuses = Get-WorktreeStatuses $ctx.Src |
-                    Sort-Object -Property LastCommit -Descending
+        # Lists git worktrees for the current repo (MAIN + ACTIVE + PRUNE etc).
+        # Sessions are shown via 'gwt sessions' -- they're a different lens.
+        try {
+            $ctx = Resolve-RepoContext
+        } catch {
+            $msg = $_.Exception.Message
+            if ($msg -match 'not inside a git repo') {
+                Write-Color "not inside a git repo -- try 'gwt sessions' for the cross-repo view" Yellow
+            } else {
+                Write-Color $msg Yellow
+            }
+            return
+        }
+        $statuses = Get-WorktreeStatuses $ctx.Src | Sort-Object -Property LastCommit -Descending
 
-        $colorMap = @{
+        # Build a path -> window-name map from alive sessions, so we can mark
+        # worktrees that currently have a running claude session and show which
+        # wt window they're in (active-work / pull-requests / tangent / etc).
+        $aliveWindow = @{}
+        $sessionDir = 'D:\worktrees\sessions'
+        if (Test-Path $sessionDir) {
+            $procMap = @{}
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+                $procMap[[int]$_.ProcessId] = $_
+            }
+            Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+                try {
+                    $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                    if (-not $e.WorktreePath) { return }
+                    if (-not ($e.Pid -and $e.Pid -ne 0 -and $procMap[[int]$e.Pid])) { return }
+                    $key = ($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+                    $aliveWindow[$key] = if ($e.WindowName) { $e.WindowName } else { '?' }
+                } catch {}
+            }
+        }
+
+        $statusColorMap = @{
             'MAIN'             = 'DarkGray'
             'ACTIVE'           = 'Green'
             'ACTIVE-NO-REMOTE' = 'Cyan'
             'PRUNE'            = 'Red'
             'DIRTY-MERGED'     = 'Yellow'
         }
+        $windowColorMap = @{
+            'active-work'   = 'Green'
+            'pull-requests' = 'Blue'
+            'tangent'       = 'Magenta'
+            'worktrees'     = 'DarkGray'
+        }
 
         foreach ($wt in $statuses) {
-            $color = $colorMap[$wt.Status]
+            $key   = ($wt.Path -replace '/', '\').TrimEnd('\').ToLower()
+            $win   = $aliveWindow[$key]
+            $alive = [bool]$win
+            $statusColor = $statusColorMap[$wt.Status]
             $raw   = if ($wt.Status -eq 'PRUNE' -and $wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
             $label = $raw.PadRight(16)
             $when  = if ($wt.LastCommitRel) { "({0})" -f $wt.LastCommitRel } else { '' }
             $when  = $when.PadRight(22)
-            Write-Color "  [$label] $when $($wt.Branch) @ $($wt.Path)" $color
+
+            # leading marker so alive rows stand out at a glance
+            if ($alive) { Write-Host "  ● " -NoNewline -ForegroundColor White }
+            else        { Write-Host "    " -NoNewline }
+
+            # status block (colored by status)
+            Write-Host "[$label] " -NoNewline -ForegroundColor $statusColor
+            Write-Host "$when " -NoNewline -ForegroundColor DarkGray
+
+            # branch (white if alive, else status color)
+            $branchColor = if ($alive) { 'White' } else { $statusColor }
+            Write-Host "$($wt.Branch) " -NoNewline -ForegroundColor $branchColor
+
+            # window tag for alive entries
+            if ($alive) {
+                $wColor = if ($windowColorMap[$win]) { $windowColorMap[$win] } else { 'White' }
+                Write-Host "[$win] " -NoNewline -ForegroundColor $wColor
+            }
+
+            Write-Host "@ $($wt.Path)" -ForegroundColor DarkGray
+
             if ($wt.Status -eq 'DIRTY-MERGED' -and $wt.Reason) {
-                Write-Color "                                           $($wt.Reason)" $color
+                Write-Color "                                           $($wt.Reason)" $statusColor
             }
         }
     }
@@ -1154,28 +1090,28 @@ switch ($Command) {
             # only pull worktrees that have a live remote tracking branch
             & git -C $ctx.Src rev-parse --abbrev-ref "$($wt.Branch)@{upstream}" 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Write-Color "  [SKIP   ] $($wt.Branch) — no upstream" DarkGray
+                Write-Color "  [SKIP   ] $($wt.Branch) -- no upstream" DarkGray
                 continue
             }
             & git -C $ctx.Src rev-parse --verify "origin/$($wt.Branch)" 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Write-Color "  [SKIP   ] $($wt.Branch) — remote branch gone" DarkGray
+                Write-Color "  [SKIP   ] $($wt.Branch) -- remote branch gone" DarkGray
                 continue
             }
 
             $isDirty = -not [string]::IsNullOrWhiteSpace((& git -C $wt.Path status --porcelain 2>&1 | Out-String).Trim())
             if ($isDirty) {
-                Write-Color "  [SKIP   ] $($wt.Branch) — dirty, skipping" Yellow
+                Write-Color "  [SKIP   ] $($wt.Branch) -- dirty, skipping" Yellow
                 continue
             }
 
             $result = & git -C $wt.Path pull --ff-only 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
-                Write-Color "  [FAIL   ] $($wt.Branch) — cannot fast-forward" Red
+                Write-Color "  [FAIL   ] $($wt.Branch) -- cannot fast-forward" Red
                 Write-Color "            $($result.Trim())" Red
             } else {
                 $msg = if ($result -match 'Already up to date') { 'up to date' } else { 'updated' }
-                Write-Color "  [OK     ] $($wt.Branch) — $msg" Green
+                Write-Color "  [OK     ] $($wt.Branch) -- $msg" Green
             }
         }
     }
@@ -1229,7 +1165,7 @@ switch ($Command) {
                     'ACTIVE-NO-REMOTE' { Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Cyan }
                     'DIRTY-MERGED'     {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Yellow
-                        Write-Color "                    $($wt.Reason) — keeping, review before removing" Yellow
+                        Write-Color "                    $($wt.Reason) -- keeping, review before removing" Yellow
                     }
                     'PRUNE'            {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Red
@@ -1274,7 +1210,7 @@ switch ($Command) {
     { $_ -in 'help','-h','--help' } {
         Write-Host ""
         Write-Host "  gwt " -NoNewline -ForegroundColor Cyan
-        Write-Host "— git worktree lifecycle manager"
+        Write-Host "-- git worktree lifecycle manager"
         Write-Host ""
         Write-Host "  COMMANDS" -ForegroundColor DarkGray
         Write-Host ""
@@ -1297,11 +1233,11 @@ switch ($Command) {
         Write-Host ""
         Write-Host "    gwt <url> " -NoNewline -ForegroundColor Cyan
         Write-Host "[-y]"
-        Write-Host "        shorthand — bare URL auto-routes to 'pr'" -ForegroundColor DarkGray
+        Write-Host "        shorthand -- bare URL auto-routes to 'pr'" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt update-registry" -ForegroundColor Cyan
         Write-Host "        fetch fallback gwt-session-registry.ps1 from github into ~\.gwt\" -ForegroundColor DarkGray
-        Write-Host "        (no-op if dotfiles repo is cloned — update via git pull instead)" -ForegroundColor DarkGray
+        Write-Host "        (no-op if dotfiles repo is cloned -- update via git pull instead)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt sessions " -NoNewline -ForegroundColor Cyan
         Write-Host "[restore [<match>] | close [<match>] | clean [-All]]"
@@ -1314,7 +1250,7 @@ switch ($Command) {
         Write-Host "                        (registry entries stay, will show STALE next listing)" -ForegroundColor DarkGray
         Write-Host "        close <match>   close only matching alive sessions" -ForegroundColor DarkGray
         Write-Host "        clean           drop only stale entries (default)" -ForegroundColor DarkGray
-        Write-Host "        clean -All      drop everything (alive entries too — running shells unaffected)" -ForegroundColor DarkGray
+        Write-Host "        clean -All      drop everything (alive entries too -- running shells unaffected)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "  GLOBAL FLAGS" -ForegroundColor DarkGray
         Write-Host "    -V              show runas chatter on launch (the 'Attempting to start...' noise)" -ForegroundColor DarkGray
@@ -1322,7 +1258,7 @@ switch ($Command) {
         Write-Host "    gwt claude " -NoNewline -ForegroundColor Cyan
         Write-Host "[<branch>|.] [-Prompt <str>] [-Reselect] [-y]"
         Write-Host "        open existing worktree's branch directly in claude (no 'remove?' prompt)" -ForegroundColor DarkGray
-        Write-Host "        no arg / '.' — uses current worktree's branch" -ForegroundColor DarkGray
+        Write-Host "        no arg / '.' -- uses current worktree's branch" -ForegroundColor DarkGray
         Write-Host "        remembers window+prompt picks per-worktree; -Reselect to re-prompt" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt cd " -NoNewline -ForegroundColor Cyan
@@ -1338,20 +1274,21 @@ switch ($Command) {
         Write-Host "        skips dirty worktrees and those with no remote branch" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt ls " -NoNewline -ForegroundColor Cyan
-        Write-Host "(alias: list)"
-        Write-Host "        list worktrees for the current repo with status:" -ForegroundColor DarkGray
-        Write-Host "          [MAIN            ] — primary clone" -ForegroundColor DarkGray
-        Write-Host "          [ACTIVE          ] — upstream exists, not yet merged (clean or dirty)" -ForegroundColor Green
-        Write-Host "          [ACTIVE-NO-REMOTE] — has local changes, no upstream configured" -ForegroundColor Cyan
-        Write-Host "          [PRUNE           ] — safe to delete (merged, remote deleted, or path missing)" -ForegroundColor Red
-        Write-Host "          [DIRTY-MERGED    ] — merged/remote-gone but has local changes, kept for review" -ForegroundColor Yellow
+        Write-Host "(alias: list) [-All]"
+        Write-Host "        list registered sessions, scoped to the current repo by default" -ForegroundColor DarkGray
+        Write-Host "        -All  show sessions across every repo (auto when run outside a repo)" -ForegroundColor DarkGray
+        Write-Host "          [MAIN            ] -- primary clone" -ForegroundColor DarkGray
+        Write-Host "          [ACTIVE          ] -- upstream exists, not yet merged (clean or dirty)" -ForegroundColor Green
+        Write-Host "          [ACTIVE-NO-REMOTE] -- has local changes, no upstream configured" -ForegroundColor Cyan
+        Write-Host "          [PRUNE           ] -- safe to delete (merged, remote deleted, or path missing)" -ForegroundColor Red
+        Write-Host "          [DIRTY-MERGED    ] -- merged/remote-gone but has local changes, kept for review" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "    gwt prune " -NoNewline -ForegroundColor Cyan
         Write-Host "[<branch>] [-Org <org>] [-Repo <repo>] [-y]"
-        Write-Host "        delete merged+clean worktrees (safe only — skips dirty)" -ForegroundColor DarkGray
-        Write-Host "        no args   — current repo, all worktrees" -ForegroundColor DarkGray
-        Write-Host "        <branch>  — current repo, just that worktree" -ForegroundColor DarkGray
-        Write-Host "        -Org      — all repos in org; add -Repo to narrow" -ForegroundColor DarkGray
+        Write-Host "        delete merged+clean worktrees (safe only -- skips dirty)" -ForegroundColor DarkGray
+        Write-Host "        no args   -- current repo, all worktrees" -ForegroundColor DarkGray
+        Write-Host "        <branch>  -- current repo, just that worktree" -ForegroundColor DarkGray
+        Write-Host "        -Org      -- all repos in org; add -Repo to narrow" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "  NOTES" -ForegroundColor DarkGray
         Write-Host "    org/repo auto-detected from 'git remote get-url origin'" -ForegroundColor DarkGray

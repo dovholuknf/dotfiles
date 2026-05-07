@@ -3,8 +3,24 @@ param(
     [string]$Path = ".",
 
     [Parameter(Position = 1)]
-    [int]$Depth = 1
+    [int]$Depth = 1,
+
+    # roll items below this many MB into a single "[N other items < <MinMB>MB each]" summary row.
+    # default is 1MB so the noise floor is hidden; pass -All to disable, or set explicitly.
+    [int]$MinMB = 1,
+
+    # show only the top N items by size; fold the rest into the summary row.
+    # 0 (default) = unlimited.
+    [int]$Top = 0,
+
+    # show everything -- disables the default 1MB floor and any -Top truncation.
+    [switch]$All
 )
+
+if ($All) {
+    $MinMB = 0
+    $Top   = 0
+}
 
 $Path = (Resolve-Path -LiteralPath $Path).Path
 if ($Path -notmatch '^[A-Za-z]:\\$') {
@@ -131,7 +147,42 @@ $results = foreach ($t in $targets) {
 
 Write-Progress -Activity "Calculating disk usage" -Completed
 
-$results | Sort-Object MB -Descending | Format-Table -AutoSize
+# Sort all results by size. With no filter, reparse rows are kept visible
+# (they're informational). With -Top or -MinMB, they go through the same
+# pipeline and being size 0 they naturally fold into the summary.
+$sorted     = @($results | Sort-Object MB -Descending)
+$filterMode = ($Top -gt 0) -or ($MinMB -gt 0)
+
+if ($filterMode) {
+    $kept   = $sorted
+    $folded = @()
+    if ($Top -gt 0 -and $kept.Count -gt $Top) {
+        $folded += $kept | Select-Object -Skip $Top
+        $kept    = $kept | Select-Object -First $Top
+    }
+    if ($MinMB -gt 0) {
+        $folded += $kept | Where-Object { $_.MB -lt $MinMB }
+        $kept    = $kept | Where-Object { $_.MB -ge $MinMB }
+    }
+} else {
+    $kept   = $sorted
+    $folded = @()
+}
+
+$display = @()
+$display += $kept
+if ($folded.Count -gt 0) {
+    $foldedTotal = ($folded | Measure-Object -Sum MB).Sum
+    $note = if ($MinMB -gt 0) { "$($folded.Count) folded items < ${MinMB}MB each" } else { "$($folded.Count) folded items below top $Top" }
+    $display += [PSCustomObject]@{
+        Path = "[+ $($folded.Count) other items]"
+        GB   = [math]::Round(($foldedTotal / 1024), 2)
+        MB   = [math]::Round($foldedTotal, 2)
+        Note = $note
+    }
+}
+
+$display | Format-Table -AutoSize
 
 if ($script:skippedPaths.Count -gt 0) {
     Write-Host ""

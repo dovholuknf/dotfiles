@@ -1,4 +1,4 @@
-# gwt-session-registry.ps1 — registry of running Claude sessions launched via
+# gwt-session-registry.ps1 -- registry of running Claude sessions launched via
 # gwt / claudeshell. Source from $PROFILE so every spawned shell auto-registers.
 #
 # usage (in $PROFILE):
@@ -6,7 +6,7 @@
 #
 # the spawned shell calls Register-GwtSession at startup; an exit hook removes
 # the entry on clean exit. on reboot or window-close-by-X, entries remain
-# stale — gwt sessions list/restore handles them.
+# stale -- gwt sessions list/restore handles them.
 
 $script:GwtSessionDir = 'D:\worktrees\sessions'
 
@@ -23,7 +23,7 @@ function Register-GwtSession {
     # enough for runas (which has a tight command-line length limit).
     #
     # If -Id is omitted, scans the registry for an entry whose WorktreePath
-    # matches the current cwd and isn't already alive — handy for manually
+    # matches the current cwd and isn't already alive -- handy for manually
     # claiming a session entry from inside an already-running shell.
     [CmdletBinding()]
     param(
@@ -40,16 +40,16 @@ function Register-GwtSession {
             } catch {}
         } | Select-Object -First 1
         if (-not $candidate) {
-            Write-Warning "gwt-session: no entry found for cwd '$cwd' — pass -Id explicitly or check 'gwt sessions'"
+            Write-Warning "gwt-session: no entry found for cwd '$cwd' -- pass -Id explicitly or check 'gwt sessions'"
             return
         }
         $Id = $candidate.Id
-        Write-Host "claiming entry $Id (branch=$($candidate.Branch), window=$($candidate.WindowName))" -ForegroundColor DarkGray
+        Write-Host ("claiming entry {0} (branch={1}, window={2})" -f $Id, $candidate.Branch, $candidate.WindowName) -ForegroundColor DarkGray
     }
 
     $file = Join-Path $script:GwtSessionDir "$Id.json"
     if (-not (Test-Path $file)) {
-        Write-Warning "gwt-session: no pre-written entry at $file — registration skipped"
+        Write-Warning "gwt-session: no pre-written entry at $file -- registration skipped"
         return
     }
 
@@ -75,13 +75,13 @@ function Register-GwtSession {
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path $file -Encoding UTF8
 
     $global:GwtSessionId = $Id
-    # NOTE: no PowerShell.Exiting hook — entries are kept on shell close so
+    # NOTE: no PowerShell.Exiting hook -- entries are kept on shell close so
     # you can decide when to drop them (gwt sessions clean / clean -All).
     # On reboot, the PID becomes invalid and the entry naturally goes STALE.
 }
 
 # Read all session entries. Adds an .Alive boolean based on PID (and StartTime
-# when readable — cross-user process StartTime access is denied by Windows, so
+# when readable -- cross-user process StartTime access is denied by Windows, so
 # we fall back to "process exists" as the liveness signal).
 function Get-GwtSessions {
     _Ensure-GwtSessionDir
@@ -110,6 +110,6 @@ function Get-GwtSessions {
 function Remove-StaleGwtSessions {
     Get-GwtSessions | Where-Object { -not $_.Alive } | ForEach-Object {
         Remove-Item $_.File -Force -ErrorAction SilentlyContinue
-        Write-Host "  removed stale: $($_.Branch) ($($_.WindowName))" -ForegroundColor DarkGray
+        Write-Host ("  removed stale: {0} ({1})" -f $_.Branch, $_.WindowName) -ForegroundColor DarkGray
     }
 }
