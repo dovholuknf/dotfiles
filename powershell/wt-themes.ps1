@@ -215,7 +215,8 @@ function Set-Theme {
             foreach ($k in ($script:WtThemes.Keys | Sort-Object)) {
                 Write-Host "  - $k" -ForegroundColor DarkGray
             }
-            throw "unknown theme: '$Name' -- check your spelling"
+            Write-Host "unknown theme: '$Name' -- check your spelling" -ForegroundColor Red
+            return
         }
         Apply-Theme $script:WtThemes[$Name]
     }

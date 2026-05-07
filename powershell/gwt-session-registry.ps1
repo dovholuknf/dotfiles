@@ -16,6 +16,59 @@ function _Ensure-GwtSessionDir {
     }
 }
 
+function Invoke-GwtSpawn {
+    # All-in-one spawn helper called by the encoded command. Reads the
+    # pre-written session entry, registers PID, applies theme, cds, invokes
+    # claude with --continue and any saved prompt. Keeps the encoded command
+    # tiny so it fits through runas's ~1024-char limit.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Id)
+
+    _Ensure-GwtSessionDir
+    Register-GwtSession -Id $Id
+
+    $file  = Join-Path $script:GwtSessionDir "$Id.json"
+    $entry = Get-Content $file -Raw | ConvertFrom-Json
+
+    # Apply theme based on the saved WindowName.
+    $themeFn = switch ($entry.WindowName) {
+        'active-work'   { 'ActiveWork' }
+        'pull-requests' { 'PullRequests' }
+        'tangent'       { 'Tangent' }
+        'worktrees'     { 'Worktrees' }
+        default         { $null }
+    }
+    if ($themeFn -and (Get-Command $themeFn -ErrorAction SilentlyContinue)) {
+        & $themeFn
+    }
+
+    # cd to the worktree
+    if ($entry.WorktreePath -and (Test-Path $entry.WorktreePath)) {
+        Set-Location $entry.WorktreePath
+    }
+
+    # If NoClaude flag is set on the entry, stop here (claudeshell case).
+    if ($entry.NoClaude) { return }
+
+    # Decide --continue based on existing claude session history at this cwd.
+    $slug    = ((Get-Location).Path -replace '[:\\/]', '-')
+    $projDir = "C:\Users\claude\.claude\projects\$slug"
+    $hasSession = (Test-Path $projDir) -and @(Get-ChildItem $projDir -Filter *.jsonl -ErrorAction SilentlyContinue).Count -gt 0
+
+    $claudeArgs = @()
+    if ($hasSession) {
+        $claudeArgs += '--continue'
+    } elseif ($entry.Branch) {
+        $claudeArgs += '--name'
+        $claudeArgs += $entry.Branch
+    }
+    if ($entry.PromptText) {
+        $claudeArgs += $entry.PromptText
+    }
+
+    if ($claudeArgs.Count) { & claude @claudeArgs } else { & claude }
+}
+
 function Register-GwtSession {
     # Lean form: gwt has already written the session file with metadata. We just
     # patch in this shell's PID + start time + WT_SESSION, then register an exit

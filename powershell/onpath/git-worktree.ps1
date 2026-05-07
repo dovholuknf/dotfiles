@@ -30,6 +30,7 @@ param(
     [string]$From,          # 'new': create branch from this source
     [string]$Org,
     [string]$Repo,
+    [string]$RemoteHost,    # explicit host (e.g. 'github.com', 'bitbucket.org') -- for callers that don't have a git remote to detect from
     [string]$Prompt,
     [string]$SourceRoot    = 'D:\git',
     [string]$WorktreeRoot  = 'D:\worktrees',
@@ -83,11 +84,20 @@ function _HostShort {
 }
 
 function Resolve-RepoContext {
+    # If Org/Repo were passed explicitly, accept an explicit -RemoteHost too (or
+    # default to github.com) -- we don't need to consult a git remote at all.
+    if ($script:Org -and $script:Repo -and -not $script:RemoteHost) {
+        $script:RemoteHost = if ($RemoteHost) { $RemoteHost } else { 'github.com' }
+    }
+
     if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
         $remoteUrl = & git remote get-url origin 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "not inside a git repo ('$(Get-Location)') -- cd into a repo or pass -Org and -Repo"
         }
+        # Mark that we resolved org/repo from cwd's git remote -- the layout
+        # check below only matters in that case.
+        $script:OrgRepoFromCwd = $true
         # accept github, bitbucket, gitlab, custom forges. Capture host + last
         # two path components from any of:
         #   git@host:org/repo(.git)
@@ -111,7 +121,10 @@ function Resolve-RepoContext {
     # Default is to abort -- gwt computes paths from the canonical layout, so a
     # non-canonical cwd often means you'd be operating on the wrong clone.
     # -y bypasses this prompt.
-    if (-not $script:WarnedLayout) {
+    # Layout warning only relevant when org/repo were inferred from cwd. When a
+    # caller (gwt pr <url>, gwt discourse, gwt <bare url>, etc.) set them
+    # explicitly, the cwd doesn't matter.
+    if (-not $script:WarnedLayout -and $script:OrgRepoFromCwd) {
         $cwd = (Get-Location).Path.TrimEnd('\') + '\'
         $sb  = $src.TrimEnd('\')    + '\'
         $wb  = $wtroot.TrimEnd('\') + '\'
@@ -532,6 +545,86 @@ switch ($Command) {
         Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
     }
 
+    'discourse' {
+        # Create a worktree to investigate a discourse topic. Accepts:
+        #   * full URL with id  -- https://host/t/slug/12345
+        #   * URL without id    -- https://host/t/slug   (probes for id via HEAD redirect)
+        #   * bare numeric id   -- 12345                 (assumes openziti.discourse.group)
+        if (-not $Target) { throw "'discourse' requires a discourse topic URL or numeric topic id" }
+        $topicId       = $null
+        $titleSlug     = ''
+        $discourseHost = $null
+
+        if ($Target -match '^\d+$') {
+            $topicId       = $Target
+            $discourseHost = 'openziti.discourse.group'
+            Write-Color "bare topic id -- assuming host openziti.discourse.group" DarkGray
+        } elseif ($Target -match '^https?://(?<dhost>[^/]+).*?/t/(?<slug>[^/]+)/(?<id>\d+)') {
+            $topicId       = $Matches.id
+            $titleSlug     = $Matches.slug
+            $discourseHost = $Matches.dhost
+        } elseif ($Target -match '^https?://(?<dhost>[^/]+).*?/t/(?<slug>[^/]+)/?$') {
+            # URL without an id -- discourse 301-redirects /t/<slug> to /t/<slug>/<id>.
+            $titleSlug     = $Matches.slug
+            $discourseHost = $Matches.dhost
+            Write-Color "no topic id in URL -- probing $Target for redirect..." DarkGray
+            try {
+                $resp = Invoke-WebRequest -Uri $Target -Method Head -ErrorAction Stop
+                $final = $resp.BaseResponse.RequestMessage.RequestUri.AbsoluteUri
+                if ($final -match '/t/[^/]+/(?<id>\d+)') {
+                    $topicId = $Matches.id
+                    Write-Color "  resolved -> topic id $topicId" DarkGray
+                } else {
+                    throw "redirect did not include a numeric topic id (final URL: $final)"
+                }
+            } catch {
+                throw "could not resolve topic id from URL: $($_.Exception.Message)"
+            }
+        } else {
+            throw "expected a discourse topic URL or bare numeric topic id"
+        }
+
+        $orgGuess = ($discourseHost -split '\.')[0]
+
+        $topicLabel = if ($titleSlug) { "$titleSlug ($topicId)" } else { "topic $topicId" }
+        Write-Color "discourse topic: $topicLabel" Cyan
+        Write-Color "discourse host:  $discourseHost" DarkGray
+
+        # Accept either 'org/repo' (default github) or 'host:org/repo'
+        $resp = (Read-Host "target repo (default github, e.g. '$orgGuess/ziti' or 'bitbucket.org:org/repo')").Trim()
+        if (-not $resp) { throw "no repo given -- aborted" }
+
+        $hostPart = 'github.com'
+        $orgRepo  = $resp
+        if ($resp -match '^(?<host>[^:]+):(?<rest>.+)$') {
+            $hostPart = $Matches.host
+            $orgRepo  = $Matches.rest
+        }
+        if ($orgRepo -notmatch '^(?<org>[^/]+)/(?<repo>[^/]+)$') {
+            throw "expected 'org/repo' -- got '$orgRepo'"
+        }
+        $orgPart  = $Matches.org
+        $repoPart = $Matches.repo
+        Write-Color "using $hostPart : $orgPart/$repoPart" Cyan
+
+        $branch = "discourse-$topicId"
+        Write-Color "branch:          $branch" DarkGray
+
+        # Forward to 'new' with explicit host/org/repo so Resolve-RepoContext
+        # doesn't need a cwd-based git remote.
+        $fwd = @{
+            Command    = 'new'
+            Target     = $branch
+            Org        = $orgPart
+            Repo       = $repoPart
+            RemoteHost = $hostPart
+        }
+        if ($y)      { $fwd.y      = $true }
+        if ($Prompt) { $fwd.Prompt = $Prompt }
+        & $PSCommandPath @fwd
+        return
+    }
+
     'twig' {
         if (-not $Target) { throw "'twig' requires a new branch name" }
 
@@ -918,11 +1011,11 @@ switch ($Command) {
             $promptText = if ($Prompt) { $Prompt } else { $state.PromptText }
         } elseif ($y) {
             $window     = 'active-work'
-            $promptText = if ($Prompt) { $Prompt } else { (Get-ClaudePromptPresets -Repo $ctx.Repo -Branch $Target)[0].Text }
+            $promptText = if ($Prompt) { $Prompt } else { (_GetClaudePromptPresets -Repo $ctx.Repo -Branch $Target)[0].Text }
         } else {
             $window = Select-WtWindow
             if ($window -eq '__new__') { $window = $null }
-            $presets      = Get-ClaudePromptPresets -Repo $ctx.Repo -Branch $Target
+            $presets      = _GetClaudePromptPresets -Repo $ctx.Repo -Branch $Target
             $selectedText = if ($Prompt) { $Prompt } else { Select-ClaudePrompt -Repo $ctx.Repo -Branch $Target }
             $selectedName = ($presets | Where-Object { $_.Text -eq $selectedText } | Select-Object -First 1 -ExpandProperty Name)
             if (-not $selectedName) { $selectedName = 'custom' }
@@ -958,12 +1051,12 @@ switch ($Command) {
         $normWt = ($wtPath -replace '/', '\').TrimEnd('\').ToLower()
 
         # Refuse if a session is still alive on this worktree (unless -y/-Force).
-        $sessionsDir = 'D:\worktrees\sessions'
         $procMap = @{}
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
             $procMap[[int]$_.ProcessId] = $_
         }
         $aliveHits = @()
+        $sessionsDir = 'D:\worktrees\sessions'
         if (Test-Path $sessionsDir) {
             Get-ChildItem $sessionsDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
                 try {
@@ -984,32 +1077,10 @@ switch ($Command) {
             return
         }
 
-        # 1. remove the git worktree
         Remove-Worktree -Src $ctx.Src -WtPath $wtPath -AutoConfirm:$y
+        _CleanupWorktreeMetadata $wtPath
 
-        # 2. drop session entries pointing at this worktree
-        if (Test-Path $sessionsDir) {
-            Get-ChildItem $sessionsDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
-                try {
-                    $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
-                    if (-not $e.WorktreePath) { return }
-                    if ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -eq $normWt) {
-                        Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
-                        Write-Color "  dropped session entry: $($_.Name)" DarkGray
-                    }
-                } catch {}
-            }
-        }
-
-        # 3. drop the per-worktree picks state
-        $slug      = ($wtPath -replace '[:\\/]', '-').Trim('-')
-        $stateFile = Join-Path $env:LOCALAPPDATA "gwt\state\$slug.json"
-        if (Test-Path $stateFile) {
-            Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-            Write-Color "  dropped picks state: $stateFile" DarkGray
-        }
-
-        # 4. claude project history -- left in place by default; tell user where to find it
+        # claude project history -- left in place by default; tell user where to find it
         $claudeSlug = ($wtPath -replace '[:\\/]', '-')
         $claudeDir  = "C:\Users\claude\.claude\projects\$claudeSlug"
         if (Test-Path $claudeDir) {
@@ -1032,7 +1103,16 @@ switch ($Command) {
             }
             return
         }
-        $statuses = Get-WorktreeStatuses $ctx.Src | Sort-Object -Property LastCommit -Descending
+        # Fetch + prune so origin/main is fresh before status detection -- otherwise
+        # branches that were merged remotely show ACTIVE instead of PRUNE merged.
+        Write-Color "fetching origin..." DarkGray
+        & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
+
+        $allStatuses = Get-WorktreeStatuses $ctx.Src | Sort-Object -Property LastCommit -Descending
+        # Pin MAIN to the top, everything else in time-sorted order below.
+        $mainEntry = @($allStatuses | Where-Object { $_.Status -eq 'MAIN' })
+        $others    = @($allStatuses | Where-Object { $_.Status -ne 'MAIN' })
+        $statuses  = $mainEntry + $others
 
         # Build a path -> window-name map from alive sessions, so we can mark
         # worktrees that currently have a running claude session and show which
@@ -1069,7 +1149,14 @@ switch ($Command) {
             'worktrees'     = 'DarkGray'
         }
 
+        $printedMain = $false
         foreach ($wt in $statuses) {
+            # Print a divider after the MAIN row to visually separate the main
+            # clone from the worktrees below.
+            if ($printedMain -and $wt.Status -ne 'MAIN') {
+                Write-Host ('    ' + ('-' * 90)) -ForegroundColor DarkGray
+                $printedMain = $false
+            }
             $key   = ($wt.Path -replace '/', '\').TrimEnd('\').ToLower()
             $win   = $aliveWindow[$key]
             $alive = [bool]$win
@@ -1078,6 +1165,7 @@ switch ($Command) {
             $label = $raw.PadRight(16)
             $when  = if ($wt.LastCommitRel) { "({0})" -f $wt.LastCommitRel } else { '' }
             $when  = $when.PadRight(22)
+            if ($wt.Status -eq 'MAIN') { $printedMain = $true }
 
             # leading marker so alive rows stand out at a glance
             if ($alive) { Write-Host "  ● " -NoNewline -ForegroundColor White }
@@ -1202,6 +1290,7 @@ switch ($Command) {
                         if ($ok) {
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
                             Write-Color "                    removed." DarkGray
+                            _CleanupWorktreeMetadata $wt.Path
                         }
                     }
                 }
@@ -1228,7 +1317,10 @@ switch ($Command) {
                 if ([string]::IsNullOrWhiteSpace($dirty)) {
                     Write-Color "  [ORPHAN ] $p" Magenta
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove orphan? (Y/n)")) -or $r -match '^[Yy]$')
-                    if ($ok) { Remove-Item $p -Recurse -Force }
+                    if ($ok) {
+                        Remove-Item $p -Recurse -Force
+                        _CleanupWorktreeMetadata $p
+                    }
                 } else {
                     Write-Color "  [ORPHAN-DIRTY-SKIP] $p" Yellow
                 }
@@ -1254,6 +1346,12 @@ switch ($Command) {
         Write-Host "<branch> [-Prompt <str>] [-y]"
         Write-Host "        create a new worktree branched off the current worktree's HEAD" -ForegroundColor DarkGray
         Write-Host "        (shortcut for 'gwt new <branch> -From <current-branch>')" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt discourse " -NoNewline -ForegroundColor Cyan
+        Write-Host "<discourse-url> [-Prompt <str>] [-y]"
+        Write-Host "        create a worktree to investigate a discourse topic" -ForegroundColor DarkGray
+        Write-Host "        prompts for target repo (default github, accepts 'host:org/repo')" -ForegroundColor DarkGray
+        Write-Host "        branch name: discourse-<topic-id>" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt pr " -NoNewline -ForegroundColor Cyan
         Write-Host "<url-or-number> [-Prompt <str>] [-y]"

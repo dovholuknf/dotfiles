@@ -8,7 +8,7 @@
 #   Confirm-NoAliveSessionAt     -- guard: refuse to double-spawn for the same worktree
 #   Select-WtWindow              -- pick a wt window category interactively
 #   Select-ClaudePrompt          -- pick a starter prompt interactively
-#   Get-ClaudePromptPresets      -- prompt preset list (data)
+#   _GetClaudePromptPresets      -- prompt preset list (data)
 #   Get-ThemeFnForWindow         -- window category -> theme function name
 #   Invoke-GwtHook               -- per-project hook dispatcher
 #   Get-ClaudeShells             -- list registered sessions (alive + stale, deduped)
@@ -29,13 +29,13 @@ $script:GwtSessionDir = 'D:\worktrees\sessions'
 # prompt presets + picker
 # ---------------------------------------------------------------------------
 
-function Get-ClaudePromptPresets {
+function _GetClaudePromptPresets {
     param([string]$Repo, [string]$Branch)
     return ,@(
         [PSCustomObject]@{ Name = 'blank';    Text = $null }
         [PSCustomObject]@{
             Name = 'critique'
-            Text = "critique the changes from this branch ($Branch in $Repo). summarize changes commit by commit and pay attention to risks and critique overall design"
+            Text = "critique the changes from this branch ($Branch in $Repo). pay attention to risks and critique overall design. add a cogent summary of the pr when done"
         }
         [PSCustomObject]@{
             Name = 'continue'
@@ -54,7 +54,7 @@ function Get-ClaudePromptPresets {
 
 function Select-ClaudePrompt {
     param([string]$Repo, [string]$Branch)
-    $presets = Get-ClaudePromptPresets -Repo $Repo -Branch $Branch
+    $presets = _GetClaudePromptPresets -Repo $Repo -Branch $Branch
 
     Write-Host ""
     Write-Color "choose prompt:" DarkGray
@@ -225,22 +225,10 @@ function Open-ClaudeShell {
         if (-not (Confirm-NoAliveSessionAt -Path $Path -Force:$Force)) { return }
     }
 
-    # claude --continue if claude has a prior session for this cwd under the claude user
-    $slug       = ($Path -replace '[:\\/]','-')
-    $projDir    = "C:\Users\claude\.claude\projects\$slug"
-    $hasSession = (Test-Path $projDir) -and @(Get-ChildItem $projDir -Filter *.jsonl -ErrorAction SilentlyContinue).Count -gt 0
-    $contFlag   = if ($hasSession) { ' --continue' } else { '' }
-
-    # only set --name on fresh sessions; --continue carries the existing name forward
-    $nameFlag = if ($hasSession -or [string]::IsNullOrWhiteSpace($Branch)) { '' } else {
-        $escapedName = $Branch -replace '"', '`"'
-        " --name `"$escapedName`""
-    }
-
-    $themeFn     = Get-ThemeFnForWindow -WindowName $WindowName
-    $themePrefix = if ($themeFn) { "$themeFn; " } else { '' }
-
-    # Pre-write the session entry (Pid=0); the spawned shell patches in PID via Register-GwtSession.
+    # Pre-write the session entry. The spawned shell calls Invoke-GwtSpawn,
+    # which reads everything (theme, cwd, prompt, --name, etc.) from this file.
+    # Keeps the encoded command under runas's ~1024-char limit regardless of
+    # how long the prompt is.
     [System.IO.Directory]::CreateDirectory($script:GwtSessionDir) | Out-Null
     $sessionId = if ($ReuseSessionId) { $ReuseSessionId } else { [guid]::NewGuid().ToString() }
     $existingFirst = $null
@@ -269,20 +257,12 @@ function Open-ClaudeShell {
         WindowName        = $WindowName
         PromptText        = $PromptText
         ClaudeSessionName = $Branch
+        NoClaude          = [bool]$NoClaude
     }
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8
 
-    # Source the registry explicitly -- spawned shell may not have our profile
-    $regPrefix = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Register-GwtSession -Id '$sessionId'; "
-
-    if ($NoClaude) {
-        $cmd = "${regPrefix}${themePrefix}Set-Location '$Path'"
-    } elseif ([string]::IsNullOrEmpty($PromptText)) {
-        $cmd = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag"
-    } else {
-        $escaped = $PromptText -replace '"', '`"'
-        $cmd     = "${regPrefix}${themePrefix}Set-Location '$Path'; claude$contFlag$nameFlag `"$escaped`""
-    }
+    # Tiny encoded command: source the registry, then call the all-in-one helper.
+    $cmd = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Invoke-GwtSpawn -Id '$sessionId'"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
 
     if (-not [string]::IsNullOrWhiteSpace($WindowName)) {
@@ -295,7 +275,19 @@ function Open-ClaudeShell {
     } else {
         $runasOut = & runas /user:claude /savecred $wtArgs 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Color "  runas failed (exit $LASTEXITCODE): $runasOut" Red
+            Write-Color "  runas failed (exit $LASTEXITCODE)" Red
+            if ($runasOut) {
+                Write-Color "  output: $runasOut" Red
+            } else {
+                Write-Color "  (no output captured -- often means saved credential missing/expired)" DarkGray
+                Write-Color "  to re-save credential, run interactively once: runas /user:claude /savecred wt.exe" DarkGray
+            }
+            $encLen = $wtArgs.Length
+            Write-Color "  full wt args length: $encLen chars (runas command-line limit ~2048)" DarkGray
+            if ($encLen -gt 1900) {
+                Write-Color "  -> encoded command may be too long; try a shorter -Prompt or -y to skip prompt" Yellow
+            }
+            Write-Color "  to retry with full output visible: re-run gwt with -Verbose" DarkGray
         }
     }
     $script:LastSpawnedSessionId = $sessionId
@@ -306,7 +298,7 @@ function Confirm-OpenOrCd {
 
     if ($AutoOpen) {
         $promptText = if ($PromptOverride) { $PromptOverride }
-                      else { (Get-ClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text }
+                      else { (_GetClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text }
         Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work'
         return
     }
