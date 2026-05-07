@@ -239,6 +239,35 @@ function Remove-Worktree {
     }
 }
 
+function _CleanupWorktreeMetadata {
+    # Drops the session-registry entries and picks state file for a removed
+    # worktree. Used by both 'rm' and 'prune' so the cleanup is consistent.
+    # Claude project history is left in place (separate user-controlled concern).
+    param([string]$WtPath)
+    $sessionDir = 'D:\worktrees\sessions'
+    $normWt = ($WtPath -replace '/', '\').TrimEnd('\').ToLower()
+
+    if (Test-Path $sessionDir) {
+        Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+                if (-not $e.WorktreePath) { return }
+                if ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -eq $normWt) {
+                    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+                    Write-Color "    dropped session entry: $($_.Name)" DarkGray
+                }
+            } catch {}
+        }
+    }
+
+    $slug      = ($WtPath -replace '[:\\/]', '-').Trim('-')
+    $stateFile = Join-Path $env:LOCALAPPDATA "gwt\state\$slug.json"
+    if (Test-Path $stateFile) {
+        Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+        Write-Color "    dropped picks state" DarkGray
+    }
+}
+
 function Get-GwtStatePath {
     param([string]$WorktreePath)
     $slug = ($WorktreePath -replace '[:\\/]', '-').Trim('-')

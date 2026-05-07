@@ -455,6 +455,28 @@ function Restore-ClaudeShell {
     }
 }
 
+function Remove-StaleClaudeShells {
+    # Drops session entries whose process is no longer alive. Default: prompts
+    # for confirmation. -Force skips. Returns nothing; prints what was removed.
+    param([switch]$Force)
+    $stale = @(Get-ClaudeShells -Object | Where-Object { -not $_.Alive })
+    if (-not $stale.Count) { Write-Color "no stale sessions to drop" DarkGray; return }
+
+    Write-Color "stale sessions ($($stale.Count)):" DarkGray
+    foreach ($s in $stale) {
+        Write-Color ("  {0,-13}  {1,-30}  @ {2}" -f $s.WindowName, $s.Branch, $s.WorktreePath) DarkGray
+    }
+    Write-Host ""
+    if (-not $Force) {
+        $resp = Read-Host "drop these $($stale.Count) entries? (y/N)"
+        if (-not ($resp -match '^[Yy]$')) { Write-Color "aborted" Yellow; return }
+    }
+    foreach ($s in $stale) {
+        Remove-Item $s.File -Force -ErrorAction SilentlyContinue
+        Write-Color "  removed: $($s.Branch)" DarkGray
+    }
+}
+
 function _Find-AncestorPwsh {
     # Walk the parent-process chain up from $PID looking for the first pwsh/powershell
     # ancestor (the wt tab hosting claude). The hook itself runs as a child pwsh of
