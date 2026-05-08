@@ -163,8 +163,6 @@ function toclaude() {
         claude@localhost `
         -i "C:\Users\clint\.ssh\id_ed25519"
 }
-# claudeshell is defined AFTER claude-shell.ps1 is dot-sourced (below) so it
-# wins the case-insensitive name battle against the ClaudeShell dispatcher.
 function systemshell() {
     # sudo psexec.exe -i -s -d wt.exe
     # sudo psexec.exe -i -s -d powershell
@@ -307,19 +305,5 @@ add-dotagents
 . $env:DOTFILES\powershell\gwt-session-registry.ps1
 . $env:DOTFILES\powershell\claude-shell.ps1
 
-# Defined after claude-shell.ps1 so this overrides the ClaudeShell dispatcher
-# (PowerShell function names are case-insensitive -- last one defined wins).
-function claudeshell() {
-    param([switch]$Force)
-    $cwd = (Get-Location).Path
-    $window = _SelectWtWindow
-    if ($window -eq '__new__') { $window = $null }
-    _OpenClaudeShell -Path $cwd `
-                     -Repo (Split-Path $cwd -Leaf) `
-                     -Branch 'claudeshell' `
-                     -WindowName $window `
-                     -NoClaude `
-                     -Force:$Force
-}
 
 # comment

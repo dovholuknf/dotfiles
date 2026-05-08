@@ -633,7 +633,7 @@ function ClaudeShell {
     #               parameters as the underlying spawn helper.
     param(
         [Parameter(Position=0)]
-        [ValidateSet('list','restore','remove','open')]
+        [ValidateSet('list','restore','remove','open','shell','help')]
         [string]$Action,
 
         # list
@@ -658,7 +658,8 @@ function ClaudeShell {
         [switch]$ShowRunas
     )
 
-    if (-not $Action) {
+    if (-not $Action) { $Action = 'shell' }
+    if ($Action -eq 'help') {
         Write-Host ""
         Write-Color "usage: ClaudeShell <action> [options]" White
         Write-Host ""
@@ -705,6 +706,17 @@ function ClaudeShell {
         }
         'remove' {
             _RemoveStaleClaudeShells -Force:$Force -All:$All
+        }
+        'shell' {
+            $cwd = (Get-Location).Path
+            $window = if ($PSBoundParameters.ContainsKey('WindowName')) { $WindowName } else { _SelectWtWindow }
+            if ($window -eq '__new__') { $window = $null }
+            _OpenClaudeShell -Path $cwd `
+                             -Repo (Split-Path $cwd -Leaf) `
+                             -Branch 'claudeshell' `
+                             -WindowName $window `
+                             -NoClaude `
+                             -Force:$Force
         }
         'open' {
             $openParams = @{}
