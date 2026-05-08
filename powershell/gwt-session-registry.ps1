@@ -4,7 +4,7 @@
 # usage (in $PROFILE):
 #   . "$PSScriptRoot\gwt-session-registry.ps1"
 #
-# the spawned shell calls Register-GwtSession at startup; an exit hook removes
+# the spawned shell calls _RegisterGwtSession at startup; an exit hook removes
 # the entry on clean exit. on reboot or window-close-by-X, entries remain
 # stale -- gwt sessions list/restore handles them.
 
@@ -16,7 +16,7 @@ function _Ensure-GwtSessionDir {
     }
 }
 
-function Invoke-GwtSpawn {
+function _InvokeGwtSpawn {
     # All-in-one spawn helper called by the encoded command. Reads the
     # pre-written session entry, registers PID, applies theme, cds, invokes
     # claude with --continue and any saved prompt. Keeps the encoded command
@@ -25,7 +25,7 @@ function Invoke-GwtSpawn {
     param([Parameter(Mandatory)] [string]$Id)
 
     _Ensure-GwtSessionDir
-    Register-GwtSession -Id $Id
+    _RegisterGwtSession -Id $Id
 
     $file  = Join-Path $script:GwtSessionDir "$Id.json"
     $entry = Get-Content $file -Raw | ConvertFrom-Json
@@ -69,7 +69,7 @@ function Invoke-GwtSpawn {
     if ($claudeArgs.Count) { & claude @claudeArgs } else { & claude }
 }
 
-function Register-GwtSession {
+function _RegisterGwtSession {
     # Lean form: gwt has already written the session file with metadata. We just
     # patch in this shell's PID + start time + WT_SESSION, then register an exit
     # hook to delete the file on clean exit. Keeps the encoded command short
@@ -136,7 +136,7 @@ function Register-GwtSession {
 # Read all session entries. Adds an .Alive boolean based on PID (and StartTime
 # when readable -- cross-user process StartTime access is denied by Windows, so
 # we fall back to "process exists" as the liveness signal).
-function Get-GwtSessions {
+function _GetGwtSessions {
     _Ensure-GwtSessionDir
     Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
         try {
@@ -160,8 +160,8 @@ function Get-GwtSessions {
 }
 
 # Drop entries whose PID/StartTime don't match (stale).
-function Remove-StaleGwtSessions {
-    Get-GwtSessions | Where-Object { -not $_.Alive } | ForEach-Object {
+function _RemoveStaleGwtSessions {
+    _GetGwtSessions | Where-Object { -not $_.Alive } | ForEach-Object {
         Remove-Item $_.File -Force -ErrorAction SilentlyContinue
         Write-Host ("  removed stale: {0} ({1})" -f $_.Branch, $_.WindowName) -ForegroundColor DarkGray
     }

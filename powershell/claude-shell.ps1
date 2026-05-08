@@ -2,19 +2,12 @@
 # claudeshell. Source from $PROFILE so the helpers are available everywhere;
 # git-worktree.ps1 also dot-sources this so script invocations work.
 #
-# Public functions:
-#   Open-ClaudeShell             -- spawn a wt tab as the claude user, register session, theme
-#   Confirm-OpenOrCd             -- "open in claude? (Y/n)" prompt -> Open-ClaudeShell
-#   Confirm-NoAliveSessionAt     -- guard: refuse to double-spawn for the same worktree
-#   Select-WtWindow              -- pick a wt window category interactively
-#   Select-ClaudePrompt          -- pick a starter prompt interactively
-#   _GetClaudePromptPresets      -- prompt preset list (data)
-#   Get-ThemeFnForWindow         -- window category -> theme function name
-#   Invoke-GwtHook               -- per-project hook dispatcher
-#   Get-ClaudeShells             -- list registered sessions (alive + stale, deduped)
-#   Get-RecoverableClaudeShells  -- stale entries whose worktree path still exists
-#   Restore-ClaudeShell          -- relaunch one entry by id or pipeline object
-#   Restore-AllClaudeShells      -- relaunch every recoverable entry
+# Public functions (visible in tab completion):
+#   ClaudeShell           -- dispatcher: list / restore / remove / open
+#   Select-ClaudePrompt   -- pick a starter prompt interactively
+#
+# Everything else is prefixed with '_' to keep it out of tab completion while
+# remaining callable internally.
 
 if (-not (Get-Command Write-Color -ErrorAction SilentlyContinue)) {
     function Write-Color {
@@ -90,7 +83,7 @@ function Select-ClaudePrompt {
 # wt window picker
 # ---------------------------------------------------------------------------
 
-function Select-WtWindow {
+function _SelectWtWindow {
     $presets = @(
         [PSCustomObject]@{ Name = 'active-work';   Desc = 'attach to "active-work" window' }
         [PSCustomObject]@{ Name = 'pull-requests'; Desc = 'attach to "pull-requests" window' }
@@ -135,7 +128,7 @@ function Select-WtWindow {
 # theme + hook
 # ---------------------------------------------------------------------------
 
-function Get-ThemeFnForWindow {
+function _GetThemeFnForWindow {
     param([string]$WindowName)
     switch ($WindowName) {
         'active-work'   { 'ActiveWork' }
@@ -146,28 +139,40 @@ function Get-ThemeFnForWindow {
     }
 }
 
-function Invoke-GwtHook {
-    # Looks for a per-project hook function named 'gwt_hook_<org>_<repo>'
-    # (non-alphanumerics replaced with '_') and calls it with the worktree path.
+function _InvokeGwtHook {
+    # Looks for a per-repo hook script at:
+    #   D:\worktrees\hooks\<host>\<org>\<repo>\worktree.ps1
+    # where <host> is the short host name ('github', 'bitbucket', 'gitlab', ...).
+    # Invokes it with -WorktreePath, -Org, -Repo, -RemoteHost so the script can
+    # do whatever (copy CMakeUserPresets.json, drop a .env, symlink config, ...).
     param(
         [Parameter(Mandatory)] [string]$Org,
         [Parameter(Mandatory)] [string]$Repo,
-        [Parameter(Mandatory)] [string]$WorktreePath
+        [Parameter(Mandatory)] [string]$WorktreePath,
+        [string]$RemoteHost = 'github.com'
     )
-    $sanOrg  = $Org  -replace '[^a-zA-Z0-9]', '_'
-    $sanRepo = $Repo -replace '[^a-zA-Z0-9]', '_'
-    $name    = "gwt_hook_${sanOrg}_${sanRepo}"
-    $fn = Get-Command $name -CommandType Function -ErrorAction SilentlyContinue
-    if (-not $fn) { return }
-    Write-Color "running hook: $name" DarkGray
-    try { & $fn -WorktreePath $WorktreePath } catch { Write-Color "hook '$name' failed: $_" Yellow }
+    $hostShort = switch ($RemoteHost) {
+        'github.com'    { 'github'    }
+        'bitbucket.org' { 'bitbucket' }
+        'gitlab.com'    { 'gitlab'    }
+        default         { $RemoteHost }
+    }
+    $hookFile = Join-Path 'D:\worktrees\hooks' (Join-Path $hostShort (Join-Path $Org (Join-Path $Repo 'worktree.ps1')))
+    if (-not (Test-Path $hookFile)) { return }
+    Write-Color "running hook: $hookFile" DarkGray
+    try {
+        & pwsh -NoProfile -File $hookFile -WorktreePath $WorktreePath -Org $Org -Repo $Repo -RemoteHost $RemoteHost
+        if ($LASTEXITCODE -ne 0) { Write-Color "hook exited $LASTEXITCODE" Yellow }
+    } catch {
+        Write-Color "hook '$hookFile' failed: $_" Yellow
+    }
 }
 
 # ---------------------------------------------------------------------------
 # alive-session guard
 # ---------------------------------------------------------------------------
 
-function Confirm-NoAliveSessionAt {
+function _ConfirmNoAliveSessionAt {
     # Returns $true to proceed, $false to abort. Prints the warning + prompt
     # when an alive session matches the given path. -Force skips.
     param(
@@ -208,7 +213,7 @@ function Confirm-NoAliveSessionAt {
 # spawn
 # ---------------------------------------------------------------------------
 
-function Open-ClaudeShell {
+function _OpenClaudeShell {
     param(
         [string]$Path,
         [string]$Repo,
@@ -222,10 +227,10 @@ function Open-ClaudeShell {
     )
 
     if (-not $ReuseSessionId) {
-        if (-not (Confirm-NoAliveSessionAt -Path $Path -Force:$Force)) { return }
+        if (-not (_ConfirmNoAliveSessionAt -Path $Path -Force:$Force)) { return }
     }
 
-    # Pre-write the session entry. The spawned shell calls Invoke-GwtSpawn,
+    # Pre-write the session entry. The spawned shell calls _InvokeGwtSpawn,
     # which reads everything (theme, cwd, prompt, --name, etc.) from this file.
     # Keeps the encoded command under runas's ~1024-char limit regardless of
     # how long the prompt is.
@@ -262,7 +267,7 @@ function Open-ClaudeShell {
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8
 
     # Tiny encoded command: source the registry, then call the all-in-one helper.
-    $cmd = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; Invoke-GwtSpawn -Id '$sessionId'"
+    $cmd = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; _InvokeGwtSpawn -Id '$sessionId'"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
 
     if (-not [string]::IsNullOrWhiteSpace($WindowName)) {
@@ -293,23 +298,23 @@ function Open-ClaudeShell {
     $script:LastSpawnedSessionId = $sessionId
 }
 
-function Confirm-OpenOrCd {
+function _ConfirmOpenOrCd {
     param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen)
 
     if ($AutoOpen) {
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { (_GetClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text }
-        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work'
+        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work'
         return
     }
 
     $resp = Read-Host "open in claude? (Y/n)"
     if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
-        $window = Select-WtWindow
+        $window = _SelectWtWindow
         if ($window -eq '__new__') { $window = $null }
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { Select-ClaudePrompt -Repo $Repo -Branch $Branch }
-        Open-ClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window
+        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window
     } else {
         $cd = Read-Host "cd there? (Y/n)"
         if ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$') {
@@ -368,7 +373,7 @@ function _Format-ClaudeShells {
     }
 }
 
-function Get-ClaudeShells {
+function _GetClaudeShells {
     # By default, prints a colored tabular view. Pass -Object to return the raw
     # PSCustomObjects (Branch, Repo, WindowName, WorktreePath, Pid, Alive,
     # FirstSpawnedAt, LastSpawnedAt, File, etc.) for piping/scripting.
@@ -415,17 +420,17 @@ function Get-ClaudeShells {
     _Format-ClaudeShells -Sessions $deduped
 }
 
-function Get-RecoverableClaudeShells {
+function _GetRecoverableClaudeShells {
     # Stale entries whose worktree path still exists on disk -- candidates for restore.
     # Default: tabular view. -Object returns raw objects.
     param([switch]$Object)
-    $r = Get-ClaudeShells -Object | Where-Object { -not $_.Alive -and (Test-Path $_.WorktreePath) }
+    $r = _GetClaudeShells -Object | Where-Object { -not $_.Alive -and (Test-Path $_.WorktreePath) }
     if ($Object) { return $r }
     _Format-ClaudeShells -Sessions $r
 }
 
-function Restore-ClaudeShell {
-    # Relaunches a single session. Pass a session object (from Get-ClaudeShells) on
+function _RestoreClaudeShell {
+    # Relaunches a single session. Pass a session object (from _GetClaudeShells) on
     # the pipeline, or pass -Id explicitly.
     [CmdletBinding(DefaultParameterSetName = 'Pipeline')]
     param(
@@ -434,36 +439,44 @@ function Restore-ClaudeShell {
         [Parameter(ParameterSetName='ById')] [string]$Id
     )
     process {
-        $entry = if ($Id) { Get-ClaudeShells | Where-Object Id -eq $Id | Select-Object -First 1 } else { $InputObject }
+        $entry = if ($Id) { _GetClaudeShells -Object | Where-Object Id -eq $Id | Select-Object -First 1 } else { $InputObject }
         if (-not $entry) { Write-Color "no session entry to restore" Yellow; return }
         if (-not (Test-Path $entry.WorktreePath)) {
             Write-Color "  skip (worktree gone): $($entry.Branch) @ $($entry.WorktreePath)" Yellow
             return
         }
         Write-Color "  relaunch: $($entry.Branch) -> window=$($entry.WindowName)" Green
-        Open-ClaudeShell -Path $entry.WorktreePath -Repo $entry.Repo -Branch $entry.Branch `
+        _OpenClaudeShell -Path $entry.WorktreePath -Repo $entry.Repo -Branch $entry.Branch `
                          -PromptText $entry.PromptText -WindowName $entry.WindowName `
                          -ReuseSessionId $entry.Id
     }
 }
 
-function Remove-StaleClaudeShells {
+function _RemoveStaleClaudeShells {
     # Drops session entries whose process is no longer alive. Default: prompts
-    # for confirmation. -Force skips. Returns nothing; prints what was removed.
-    param([switch]$Force)
-    $stale = @(Get-ClaudeShells -Object | Where-Object { -not $_.Alive })
-    if (-not $stale.Count) { Write-Color "no stale sessions to drop" DarkGray; return }
+    # for confirmation. -Force skips. With -All, also drops alive entries.
+    # Returns nothing; prints what was removed.
+    param([switch]$Force, [switch]$All)
+    $all = @(_GetClaudeShells -Object)
+    $targets = if ($All) { $all } else { @($all | Where-Object { -not $_.Alive }) }
+    if (-not $targets.Count) {
+        if ($All) { Write-Color "no sessions to drop" DarkGray }
+        else      { Write-Color "no stale sessions to drop" DarkGray }
+        return
+    }
 
-    Write-Color "stale sessions ($($stale.Count)):" DarkGray
-    foreach ($s in $stale) {
-        Write-Color ("  {0,-13}  {1,-30}  @ {2}" -f $s.WindowName, $s.Branch, $s.WorktreePath) DarkGray
+    $label = if ($All) { 'sessions' } else { 'stale sessions' }
+    Write-Color "$label ($($targets.Count)):" DarkGray
+    foreach ($s in $targets) {
+        $aliveTag = if ($s.Alive) { ' [ALIVE]' } else { '' }
+        Write-Color ("  {0,-13}  {1,-30}  @ {2}{3}" -f $s.WindowName, $s.Branch, $s.WorktreePath, $aliveTag) DarkGray
     }
     Write-Host ""
     if (-not $Force) {
-        $resp = Read-Host "drop these $($stale.Count) entries? (y/N)"
+        $resp = Read-Host "drop these $($targets.Count) entries? (y/N)"
         if (-not ($resp -match '^[Yy]$')) { Write-Color "aborted" Yellow; return }
     }
-    foreach ($s in $stale) {
+    foreach ($s in $targets) {
         Remove-Item $s.File -Force -ErrorAction SilentlyContinue
         Write-Color "  removed: $($s.Branch)" DarkGray
     }
@@ -482,7 +495,7 @@ function _Find-AncestorPwsh {
     return $null
 }
 
-function Register-OrClaim-ClaudeSession {
+function _RegisterOrClaimClaudeSession {
     # Called by the claude SessionStart hook. Either claims (and updates) an
     # existing entry that matches WT_SESSION or cwd, or creates a fresh entry
     # for ad-hoc claude launches that didn't go through gwt/claudeshell.
@@ -558,7 +571,7 @@ function Register-OrClaim-ClaudeSession {
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8
 }
 
-function Unregister-ClaudeSession {
+function _UnregisterClaudeSession {
     # Called by the claude SessionEnd hook. Best-effort: marks the matching
     # entry as stale by zeroing the PID. We keep the entry so 'gwt sessions list'
     # still shows what was there -- run 'gwt sessions clean' to drop them.
@@ -576,10 +589,10 @@ function Unregister-ClaudeSession {
     }
 }
 
-function Restore-AllClaudeShells {
+function _RestoreAllClaudeShells {
     # Relaunch every recoverable (stale + worktree-still-exists) entry.
     # Polls each newly-spawned entry's Pid until it patches -- skips arbitrary sleeps.
-    $stale = @(Get-RecoverableClaudeShells -Object)
+    $stale = @(_GetRecoverableClaudeShells -Object)
     if (-not $stale.Count) { Write-Color "no recoverable sessions" DarkGray; return }
     Write-Color "found $($stale.Count) recoverable session(s)" Cyan
     foreach ($s in $stale) { Write-Color "  $($s.Branch) -> $($s.WindowName)" DarkGray }
@@ -589,7 +602,7 @@ function Restore-AllClaudeShells {
         Write-Color "aborted" Yellow; return
     }
     foreach ($s in $stale) {
-        Restore-ClaudeShell -InputObject $s
+        _RestoreClaudeShell -InputObject $s
         $newId = $script:LastSpawnedSessionId
         if ($newId) {
             $newFile = Join-Path $script:GwtSessionDir "$newId.json"
@@ -601,6 +614,108 @@ function Restore-AllClaudeShells {
                 } catch {}
                 Start-Sleep -Milliseconds 100
             }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# public dispatcher
+# ---------------------------------------------------------------------------
+
+function ClaudeShell {
+    # Single public entry point. Subcommands:
+    #   list     -- show registered sessions (default: alive + stale, deduped)
+    #               flags: -Recoverable (stale + worktree-exists only), -Object (raw objects)
+    #   restore  -- relaunch sessions. -All for every recoverable entry, or -Id <guid> for one.
+    #   remove   -- drop session entries. Default: stale only. -All also drops alive entries.
+    #               -Force skips the confirmation prompt.
+    #   open     -- spawn a wt tab as the claude user (themed, registered). Accepts the same
+    #               parameters as the underlying spawn helper.
+    param(
+        [Parameter(Position=0)]
+        [ValidateSet('list','restore','remove','open')]
+        [string]$Action,
+
+        # list
+        [switch]$Recoverable,
+        [switch]$Object,
+
+        # restore + remove
+        [switch]$All,
+        [string]$Id,
+
+        # open
+        [string]$Path,
+        [string]$Repo,
+        [string]$Branch,
+        [string]$PromptText,
+        [string]$WindowName,
+        [string]$ReuseSessionId,
+        [switch]$NoClaude,
+
+        # shared
+        [switch]$Force,
+        [switch]$ShowRunas
+    )
+
+    if (-not $Action) {
+        Write-Host ""
+        Write-Color "usage: ClaudeShell <action> [options]" White
+        Write-Host ""
+        Write-Color "  ClaudeShell list [-Recoverable] [-Object]" DarkGray
+        Write-Color "      show registered sessions (default: alive + stale)." DarkGray
+        Write-Color "      -Recoverable    only stale entries whose worktree still exists" DarkGray
+        Write-Color "      -Object         emit raw objects (for piping)" DarkGray
+        Write-Host ""
+        Write-Color "  ClaudeShell restore [-All | -Id <guid>]" DarkGray
+        Write-Color "      relaunch sessions. -All restores every recoverable entry;" DarkGray
+        Write-Color "      -Id <guid> restores one." DarkGray
+        Write-Host ""
+        Write-Color "  ClaudeShell remove [-All] [-Force]" DarkGray
+        Write-Color "      drop session entries. Default: stale only." DarkGray
+        Write-Color "      -All     also drop alive sessions" DarkGray
+        Write-Color "      -Force   skip the confirmation prompt" DarkGray
+        Write-Host ""
+        Write-Color "  ClaudeShell open -Path <p> [-Repo <r>] [-Branch <b>] [-PromptText <t>]" DarkGray
+        Write-Color "                   [-WindowName <w>] [-ReuseSessionId <id>]" DarkGray
+        Write-Color "                   [-NoClaude] [-Force] [-Verbose]" DarkGray
+        Write-Color "      spawn a themed wt tab as the claude user." DarkGray
+        Write-Host ""
+        return
+    }
+
+    switch ($Action) {
+        'list' {
+            if ($Recoverable) {
+                _GetRecoverableClaudeShells -Object:$Object
+            } else {
+                _GetClaudeShells -Object:$Object
+            }
+        }
+        'restore' {
+            if ($All) {
+                _RestoreAllClaudeShells
+            } elseif ($Id) {
+                _RestoreClaudeShell -Id $Id
+            } else {
+                Write-Color "ClaudeShell restore: pass -All or -Id <guid>" Yellow
+                Write-Color "  -All       relaunch every recoverable entry" DarkGray
+                Write-Color "  -Id <g>    relaunch a single entry by id" DarkGray
+            }
+        }
+        'remove' {
+            _RemoveStaleClaudeShells -Force:$Force -All:$All
+        }
+        'open' {
+            $openParams = @{}
+            foreach ($k in 'Path','Repo','Branch','PromptText','WindowName','ReuseSessionId') {
+                if ($PSBoundParameters.ContainsKey($k)) { $openParams[$k] = $PSBoundParameters[$k] }
+            }
+            foreach ($k in 'Force','NoClaude') {
+                if ($PSBoundParameters.ContainsKey($k)) { $openParams[$k] = $PSBoundParameters[$k] }
+            }
+            if ($PSBoundParameters.ContainsKey('ShowRunas')) { $openParams['Verbose'] = $ShowRunas }
+            _OpenClaudeShell @openParams
         }
     }
 }

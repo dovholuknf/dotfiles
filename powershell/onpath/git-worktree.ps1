@@ -427,7 +427,7 @@ switch ($Command) {
                 Remove-Worktree -Src $ctx.Src -WtPath $existingWt -AutoConfirm
             } else {
                 Write-Color "ready: $existingWt" Green
-                Confirm-OpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+                _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
                 return
             }
         }
@@ -497,8 +497,8 @@ switch ($Command) {
         $wtPath = Join-Path $ctx.WtRoot $Target
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
-        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
-        Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+        _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
     }
 
     'pr' {
@@ -533,7 +533,7 @@ switch ($Command) {
                 Remove-Worktree -Src $ctx.Src -WtPath $existingWt -AutoConfirm
             } else {
                 Write-Color "ready: $existingWt" Green
-                Confirm-OpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
                 return
             }
         }
@@ -541,8 +541,8 @@ switch ($Command) {
         Sync-PrBranch $ctx.Src $branch
         Ensure-Worktree $ctx.Src $wtPath $branch
         Write-Color "ready: $wtPath" Green
-        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
-        Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+        _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
     }
 
     'discourse' {
@@ -700,8 +700,8 @@ switch ($Command) {
             }
         }
 
-        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
-        Confirm-OpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+        _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
         return
     }
 
@@ -860,11 +860,11 @@ switch ($Command) {
                     }
                     Write-Color "  relaunch: $($s.Branch) -> window=$($s.WindowName)" Green
 
-                    # Open-ClaudeShell pre-writes a fresh entry with Pid=0 and stashes
+                    # _OpenClaudeShell pre-writes a fresh entry with Pid=0 and stashes
                     # the new session id in $script:LastSpawnedSessionId. The spawned
-                    # shell calls Register-GwtSession which patches Pid > 0, so polling
+                    # shell calls _RegisterGwtSession which patches Pid > 0, so polling
                     # that file replaces the arbitrary Start-Sleep we used to do here.
-                    Open-ClaudeShell -Path $s.WorktreePath -Repo $s.Repo -Branch $s.Branch `
+                    _OpenClaudeShell -Path $s.WorktreePath -Repo $s.Repo -Branch $s.Branch `
                                      -PromptText $s.PromptText -WindowName $s.WindowName `
                                      -ReuseSessionId $s.Id
                     $newId = $script:LastSpawnedSessionId
@@ -991,9 +991,9 @@ switch ($Command) {
         if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing -- run 'gwt prune'" }
 
         # Active-session check FIRST, before any state/picks prompts.
-        if (-not (Confirm-NoAliveSessionAt -Path $wtPath)) { return }
+        if (-not (_ConfirmNoAliveSessionAt -Path $wtPath)) { return }
 
-        Invoke-GwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath
+        _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
 
         $state = if ($Reselect) { $null } else { Load-GwtState $wtPath }
 
@@ -1013,7 +1013,7 @@ switch ($Command) {
             $window     = 'active-work'
             $promptText = if ($Prompt) { $Prompt } else { (_GetClaudePromptPresets -Repo $ctx.Repo -Branch $Target)[0].Text }
         } else {
-            $window = Select-WtWindow
+            $window = _SelectWtWindow
             if ($window -eq '__new__') { $window = $null }
             $presets      = _GetClaudePromptPresets -Repo $ctx.Repo -Branch $Target
             $selectedText = if ($Prompt) { $Prompt } else { Select-ClaudePrompt -Repo $ctx.Repo -Branch $Target }
@@ -1028,9 +1028,9 @@ switch ($Command) {
             }
         }
 
-        # -Force here suppresses Open-ClaudeShell's redundant alive-session guard;
+        # -Force here suppresses _OpenClaudeShell's redundant alive-session guard;
         # we already prompted at the top of this block.
-        Open-ClaudeShell -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptText $promptText -WindowName $window -Force
+        _OpenClaudeShell -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptText $promptText -WindowName $window -Force
     }
 
     'cd' {

@@ -218,6 +218,7 @@ function Set-Theme {
             Write-Host "unknown theme: '$Name' -- check your spelling" -ForegroundColor Red
             return
         }
+        $script:_PendingThemeName = $Name
         Apply-Theme $script:WtThemes[$Name]
     }
 }
@@ -285,6 +286,24 @@ function Apply-Theme([hashtable]$t) {
 
     $global:WtLabel      = $t.label
     $global:CurrentTheme = $t
+    if ($script:_PendingThemeName) {
+        $global:WtThemeName = $script:_PendingThemeName
+        $script:_PendingThemeName = $null
+    }
+}
+
+function Get-Theme {
+    [CmdletBinding()] param([switch]$Quiet)
+    if (-not $global:CurrentTheme) {
+        if (-not $Quiet) { Write-Host "no theme applied (try Set-Theme <name> or Show-Theme)" -ForegroundColor DarkGray }
+        return $null
+    }
+    $name = if ($global:WtThemeName) { $global:WtThemeName } else { '<unknown>' }
+    if (-not $Quiet) {
+        Write-Host ("theme: {0}" -f $name) -ForegroundColor Cyan
+        if ($global:WtLabel) { Write-Host ("label: {0}" -f $global:WtLabel) -ForegroundColor DarkGray }
+    }
+    return $name
 }
 
 function Reset-Theme {
@@ -454,10 +473,10 @@ $theme_tangent = @{
 
 # ── shortcut commands ─────────────────────────────────────────────────────────
 
-function ActiveWork   { Apply-Theme $theme_active_work }
-function PullRequests { Apply-Theme $theme_pull_requests }
-function Tangent      { Apply-Theme $theme_tangent }
-function Worktrees    { Apply-Theme $theme_worktrees }
+function ActiveWork   { $script:_PendingThemeName = 'active-work';   Apply-Theme $theme_active_work }
+function PullRequests { $script:_PendingThemeName = 'pull-requests'; Apply-Theme $theme_pull_requests }
+function Tangent      { $script:_PendingThemeName = 'tangent';       Apply-Theme $theme_tangent }
+function Worktrees    { $script:_PendingThemeName = 'worktrees';     Apply-Theme $theme_worktrees }
 
 # Registry for Set-Theme '<name>' lookups.
 # Bonus themes -- registered for `Set-Theme '<name>'` lookup but no convenience

@@ -13,6 +13,7 @@ $env:DOTAGENTS="${env:GH_DOVH}\dotagents"
 $env:DOTFILES_PWSH="${env:DOTFILES}\powershell"
 $env:ON_PATH="${env:DOTFILES_PWSH}\onpath"
 $env:ORIG_PATH=$env:PATH
+$env:DOTAGENTS_SCRIPTS="${env:DOTAGENTS}\scripts"
 $env:PATH="${env:ON_PATH};$env:PATH;$env:BB_DOV_ROOT\dev_stuff\helper-scripts\windows"
 $env:NF_ROOT="${env:OZ_ROOT}\nf"
 
@@ -88,6 +89,9 @@ function update-path {
 function add-linux_commands { update-path -EnvVarName LINUX_COMMANDS -First }
 function remove-linux_commands { update-path -EnvVarName LINUX_COMMANDS -Remove }
 
+function add-dotagents { update-path -EnvVarName DOTAGENTS_SCRIPTS -First }
+function remove-dotagents { update-path -EnvVarName DOTAGENTS_SCRIPTS -Remove }
+
 function add-clion_tools {
     update-path -EnvVarName CLION_MINGW -First
     update-path -EnvVarName CLION_CMAKE -First
@@ -159,21 +163,8 @@ function toclaude() {
         claude@localhost `
         -i "C:\Users\clint\.ssh\id_ed25519"
 }
-function claudeshell() {
-    # Open a themed wt tab as the claude user at the current cwd, registered for
-    # session tracking. Does NOT launch claude itself (use gwt new/claude/twig
-    # for that). Implementation lives in claude-shell.ps1.
-    param([switch]$Force)
-    $cwd = (Get-Location).Path
-    $window = Select-WtWindow
-    if ($window -eq '__new__') { $window = $null }
-    Open-ClaudeShell -Path $cwd `
-                     -Repo (Split-Path $cwd -Leaf) `
-                     -Branch 'claudeshell' `
-                     -WindowName $window `
-                     -NoClaude `
-                     -Force:$Force
-}
+# claudeshell is defined AFTER claude-shell.ps1 is dot-sourced (below) so it
+# wins the case-insensitive name battle against the ClaudeShell dispatcher.
 function systemshell() {
     # sudo psexec.exe -i -s -d wt.exe
     # sudo psexec.exe -i -s -d powershell
@@ -309,10 +300,26 @@ add-go_current
 add-doxygen
 add-dotnet
 add-linux_commands
+add-dotagents
 
 
 . $env:DOTFILES\powershell\wt-themes.ps1
 . $env:DOTFILES\powershell\gwt-session-registry.ps1
 . $env:DOTFILES\powershell\claude-shell.ps1
+
+# Defined after claude-shell.ps1 so this overrides the ClaudeShell dispatcher
+# (PowerShell function names are case-insensitive -- last one defined wins).
+function claudeshell() {
+    param([switch]$Force)
+    $cwd = (Get-Location).Path
+    $window = _SelectWtWindow
+    if ($window -eq '__new__') { $window = $null }
+    _OpenClaudeShell -Path $cwd `
+                     -Repo (Split-Path $cwd -Leaf) `
+                     -Branch 'claudeshell' `
+                     -WindowName $window `
+                     -NoClaude `
+                     -Force:$Force
+}
 
 # comment

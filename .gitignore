@@ -61,6 +61,7 @@ ConsoleHost_history.txt
 .DS_Store
 Thumbs.db
 desktop.ini
+*.stackdump
 
 # --- local-only overrides ---
 *.local
