@@ -14,6 +14,8 @@ $env:DOTFILES_PWSH="${env:DOTFILES}\powershell"
 $env:ON_PATH="${env:DOTFILES_PWSH}\onpath"
 $env:ORIG_PATH=$env:PATH
 $env:DOTAGENTS_SCRIPTS="${env:DOTAGENTS}\scripts"
+$env:PYTHON_HOME="${env:LOCALAPPDATA}\Programs\Python\Python313"
+$env:PYTHON_SCRIPTS="${env:PYTHON_HOME}\Scripts"
 $env:PATH="${env:ON_PATH};$env:PATH;$env:BB_DOV_ROOT\dev_stuff\helper-scripts\windows"
 $env:NF_ROOT="${env:OZ_ROOT}\nf"
 
@@ -78,6 +80,9 @@ function update-path {
     if ($Remove) {
         $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne $value }) -join ';'
     } else {
+        # Dedupe first: drop any existing copies (case-insensitive) before adding,
+        # so re-sourcing $PROFILE doesn't pile up duplicates.
+        $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -ne $value) }) -join ';'
         if ($First) {
             $env:PATH = "$value;$env:PATH"
         } else {
@@ -86,11 +91,41 @@ function update-path {
     }
 }
 
+function show-path {
+    # Print $env:PATH entries one-per-line. -Sort alphabetizes; default is
+    # source order so you can see precedence.
+    param([switch]$Sort)
+    $entries = $env:PATH -split ';' | Where-Object { $_ }
+    if ($Sort) { $entries | Sort-Object } else { $entries }
+}
+
+function dedupe-path {
+    # Drop empty + duplicate entries from $env:PATH while preserving order.
+    # Normalizes for comparison: collapses '\\' -> '\', strips trailing '\',
+    # case-insensitive. The first occurrence's original spelling is kept.
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $kept = foreach ($e in ($env:PATH -split ';')) {
+        if (-not $e) { continue }
+        $key = ($e -replace '\\\\','\').TrimEnd('\')
+        if ($seen.Add($key)) { $e }
+    }
+    $env:PATH = $kept -join ';'
+}
+
 function add-linux_commands { update-path -EnvVarName LINUX_COMMANDS -First }
 function remove-linux_commands { update-path -EnvVarName LINUX_COMMANDS -Remove }
 
 function add-dotagents { update-path -EnvVarName DOTAGENTS_SCRIPTS -First }
 function remove-dotagents { update-path -EnvVarName DOTAGENTS_SCRIPTS -Remove }
+
+function add-python {
+    update-path -EnvVarName PYTHON_HOME    -First
+    update-path -EnvVarName PYTHON_SCRIPTS -First
+}
+function remove-python {
+    update-path -EnvVarName PYTHON_HOME    -Remove
+    update-path -EnvVarName PYTHON_SCRIPTS -Remove
+}
 
 function add-clion_tools {
     update-path -EnvVarName CLION_MINGW -First
@@ -299,6 +334,8 @@ add-doxygen
 add-dotnet
 add-linux_commands
 add-dotagents
+add-python
+dedupe-path
 
 
 . $env:DOTFILES\powershell\wt-themes.ps1

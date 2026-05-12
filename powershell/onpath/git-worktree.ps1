@@ -35,9 +35,11 @@ param(
     [string]$SourceRoot    = 'D:\git',
     [string]$WorktreeRoot  = 'D:\worktrees',
     [switch]$y,
+    [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
     [switch]$NoAgentSetup,  # skip the post-create dotagents CLAUDE.md symlink step
     [switch]$All,           # 'sessions clean -All' also drops alive entries (default = stale only)
+    [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
     [switch]$Help
 )
 
@@ -110,11 +112,14 @@ function Resolve-RepoContext {
         } else {
             throw "could not parse host/org/repo from remote URL: $remoteUrl -- try passing -Org and -Repo explicitly"
         }
-        Write-Color "detected: $($script:RemoteHost) $($script:Org)/$($script:Repo)" Cyan
     }
     $hostShort = _HostShort $script:RemoteHost
     $src       = Join-Path (Join-Path (Join-Path $SourceRoot   $hostShort) $script:Org) $script:Repo
     $wtroot    = Join-Path (Join-Path (Join-Path $WorktreeRoot $hostShort) $script:Org) $script:Repo
+    if (-not $script:_DetectedLogged) {
+        Write-Color "detected: $($script:RemoteHost)/$($script:Org)/$($script:Repo) @ $src" Cyan
+        $script:_DetectedLogged = $true
+    }
 
     # Layout check: if cwd doesn't fit the canonical <SourceRoot>\<host>\<org>\<repo>
     # or <WorktreeRoot>\<host>\<org>\<repo>\* pattern, warn and prompt for confirmation.
@@ -132,17 +137,7 @@ function Resolve-RepoContext {
         $inSrc = $cwd.StartsWith($sb, $cmp)
         $inWt  = $cwd.StartsWith($wb, $cmp)
         if (-not ($inSrc -or $inWt)) {
-            Write-Color "warning: cwd doesn't fit the canonical gwt layout" Yellow
-            Write-Color "  cwd:       $((Get-Location).Path)" DarkGray
-            Write-Color "  expected:  $src" DarkGray
-            Write-Color "  or under:  $wtroot\<branch>" DarkGray
-            Write-Color "  gwt will use the canonical paths above, NOT your cwd." DarkGray
-            if (-not $y) {
-                $resp = Read-Host "proceed using canonical paths? (y/N)"
-                if (-not ($resp -match '^[Yy]$')) {
-                    throw "aborted -- cd to the canonical clone first, or pass -y to override"
-                }
-            }
+            Write-Color "warning: cwd doesn't fit the canonical gwt layout -- using canonical path $src" Yellow
         }
         $script:WarnedLayout = $true
     }
@@ -306,89 +301,116 @@ function Save-GwtState {
 
 
 # Returns worktree info objects: Branch, Path, Status, Reason
-# Status: MAIN | ACTIVE | ACTIVE-NO-REMOTE | PRUNE | DIRTY-MERGED
+# Status: MAIN | ACTIVE | ACTIVE-NO-REMOTE | PRUNE | DIRTY
 
 function Get-WorktreeStatuses {
     param([string]$Src)
-    $lines   = & git -C $Src worktree list --porcelain 2>&1
-    $srcNorm = $Src.Replace('\','/').ToLower()
-    $cur     = $null
-    $results = @()
-
+    # Parse `git worktree list --porcelain` into (path, branch) pairs.
+    $lines = & git -C $Src worktree list --porcelain 2>&1
+    $pairs = @()
+    $cur   = $null
     foreach ($line in $lines) {
-        if ($line -match '^worktree\s+(.+)$') { $cur = $Matches[1]; continue }
+        if ($line -match '^worktree\s+(.+)$')      { $cur = $Matches[1]; continue }
         if ($line -match '^branch refs/heads/(.+)$') {
-            $b      = $Matches[1]
-            $isMain = ($cur.Replace('\','/').ToLower() -eq $srcNorm)
-            $status = $null
-            $reason = $null
+            $pairs += [PSCustomObject]@{ Path = $cur; Branch = $Matches[1] }
+        }
+    }
 
-            if ($isMain) {
-                $status = 'MAIN'
-            } elseif (-not (Test-Path $cur)) {
-                $status = 'PRUNE'
-                $reason = 'missing'
-            } else {
-                $isDirty = -not [string]::IsNullOrWhiteSpace((& git -C $cur status --porcelain 2>&1 | Out-String).Trim())
+    $srcNorm = $Src.Replace('\','/').ToLower()
 
-                # distinguish "never had upstream" from "upstream was deleted"
-                & git -C $Src rev-parse --abbrev-ref "${b}@{upstream}" 2>&1 | Out-Null
-                $hasUpstreamConfig = $LASTEXITCODE -eq 0
+    # Batch fetch last-commit-date for every branch in ONE git call (saves N forks).
+    $commitMap = @{}
+    $raw = & git -C $Src for-each-ref --format='%(refname:short)|%(committerdate:iso-strict)|%(committerdate:relative)' refs/heads/ 2>$null
+    foreach ($r in $raw) {
+        $p = $r.Split('|', 3)
+        if ($p.Count -eq 3) { $commitMap[$p[0]] = @{ Iso = $p[1]; Rel = $p[2] } }
+    }
 
-                if (-not $hasUpstreamConfig) {
-                    & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
-                    if ($LASTEXITCODE -eq 0) {
-                        $status = 'PRUNE'
-                        $reason = 'merged'
-                    } else {
-                        $status = 'ACTIVE-NO-REMOTE'
-                    }
+    # Parallelize per-worktree status work (each one spawns 2-4 git processes).
+    $results = $pairs | ForEach-Object -ThrottleLimit 8 -Parallel {
+        $b   = $_.Branch
+        $cur = $_.Path
+        $Src     = $using:Src
+        $srcNorm = $using:srcNorm
+
+        $isMain = ($cur.Replace('\','/').ToLower() -eq $srcNorm)
+        $status = $null
+        $reason = $null
+
+        if ($isMain) {
+            $status = 'MAIN'
+        } elseif (-not (Test-Path $cur)) {
+            $status = 'PRUNE'; $reason = 'missing'
+        } else {
+            $porc = (& git -C $cur status --porcelain 2>&1 | Out-String).Trim()
+            $isDirty = -not [string]::IsNullOrWhiteSpace($porc)
+            # Distinguish "only untracked files" from "tracked changes".
+            # All `??` lines = nothing in the index/working-tree has been modified;
+            # the worktree just has extra files lying around.
+            $onlyUntracked = $false
+            if ($isDirty) {
+                $nonUntracked = @($porc -split "`r?`n" | Where-Object { $_ -and ($_ -notmatch '^\?\?') })
+                $onlyUntracked = ($nonUntracked.Count -eq 0)
+            }
+            $dirtyLabel  = if ($onlyUntracked) { 'UNTRACKED-ONLY' } else { 'DIRTY' }
+            $dirtyReason = if ($onlyUntracked) { 'untracked files only' } else { 'has local changes' }
+
+            & git -C $Src rev-parse --abbrev-ref "${b}@{upstream}" 2>&1 | Out-Null
+            $hasUpstreamConfig = $LASTEXITCODE -eq 0
+
+            if (-not $hasUpstreamConfig) {
+                & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
+                $atOrBehindMain = $LASTEXITCODE -eq 0
+
+                if ($isDirty) {
+                    $status = $dirtyLabel
+                    $reason = if ($atOrBehindMain) { "no commits yet, $dirtyReason" } else { $dirtyReason }
+                } elseif ($atOrBehindMain) {
+                    $status = 'PRUNE'; $reason = 'no commits, at main'
                 } else {
-                    & git -C $Src rev-parse --verify "origin/$b" 2>&1 | Out-Null
-                    $remoteExists = $LASTEXITCODE -eq 0
+                    $status = 'ACTIVE-NO-REMOTE'; $reason = 'no upstream, has unpushed commits'
+                }
+            } else {
+                & git -C $Src rev-parse --verify "origin/$b" 2>&1 | Out-Null
+                $remoteExists = $LASTEXITCODE -eq 0
 
-                    if (-not $remoteExists) {
-                        $status = if ($isDirty) { 'DIRTY-MERGED' } else { 'PRUNE' }
-                        $reason = if ($isDirty) { 'remote gone, has local changes' } else { 'gone' }
+                if (-not $remoteExists) {
+                    if ($isDirty) { $status = $dirtyLabel; $reason = "remote gone, $dirtyReason" }
+                    else          { $status = 'PRUNE';     $reason = 'gone' }
+                } else {
+                    & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
+                    $isMerged = $LASTEXITCODE -eq 0
+
+                    if ($isDirty) {
+                        $status = $dirtyLabel
+                        $reason = if ($isMerged) { "merged, $dirtyReason" } else { $dirtyReason }
+                    } elseif ($isMerged) {
+                        $status = 'PRUNE'; $reason = 'merged'
                     } else {
-                        & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
-                        $isMerged = $LASTEXITCODE -eq 0
-
-                        if ($isMerged) {
-                            if ($isDirty) {
-                                $status = 'DIRTY-MERGED'
-                                $reason = 'merged, has local changes'
-                            } else {
-                                $status = 'PRUNE'
-                                $reason = 'merged'
-                            }
-                        } else {
-                            $status = 'ACTIVE'
-                        }
+                        $status = 'ACTIVE'; $reason = 'has upstream, not merged'
                     }
                 }
             }
+        }
 
-            # last commit on this branch (ISO so we can sort; relative so we can display)
-            $lcIso = $null; $lcRel = $null; $lcDate = [datetime]::MinValue
-            $lcRaw = (& git -C $Src log -1 --format='%cI|%cr' "refs/heads/$b" 2>$null | Out-String).Trim()
-            if ($lcRaw -and $lcRaw.Contains('|')) {
-                $parts = $lcRaw.Split('|', 2)
-                $lcIso = $parts[0]; $lcRel = $parts[1]
-                [datetime]::TryParse($lcIso, [ref]$lcDate) | Out-Null
-            }
+        $commitInfo = ($using:commitMap)[$b]
+        $lcDate = [datetime]::MinValue
+        $lcRel  = $null
+        if ($commitInfo) {
+            $lcRel = $commitInfo.Rel
+            [datetime]::TryParse($commitInfo.Iso, [ref]$lcDate) | Out-Null
+        }
 
-            $results += [PSCustomObject]@{
-                Branch    = $b
-                Path      = $cur
-                Status    = $status
-                Reason    = $reason
-                LastCommit = $lcDate
-                LastCommitRel = $lcRel
-            }
+        [PSCustomObject]@{
+            Branch        = $b
+            Path          = $cur
+            Status        = $status
+            Reason        = $reason
+            LastCommit    = $lcDate
+            LastCommitRel = $lcRel
         }
     }
-    return $results
+    return @($results)
 }
 
 # ── URL shorthand ─────────────────────────────────────────────────────────────
@@ -590,9 +612,14 @@ switch ($Command) {
         Write-Color "discourse topic: $topicLabel" Cyan
         Write-Color "discourse host:  $discourseHost" DarkGray
 
-        # Accept either 'org/repo' (default github) or 'host:org/repo'
-        $resp = (Read-Host "target repo (default github, e.g. '$orgGuess/ziti' or 'bitbucket.org:org/repo')").Trim()
-        if (-not $resp) { throw "no repo given -- aborted" }
+        # Accept either 'org/repo' (default github) or 'host:org/repo'.
+        # Empty input defaults to github/openziti/ziti.
+        $defaultRepo = 'openziti/ziti'
+        $resp = (Read-Host "target repo (default '$defaultRepo', also accepts 'bitbucket.org:org/repo')").Trim()
+        if (-not $resp) {
+            $resp = $defaultRepo
+            Write-Color "no repo given -- defaulting to $defaultRepo" DarkGray
+        }
 
         $hostPart = 'github.com'
         $orgRepo  = $resp
@@ -973,7 +1000,7 @@ switch ($Command) {
                     Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean' to drop stale dupes" DarkGray
                 }
                 Write-Color "  gwt sessions restore   relaunch all stale sessions" DarkGray
-                Write-Color "  gwt sessions clean     drop stale entries without relaunching" DarkGray
+                Write-Color "  gwt sessions clean     drop stale entries (incl. duplicates hidden above) without relaunching" DarkGray
             }
         }
     }
@@ -1034,10 +1061,26 @@ switch ($Command) {
     }
 
     'cd' {
-        if (-not $Target) { throw "'cd' requires a branch name" }
+        if (-not $Target) { throw "'cd' requires a branch or worktree dir name" }
         $ctx    = Resolve-RepoContext
         $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
-        if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
+        if (-not $wtPath) {
+            # Fall back to matching by worktree directory name (case-insensitive).
+            # Useful when the branch name differs from the folder name, or when
+            # case got typed wrong.
+            $lines = & git -C $ctx.Src worktree list --porcelain 2>&1
+            foreach ($line in $lines) {
+                if ($line -match '^worktree\s+(.+)$') {
+                    $candidate = $Matches[1]
+                    if ((Split-Path $candidate -Leaf) -ieq $Target) {
+                        $wtPath = $candidate
+                        Write-Color "matched by dir name (branch differs): $candidate" DarkGray
+                        break
+                    }
+                }
+            }
+        }
+        if (-not $wtPath) { throw "no worktree for branch or dir '$Target' in $($ctx.Org)/$($ctx.Repo)" }
         if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing -- run 'gwt prune'" }
         # print ONLY the path to stdout -- the profile's gwt wrapper captures this and Set-Locations it.
         # Write-Color uses Write-Host which bypasses the pipeline, so detection banners are fine.
@@ -1105,8 +1148,12 @@ switch ($Command) {
         }
         # Fetch + prune so origin/main is fresh before status detection -- otherwise
         # branches that were merged remotely show ACTIVE instead of PRUNE merged.
-        Write-Color "fetching origin..." DarkGray
-        & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
+        if ($NoFetch) {
+            Write-Color "skipping fetch (-NoFetch)" DarkGray
+        } else {
+            Write-Color "fetching origin @ $($ctx.Src)..." DarkGray
+            & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
+        }
 
         $allStatuses = Get-WorktreeStatuses $ctx.Src | Sort-Object -Property LastCommit -Descending
         # Pin MAIN to the top, everything else in time-sorted order below.
@@ -1136,11 +1183,15 @@ switch ($Command) {
         }
 
         $statusColorMap = @{
-            'MAIN'             = 'DarkGray'
-            'ACTIVE'           = 'Green'
-            'ACTIVE-NO-REMOTE' = 'Cyan'
-            'PRUNE'            = 'Red'
-            'DIRTY-MERGED'     = 'Yellow'
+            'MAIN'              = 'DarkGray'
+            'ACTIVE'            = 'Green'
+            'ACTIVE-NO-REMOTE'  = 'Cyan'
+            'PRUNE'             = 'Red'
+            'DIRTY'             = 'Yellow'
+            'UNTRACKED-ONLY'    = 'DarkYellow'
+            'ORPHAN'            = 'Magenta'
+            'ORPHAN-DIRTY'      = 'Magenta'
+            'ORPHAN-NO-GIT'     = 'Red'
         }
         $windowColorMap = @{
             'active-work'   = 'Green'
@@ -1161,19 +1212,27 @@ switch ($Command) {
             $win   = $aliveWindow[$key]
             $alive = [bool]$win
             $statusColor = $statusColorMap[$wt.Status]
-            $raw   = if ($wt.Status -eq 'PRUNE' -and $wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
-            $label = $raw.PadRight(16)
-            $when  = if ($wt.LastCommitRel) { "({0})" -f $wt.LastCommitRel } else { '' }
-            $when  = $when.PadRight(22)
+            $whenRel = $wt.LastCommitRel
+            if ($whenRel) {
+                $whenRel = $whenRel `
+                    -replace ' seconds? ago$', 's ago' `
+                    -replace ' minutes? ago$', 'min ago' `
+                    -replace ' hours? ago$',   'h ago' `
+                    -replace ' days? ago$',    'd ago' `
+                    -replace ' weeks? ago$',   'w ago' `
+                    -replace ' months? ago$',  'mo ago' `
+                    -replace ' years? ago$',   'y ago'
+            }
+            $when  = if ($whenRel) { "($whenRel)" } else { '' }
             if ($wt.Status -eq 'MAIN') { $printedMain = $true }
 
             # leading marker so alive rows stand out at a glance
             if ($alive) { Write-Host "  ● " -NoNewline -ForegroundColor White }
             else        { Write-Host "    " -NoNewline }
 
-            # status block (colored by status)
-            Write-Host "[$label] " -NoNewline -ForegroundColor $statusColor
-            Write-Host "$when " -NoNewline -ForegroundColor DarkGray
+            # status block padded to align bracket width across all rows
+            $statusPad = $wt.Status.PadRight(16)
+            Write-Host "[$statusPad] " -NoNewline -ForegroundColor $statusColor
 
             # branch (white if alive, else status color)
             $branchColor = if ($alive) { 'White' } else { $statusColor }
@@ -1185,18 +1244,59 @@ switch ($Command) {
                 Write-Host "[$win] " -NoNewline -ForegroundColor $wColor
             }
 
-            Write-Host "@ $($wt.Path)" -ForegroundColor DarkGray
+            if ($wt.Status -eq 'MAIN') {
+                # One-line for MAIN: include date inline, squeezed
+                $whenSep = if ($when) { "$when " } else { '' }
+                Write-Host "$whenSep@ $($wt.Path)" -ForegroundColor DarkGray
+            } else {
+                Write-Host "@ $($wt.Path)" -ForegroundColor DarkGray
+                # Second line: (date) reason -- indent under branch column (4 + "[" + 16 + "] " = 23)
+                $detail = (@($when, $wt.Reason) | Where-Object { $_ }) -join ' '
+                if ($detail) {
+                    Write-Color ("{0}{1}" -f (' ' * 23), $detail) $statusColor
+                }
+            }
+        }
 
-            if ($wt.Status -eq 'DIRTY-MERGED' -and $wt.Reason) {
-                Write-Color "                                           $($wt.Reason)" $statusColor
+        # Orphan sweep: directories under the worktree root that git no longer
+        # tracks. Mirrors the same logic 'gwt prune' uses, but read-only here.
+        if (Test-Path $ctx.WtRoot) {
+            $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
+            Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $p     = $_.FullName
+                $pNorm = $p.Replace('\','/').ToLower()
+                if ($registered -contains $pNorm) { return }
+                $dirty   = (& git -C $p status --porcelain 2>&1 | Out-String).Trim()
+                $oStatus = if ([string]::IsNullOrWhiteSpace($dirty)) {
+                    'ORPHAN'
+                } elseif ($dirty -match '^fatal:') {
+                    'ORPHAN-NO-GIT'
+                } else {
+                    'ORPHAN-DIRTY'
+                }
+                $oColor  = if ($statusColorMap[$oStatus]) { $statusColorMap[$oStatus] } else { 'Red' }
+                $oReason = switch ($oStatus) {
+                    'ORPHAN-DIRTY'  { 'has uncommitted changes -- skip on prune' }
+                    'ORPHAN-NO-GIT' { 'no .git linkage -- not a working tree anymore' }
+                    default         { 'no git registration -- prunable' }
+                }
+                Write-Host "    " -NoNewline
+                Write-Host "[$($oStatus.PadRight(16))] " -NoNewline -ForegroundColor $oColor
+                Write-Host (Split-Path $p -Leaf) -NoNewline -ForegroundColor $oColor
+                Write-Host " @ $($p.Replace('\','/'))" -ForegroundColor DarkGray
+                Write-Color ("{0}{1}" -f (' ' * 23), $oReason) $oColor
             }
         }
     }
 
     'update' {
         $ctx = Resolve-RepoContext
-        Write-Color "fetching origin..." DarkGray
-        & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
+        if ($NoFetch) {
+            Write-Color "skipping fetch (-NoFetch)" DarkGray
+        } else {
+            Write-Color "fetching origin @ $($ctx.Src)..." DarkGray
+            & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
+        }
 
         $statuses = Get-WorktreeStatuses $ctx.Src
 
@@ -1233,6 +1333,77 @@ switch ($Command) {
         }
     }
 
+    { $_ -in 'changes','status' } {
+        # For every worktree with uncommitted local changes (DIRTY or ORPHAN-DIRTY),
+        # print the branch + path + `git status --short` output. Quick way to see
+        # what's lurking across all your worktrees in this repo.
+        $ctx = Resolve-RepoContext
+        $statuses = Get-WorktreeStatuses $ctx.Src
+
+        # Build registered-path set so we can also scan orphan dirs.
+        $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
+        $rows = @()
+        foreach ($wt in $statuses) {
+            if ($Target -and $wt.Branch -ne $Target -and (Split-Path $wt.Path -Leaf) -ne $Target) { continue }
+            if ($wt.Status -in @('DIRTY','UNTRACKED-ONLY','ACTIVE-NO-REMOTE')) {
+                $rows += [PSCustomObject]@{ Label = $wt.Status; Branch = $wt.Branch; Path = $wt.Path }
+            }
+        }
+        # Skip the orphan sweep when filtering to a specific branch -- orphans by
+        # definition aren't tied to a branch in git's view.
+        if (-not $Target -and (Test-Path $ctx.WtRoot)) {
+            Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $p     = $_.FullName
+                $pNorm = $p.Replace('\','/').ToLower()
+                if ($registered -contains $pNorm) { return }
+                $dirty = (& git -C $p status --porcelain 2>&1 | Out-String).Trim()
+                if ([string]::IsNullOrWhiteSpace($dirty)) { return }
+                # If git itself bailed (no .git), it's an orphan-no-git -- different beast.
+                $label = if ($dirty -match '^fatal:') { 'ORPHAN-NO-GIT' } else { 'ORPHAN-DIRTY' }
+                $rows += [PSCustomObject]@{ Label = $label; Branch = (Split-Path $p -Leaf); Path = $p }
+            }
+        }
+
+        if (-not $rows) {
+            if ($Target) {
+                Write-Color "no dirty/unpushed changes for '$Target' in $($ctx.Src)" DarkGray
+            } else {
+                Write-Color "no dirty worktrees in $($ctx.Src)" DarkGray
+            }
+            return
+        }
+
+        foreach ($r in $rows) {
+            $color = switch ($r.Label) {
+                'ORPHAN-DIRTY'     { 'Magenta' }
+                'ORPHAN-NO-GIT'    { 'Red' }
+                'ACTIVE-NO-REMOTE' { 'Cyan' }
+                'UNTRACKED-ONLY'   { 'DarkYellow' }
+                default            { 'Yellow' }
+            }
+            Write-Host ""
+            Write-Color "[$($r.Label.PadRight(16))] $($r.Branch) @ $($r.Path)" $color
+            if ($r.Label -eq 'ORPHAN-NO-GIT') {
+                Write-Color "    no .git linkage -- not a working tree anymore (safe to inspect/delete)" $color
+                continue
+            }
+            if ($r.Label -eq 'ACTIVE-NO-REMOTE') {
+                # Show unpushed commits (vs origin/main) -- they're the "changes" here.
+                $log = (& git -C $r.Path log --oneline origin/main..HEAD 2>&1 | Out-String).TrimEnd()
+                if ($log) {
+                    foreach ($line in ($log -split "`r?`n")) { Write-Host "    $line" -ForegroundColor $color }
+                } else {
+                    Write-Host "    (no commits beyond origin/main)" -ForegroundColor $color
+                }
+                continue
+            }
+            $short = (& git -C $r.Path status --short 2>&1 | Out-String).TrimEnd()
+            if ($short) {
+                foreach ($line in ($short -split "`r?`n")) { Write-Host "    $line" -ForegroundColor $color }
+            }
+        }
+    }
+
     'prune' {
         $reposToProcess = @()
 
@@ -1258,37 +1429,73 @@ switch ($Command) {
         $branchFilter = if (-not $orgExplicit -and $Target) { $Target } else { $null }
 
         foreach ($repoPath in $reposToProcess) {
-            Write-Color "`nrepo: $repoPath" Cyan
-            & git -C $repoPath fetch origin --prune 2>&1 | Out-Null
+            # In multi-repo mode (Org/Repo iteration), print a per-repo header;
+            # in single-repo mode the 'detected:' line at the top already shows it.
+            if ($reposToProcess.Count -gt 1) {
+                Write-Color "`nrepo: $repoPath" Cyan
+            }
+            if (-not $NoFetch) {
+                & git -C $repoPath fetch origin --prune 2>&1 | Out-Null
+            }
 
             $statuses   = Get-WorktreeStatuses $repoPath
             $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
 
+            $filterMatchedWorktree = $false
             if ($branchFilter) {
                 $filtered = $statuses | Where-Object { $_.Branch -eq $branchFilter }
-                if (-not $filtered) {
-                    Write-Color "  no worktree for branch '$branchFilter' in this repo" Yellow
-                    continue
+                if ($filtered) {
+                    $statuses = $filtered
+                    $filterMatchedWorktree = $true
+                } else {
+                    # Don't bail -- the name might still match an orphan dir below.
+                    $statuses = @()
                 }
-                $statuses = $filtered
             }
 
-            foreach ($wt in $statuses) {
-                $raw   = if ($wt.Status -eq 'PRUNE' -and $wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
+            # Only show PRUNE candidates (and orphans below). Skip MAIN/ACTIVE/
+            # ACTIVE-NO-REMOTE/DIRTY -- they're not getting touched, no need to
+            # narrate them. If a branch filter was passed and yields only a
+            # non-prunable hit, say so explicitly.
+            # -Force opens the door to DIRTY / UNTRACKED-ONLY too. For safety,
+            # -Force without -y still requires the per-row Y/n prompt.
+            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','UNTRACKED-ONLY') } else { @('PRUNE') }
+            $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses })
+            if ($branchFilter -and -not $prunable) {
+                $hint = if (-not $Force) { " (re-run with -Force to delete a DIRTY/UNTRACKED-ONLY worktree)" } else { '' }
+                Write-Color "  '$branchFilter' is not in a prunable state -- nothing to do$hint" DarkGray
+            }
+            foreach ($wt in $prunable) {
+                $raw   = if ($wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
                 $label = $raw.PadRight(16)
                 switch ($wt.Status) {
-                    'MAIN'             { Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" DarkGray }
-                    'ACTIVE'           { Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Green }
-                    'ACTIVE-NO-REMOTE' { Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Cyan }
-                    'DIRTY-MERGED'     {
-                        Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Yellow
-                        Write-Color "                    $($wt.Reason) -- keeping, review before removing" Yellow
-                    }
                     'PRUNE'            {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Red
                         $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                         if ($ok) {
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
+                            if (Test-Path $wt.Path) {
+                                Remove-Item $wt.Path -Recurse -Force -ErrorAction SilentlyContinue
+                            }
+                            Write-Color "                    removed." DarkGray
+                            _CleanupWorktreeMetadata $wt.Path
+                        }
+                    }
+                    { $_ -in 'DIRTY','UNTRACKED-ONLY' } {
+                        # Reached only when -Force is set. Default the prompt to N because
+                        # we're about to destroy real local content.
+                        $rowColor = if ($wt.Status -eq 'UNTRACKED-ONLY') { 'DarkYellow' } else { 'Yellow' }
+                        Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" $rowColor
+                        Write-Color "                    $($wt.Reason)" $rowColor
+                        $kind = if ($wt.Status -eq 'UNTRACKED-ONLY') { 'UNTRACKED-ONLY' } else { 'DIRTY' }
+                        $ok = $y -or (($r = Read-Host "  -Force: delete $kind worktree and lose local content? (y/N)") -match '^[Yy]$')
+                        if ($ok) {
+                            & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
+                            # `worktree remove --force` can leave the directory if it
+                            # contains ignored/untracked files. Stomp it explicitly.
+                            if (Test-Path $wt.Path) {
+                                Remove-Item $wt.Path -Recurse -Force -ErrorAction SilentlyContinue
+                            }
                             Write-Color "                    removed." DarkGray
                             _CleanupWorktreeMetadata $wt.Path
                         }
@@ -1298,20 +1505,27 @@ switch ($Command) {
 
             & git -C $repoPath worktree prune 2>&1 | Out-Null
 
-            # orphan sweep is a whole-repo pass; skip when caller is scoped to one branch.
-            if ($branchFilter) { continue }
-
-            # orphan directories in worktree root that git no longer knows about
+            # orphan directories in worktree root that git no longer knows about.
+            # When a branch filter is set, only consider the orphan whose leaf name
+            # matches it -- that way 'gwt prune <name>' still finds an orphan-by-name.
             $orgPart  = if ($Org) { $Org } else { Split-Path (Split-Path $repoPath -Parent) -Leaf }
             $repoPart = Split-Path $repoPath -Leaf
             $wtRoot   = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $orgPart) $repoPart
 
-            if (-not (Test-Path $wtRoot)) { continue }
+            if (-not (Test-Path $wtRoot)) {
+                if ($branchFilter -and -not $filterMatchedWorktree) {
+                    Write-Color "  no worktree or orphan named '$branchFilter' in this repo" Yellow
+                }
+                continue
+            }
 
-            Get-ChildItem $wtRoot -Directory | ForEach-Object {
-                $p     = $_.FullName
+            $orphanMatchFound = $false
+            foreach ($d in (Get-ChildItem $wtRoot -Directory -ErrorAction SilentlyContinue)) {
+                $p     = $d.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
-                if ($registered -contains $pNorm) { return }
+                if ($registered -contains $pNorm) { continue }
+                if ($branchFilter -and ($d.Name -ine $branchFilter)) { continue }
+                $orphanMatchFound = $true
 
                 $dirty = (& git -C $p status --porcelain 2>&1 | Out-String).Trim()
                 if ([string]::IsNullOrWhiteSpace($dirty)) {
@@ -1321,9 +1535,22 @@ switch ($Command) {
                         Remove-Item $p -Recurse -Force
                         _CleanupWorktreeMetadata $p
                     }
-                } else {
-                    Write-Color "  [ORPHAN-DIRTY-SKIP] $p" Yellow
+                } elseif ($dirty -match '^fatal:') {
+                    Write-Color "  [ORPHAN-NO-GIT] $p" Red
+                    Write-Color "                    no .git linkage -- not a working tree anymore" Red
+                    $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
+                    if ($ok) {
+                        Remove-Item $p -Recurse -Force
+                        Write-Color "                    removed." DarkGray
+                        _CleanupWorktreeMetadata $p
+                    }
                 }
+                # ORPHAN-DIRTY entries are silently skipped -- 'gwt list' shows them
+                # if you want to see what's lurking; no need to repeat here.
+            }
+
+            if ($branchFilter -and -not $filterMatchedWorktree -and -not $orphanMatchFound) {
+                Write-Color "  no worktree or orphan named '$branchFilter' in this repo" Yellow
             }
         }
     }
@@ -1408,7 +1635,12 @@ switch ($Command) {
         Write-Host "          [ACTIVE          ] -- upstream exists, not yet merged (clean or dirty)" -ForegroundColor Green
         Write-Host "          [ACTIVE-NO-REMOTE] -- has local changes, no upstream configured" -ForegroundColor Cyan
         Write-Host "          [PRUNE           ] -- safe to delete (merged, remote deleted, or path missing)" -ForegroundColor Red
-        Write-Host "          [DIRTY-MERGED    ] -- merged/remote-gone but has local changes, kept for review" -ForegroundColor Yellow
+        Write-Host "          [DIRTY           ] -- uncommitted local changes, kept for review" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "    gwt changes " -NoNewline -ForegroundColor Cyan
+        Write-Host "(alias: status)"
+        Write-Host "        for every dirty worktree in this repo, show 'git status --short'" -ForegroundColor DarkGray
+        Write-Host "        (includes ORPHAN-DIRTY dirs that aren't registered with git)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt prune " -NoNewline -ForegroundColor Cyan
         Write-Host "[<branch>] [-Org <org>] [-Repo <repo>] [-y]"
