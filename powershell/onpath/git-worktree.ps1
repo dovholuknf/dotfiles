@@ -38,8 +38,10 @@ param(
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
     [switch]$NoAgentSetup,  # skip the post-create dotagents CLAUDE.md symlink step
-    [switch]$All,           # 'sessions clean -All' also drops alive entries (default = stale only)
+    [switch]$All,           # 'sessions clean -All' = drop STALE + PAUSED + ACTIVE entries
+    [switch]$Paused,        # 'sessions clean -Paused' = also drop PAUSED entries (still keeps ACTIVE)
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
+    [string]$Window,        # 'sessions restore' override: 'active-work' / 'tangent' / 'pull-requests' / 'worktrees' / '<custom>'
     [switch]$Help
 )
 
@@ -117,7 +119,11 @@ function Resolve-RepoContext {
     $src       = Join-Path (Join-Path (Join-Path $SourceRoot   $hostShort) $script:Org) $script:Repo
     $wtroot    = Join-Path (Join-Path (Join-Path $WorktreeRoot $hostShort) $script:Org) $script:Repo
     if (-not $script:_DetectedLogged) {
-        Write-Color "detected: $($script:RemoteHost)/$($script:Org)/$($script:Repo) @ $src" Cyan
+        $cwdNorm = (Get-Location).Path.TrimEnd('\').Replace('\','/').ToLower()
+        $srcNorm = $src.TrimEnd('\').Replace('\','/').ToLower()
+        $line = "detected: $($script:RemoteHost)/$($script:Org)/$($script:Repo)"
+        if ($cwdNorm -ne $srcNorm) { $line += " @ $src" }
+        Write-Color $line Cyan
         $script:_DetectedLogged = $true
     }
 
@@ -399,6 +405,37 @@ function Get-WorktreeStatuses {
         if ($commitInfo) {
             $lcRel = $commitInfo.Rel
             [datetime]::TryParse($commitInfo.Iso, [ref]$lcDate) | Out-Null
+        }
+
+        # For DIRTY / UNTRACKED-ONLY, the commit date is misleading -- it predates
+        # the actual edits. Replace with the most recent mtime of dirty files.
+        if ($status -in @('DIRTY','UNTRACKED-ONLY') -and $porc) {
+            $latest = [datetime]::MinValue
+            foreach ($l in ($porc -split "`r?`n")) {
+                if (-not $l) { continue }
+                # porcelain lines: 'XY path' (X=index, Y=worktree). Path starts at col 3.
+                if ($l.Length -lt 4) { continue }
+                $rel = $l.Substring(3).Trim('"')
+                # Rename: 'R  oldpath -> newpath' -- take newpath.
+                if ($rel -match '^(.+?)\s+->\s+(.+)$') { $rel = $Matches[2] }
+                $full = Join-Path $cur $rel
+                if (Test-Path -LiteralPath $full) {
+                    $mt = (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue).LastWriteTime
+                    if ($mt -and $mt -gt $latest) { $latest = $mt }
+                }
+            }
+            if ($latest -ne [datetime]::MinValue) {
+                $lcDate = $latest
+                $diff   = ([datetime]::Now - $latest)
+                $lcRel  =
+                    if     ($diff.TotalSeconds -lt 60)  { "$([int]$diff.TotalSeconds) seconds ago" }
+                    elseif ($diff.TotalMinutes -lt 60)  { "$([int]$diff.TotalMinutes) minutes ago" }
+                    elseif ($diff.TotalHours   -lt 24)  { "$([int]$diff.TotalHours) hours ago" }
+                    elseif ($diff.TotalDays    -lt 7)   { "$([int]$diff.TotalDays) days ago" }
+                    elseif ($diff.TotalDays    -lt 30)  { "$([int]($diff.TotalDays / 7)) weeks ago" }
+                    elseif ($diff.TotalDays    -lt 365) { "$([int]($diff.TotalDays / 30)) months ago" }
+                    else                                { "$([int]($diff.TotalDays / 365)) years ago" }
+            }
         }
 
         [PSCustomObject]@{
@@ -813,7 +850,7 @@ switch ($Command) {
             'restore' {
                 # Idempotency: only consider STALE entries -- alive ones are already up.
                 $allStale = @($entries | Where-Object { -not $_.Alive })
-                if (-not $allStale.Count) { Write-Color "no stale sessions to restore (all alive -- nothing to do)" DarkGray; return }
+                if (-not $allStale.Count) { Write-Color "no paused sessions to restore (everything is ACTIVE)" DarkGray; return }
 
                 # dedupe by WorktreePath (keeps newest by LastSpawnedAt) -- protects against
                 # accumulated leftover entries from failed prior launches blowing up the count.
@@ -835,7 +872,7 @@ switch ($Command) {
                         $_.WindowName -like "*$Match*"
                     })
                     if (-not $filtered.Count) {
-                        Write-Color "no stale entries match '$Match'" Yellow
+                        Write-Color "no paused entries match '$Match'" Yellow
                         return
                     }
                     $stale = $filtered
@@ -847,29 +884,31 @@ switch ($Command) {
                     Write-Color "skipping $dupes duplicate(s) -- run 'gwt sessions clean' to drop them" DarkGray
                 }
 
-                Write-Host ""
-                foreach ($s in $stale) { Write-Color "  $($s.Branch) -> $($s.WindowName)" DarkGray }
-                Write-Host ""
+                # Single-entry restore: show the wt window picker (with the entry's
+                # original window pre-selected). Picking IS the confirmation.
+                # Skipped when -Window was passed (already explicit).
+                $pickedWindow = $null
+                $perEntry     = $false
 
-                # Pick mode: open all, prompt per-entry, or nothing.
-                # If filter narrowed to a single entry, skip the all/per dance.
-                $perEntry = $false
-                if (@($stale).Count -eq 1) {
-                    $resp = Read-Host "open this 1 session? (Y/n)"
-                    if (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
+                if (@($stale).Count -eq 1 -and -not $Window) {
+                    Write-Color ("  $($stale[0].Branch) @ $($stale[0].WorktreePath)") DarkGray
+                    $pickedWindow = _SelectWtWindow -Default $stale[0].WindowName
+                    if ($pickedWindow -eq '__new__') { $pickedWindow = $null }
+                } else {
+                    Write-Host ""
+                    foreach ($s in $stale) {
+                        $dest  = if ($Window) { $Window } else { $s.WindowName }
+                        $moved = if ($Window -and $Window -ne $s.WindowName) { "  (moved from '$($s.WindowName)')" } else { '' }
+                        Write-Color "  $($s.Branch) -> $dest$moved" DarkGray
+                    }
+                    Write-Host ""
+                    $destWord = if ($Window) { " into window '$Window'" } else { '' }
+                    $resp = Read-Host "open all $(@($stale).Count) sessions$destWord? (Y=all / n=abort / p=prompt per entry)"
+                    if ($resp -match '^[Pp]') {
+                        $perEntry = $true
+                    } elseif (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
                         Write-Color "aborted" Yellow
                         return
-                    }
-                } else {
-                    $resp = Read-Host "open all $(@($stale).Count) sessions? (Y/n)"
-                    if (-not ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$')) {
-                        $resp2 = Read-Host "prompt for each individually instead? (y/N)"
-                        if ($resp2 -match '^[Yy]$') {
-                            $perEntry = $true
-                        } else {
-                            Write-Color "aborted" Yellow
-                            return
-                        }
                     }
                 }
 
@@ -878,21 +917,26 @@ switch ($Command) {
                         Write-Color "  skip (worktree gone): $($s.Branch) @ $($s.WorktreePath)" Yellow
                         continue
                     }
+                    # Window resolution order: -Window flag, then picker choice, then original
+                    $effWindow = if ($Window)        { $Window }
+                                 elseif ($pickedWindow) { $pickedWindow }
+                                 else                 { $s.WindowName }
                     if ($perEntry) {
-                        $r = Read-Host "open '$($s.Branch)' -> $($s.WindowName)? (y/N)"
+                        $r = Read-Host "open '$($s.Branch)' -> $effWindow? (y/N)"
                         if (-not ($r -match '^[Yy]$')) {
                             Write-Color "    skipped" DarkGray
                             continue
                         }
                     }
-                    Write-Color "  relaunch: $($s.Branch) -> window=$($s.WindowName)" Green
+                    $moved = if ($Window -and $Window -ne $s.WindowName) { "  (moved from '$($s.WindowName)')" } else { '' }
+                    Write-Color "  relaunch: $($s.Branch) -> window=$effWindow$moved" Green
 
                     # _OpenClaudeShell pre-writes a fresh entry with Pid=0 and stashes
                     # the new session id in $script:LastSpawnedSessionId. The spawned
                     # shell calls _RegisterGwtSession which patches Pid > 0, so polling
                     # that file replaces the arbitrary Start-Sleep we used to do here.
                     _OpenClaudeShell -Path $s.WorktreePath -Repo $s.Repo -Branch $s.Branch `
-                                     -PromptText $s.PromptText -WindowName $s.WindowName `
+                                     -PromptText $s.PromptText -WindowName $effWindow `
                                      -ReuseSessionId $s.Id
                     $newId = $script:LastSpawnedSessionId
                     if ($newId) {
@@ -953,21 +997,41 @@ switch ($Command) {
             }
 
             'clean' {
-                # Default: drop only stale entries. With -All (the script-level switch),
-                # also drop alive entries (will not kill the underlying shell -- just
-                # forgets the registry entry; the alive shell stays running).
-                $toDrop = if ($All) {
-                    @($entries)
-                } else {
-                    @($entries | Where-Object { -not $_.Alive })
+                # Classify each entry: ACTIVE / PAUSED / STALE
+                #   ACTIVE -- PID running
+                #   PAUSED -- PID dead, worktree dir still on disk (restorable)
+                #   STALE  -- PID dead AND worktree dir is gone (cruft)
+                # Default: drop STALE only. With -All, also drop PAUSED (and ACTIVE --
+                # removes the registry entry, leaves the running shell alone).
+                $classified = $entries | ForEach-Object {
+                    $tag = if ($_.Alive) {
+                        'ACTIVE'
+                    } elseif ($_.WorktreePath -and (Test-Path $_.WorktreePath)) {
+                        'PAUSED'
+                    } else {
+                        'STALE'
+                    }
+                    $_ | Add-Member -NotePropertyName Tag -NotePropertyValue $tag -PassThru
                 }
-                $mode = if ($All) { 'all (alive + stale)' } else { 'stale only (default -- pass -All to also drop alive entries)' }
+                # Escalating drop tiers:
+                #   (default)  -> STALE only
+                #   -Paused    -> STALE + PAUSED
+                #   -All       -> STALE + PAUSED + ACTIVE
+                $dropTags = @('STALE')
+                if ($Paused -or $All) { $dropTags += 'PAUSED' }
+                if ($All)             { $dropTags += 'ACTIVE' }
+                $toDrop = @($classified | Where-Object { $_.Tag -in $dropTags })
+                $mode = "$($dropTags -join ' + ')"
                 Write-Color "cleaning: $mode" DarkGray
                 if (-not $toDrop.Count) { Write-Color "  nothing to drop" DarkGray; return }
                 foreach ($s in $toDrop) {
                     Remove-Item $s.File -Force -ErrorAction SilentlyContinue
-                    $tag = if ($s.Alive) { '(was alive -- entry removed; running shell unaffected)' } else { '(stale)' }
-                    Write-Color "  removed: $($s.Branch) $tag" DarkGray
+                    $note = switch ($s.Tag) {
+                        'ACTIVE' { '(was active -- entry removed; running shell unaffected)' }
+                        'PAUSED' { '(paused -- worktree still on disk)' }
+                        default  { '(stale)' }
+                    }
+                    Write-Color "  removed: $($s.Branch) $note" DarkGray
                 }
             }
             default {
@@ -985,22 +1049,42 @@ switch ($Command) {
                            }
                 $dupes = @($entries).Count - @($deduped).Count
 
+                # Lifecycle states (3 buckets, picked by Alive + worktree-on-disk):
+                #   ACTIVE -- PID is running
+                #   PAUSED -- PID dead, but worktree dir still exists on disk (restorable)
+                #   STALE  -- PID dead AND worktree dir is gone (real cruft)
                 $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
+                $pausedCount = 0
+                $staleCount  = 0
                 foreach ($g in $byWindow) {
                     Write-Host ""
                     Write-Color "[$($g.Name)]" Cyan
                     foreach ($s in $g.Group) {
-                        $tag = if ($s.Alive) { 'ALIVE' } else { 'STALE' }
-                        $col = if ($s.Alive) { 'Green' } else { 'Red' }
+                        if ($s.Alive) {
+                            $tag = 'ACTIVE'; $col = 'Green'
+                        } elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath)) {
+                            $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
+                        } else {
+                            $tag = 'STALE';  $col = 'Red';    $staleCount++
+                        }
                         Write-Color ("  [{0}] {1,-30} @ {2}" -f $tag, $s.Branch, $s.WorktreePath) $col
                     }
                 }
                 Write-Host ""
                 if ($dupes -gt 0) {
-                    Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean' to drop stale dupes" DarkGray
+                    Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean -All' to drop them too" DarkGray
                 }
-                Write-Color "  gwt sessions restore   relaunch all stale sessions" DarkGray
-                Write-Color "  gwt sessions clean     drop stale entries (incl. duplicates hidden above) without relaunching" DarkGray
+                Write-Color "  # relaunch PAUSED sessions" DarkGray
+                Write-Color "  gwt sessions restore" DarkGray
+                Write-Host ""
+                Write-Color "  # drop STALE entries (worktree gone)" DarkGray
+                Write-Color "  gwt sessions clean" DarkGray
+                Write-Host ""
+                Write-Color "  # also drop PAUSED entries" DarkGray
+                Write-Color "  gwt sessions clean -Paused" DarkGray
+                Write-Host ""
+                Write-Color "  # drop EVERYTHING (STALE + PAUSED + ACTIVE; running shells unaffected)" DarkGray
+                Write-Color "  gwt sessions clean -All" DarkGray
             }
         }
     }
@@ -1600,11 +1684,12 @@ switch ($Command) {
         Write-Host "                        prompts: open all? (Y/n) -> if no, individually? (y/N)" -ForegroundColor DarkGray
         Write-Host "                        skips entries that are already alive (idempotent)" -ForegroundColor DarkGray
         Write-Host "        restore <match> filter to entries whose Branch or path contains <match>" -ForegroundColor DarkGray
-        Write-Host "        close           kill the pwsh + claude process for each alive session" -ForegroundColor DarkGray
-        Write-Host "                        (registry entries stay, will show STALE next listing)" -ForegroundColor DarkGray
-        Write-Host "        close <match>   close only matching alive sessions" -ForegroundColor DarkGray
-        Write-Host "        clean           drop only stale entries (default)" -ForegroundColor DarkGray
-        Write-Host "        clean -All      drop everything (alive entries too -- running shells unaffected)" -ForegroundColor DarkGray
+        Write-Host "        close           kill the pwsh + claude process for each ACTIVE session" -ForegroundColor DarkGray
+        Write-Host "                        (registry entries stay, will show PAUSED next listing)" -ForegroundColor DarkGray
+        Write-Host "        close <match>   close only matching ACTIVE sessions" -ForegroundColor DarkGray
+        Write-Host "        clean            drop only STALE entries (worktree gone) -- default" -ForegroundColor DarkGray
+        Write-Host "        clean -Paused    also drop PAUSED entries" -ForegroundColor DarkGray
+        Write-Host "        clean -All       drop STALE + PAUSED + ACTIVE (running shells unaffected)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "  GLOBAL FLAGS" -ForegroundColor DarkGray
         Write-Host "    -V              show runas chatter on launch (the 'Attempting to start...' noise)" -ForegroundColor DarkGray

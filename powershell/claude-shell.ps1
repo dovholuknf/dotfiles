@@ -84,6 +84,7 @@ function Select-ClaudePrompt {
 # ---------------------------------------------------------------------------
 
 function _SelectWtWindow {
+    param([string]$Default)   # if set + matches a preset, that row becomes the [N]* default
     $presets = @(
         [PSCustomObject]@{ Name = 'active-work';   Desc = 'attach to "active-work" window' }
         [PSCustomObject]@{ Name = 'pull-requests'; Desc = 'attach to "pull-requests" window' }
@@ -92,10 +93,17 @@ function _SelectWtWindow {
         [PSCustomObject]@{ Name = '__new__';       Desc = 'open in a brand-new wt window (no attach)' }
         [PSCustomObject]@{ Name = '__custom__';    Desc = 'type your own window name' }
     )
+    # Resolve default index: match $Default against preset names; fallback to row 1.
+    $defaultIdx = 0
+    if ($Default) {
+        for ($i = 0; $i -lt $presets.Count; $i++) {
+            if ($presets[$i].Name -ieq $Default) { $defaultIdx = $i; break }
+        }
+    }
     Write-Host ""
     Write-Color "choose wt window:" DarkGray
     for ($i = 0; $i -lt $presets.Count; $i++) {
-        $marker = if ($i -eq 0) { '*' } else { ' ' }
+        $marker = if ($i -eq $defaultIdx) { '*' } else { ' ' }
         Write-Host ("  [{0}]{1} " -f ($i + 1), $marker) -NoNewline -ForegroundColor Cyan
         $label = switch ($presets[$i].Name) {
             '__new__'    { 'new' }
@@ -107,13 +115,13 @@ function _SelectWtWindow {
     }
     Write-Host ""
 
-    $resp = (Read-Host "choice [1]").Trim()
-    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = '1' }
+    $resp = (Read-Host ("choice [{0}]" -f ($defaultIdx + 1))).Trim()
+    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = ($defaultIdx + 1).ToString() }
 
     $idx = 0
     if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $presets.Count) {
         Write-Color "invalid choice, using default" Yellow
-        return $presets[0].Name
+        return $presets[$defaultIdx].Name
     }
     $choice = $presets[$idx - 1].Name
     if ($choice -eq '__custom__') {
@@ -200,9 +208,23 @@ function _ConfirmNoAliveSessionAt {
                 if ($delta -gt 2) { continue }
             }
             Write-Color "a session is already alive for '$Path'" Yellow
-            Write-Color ("  branch={0}  window={1}  pid={2}" -f $e.Branch, $e.WindowName, $e.Pid) DarkGray
+            Write-Color ("  branch : {0}" -f $e.Branch) DarkGray
+            $winColor = switch ($e.WindowName) {
+                'active-work'   { 'Green'    }
+                'pull-requests' { 'Blue'     }
+                'tangent'       { 'Magenta'  }
+                'worktrees'     { 'DarkGray' }
+                default         { 'White'    }
+            }
+            Write-Host "  window : " -NoNewline -ForegroundColor DarkGray
+            Write-Host $e.WindowName -NoNewline -ForegroundColor $winColor
+            Write-Host "  (jump with: wt -w $($e.WindowName) focus-tab)" -ForegroundColor DarkGray
+            Write-Color ("  pid    : {0}" -f $e.Pid) DarkGray
             $resp = Read-Host "open another? (y/N)"
-            if (-not ($resp -match '^[Yy]$')) { Write-Color "aborted" Yellow; return $false }
+            if (-not ($resp -match '^[Yy]$')) {
+                Write-Color "aborted -- tip: 'wt -w $($e.WindowName) focus-tab' brings that window forward" DarkGray
+                return $false
+            }
             return $true
         } catch {}
     }
@@ -709,6 +731,17 @@ function ClaudeShell {
         }
         'shell' {
             $cwd = (Get-Location).Path
+
+            # Guard: the spawned shell runs as user 'claude', which cannot read
+            # under another user's home dir (e.g. C:\Users\clint). Spawning there
+            # leaves a useless session entry. Refuse unless -Force.
+            if ($cwd -match '^[A-Za-z]:\\Users\\([^\\]+)(\\|$)' -and $Matches[1] -ine 'claude') {
+                Write-Color "claudeshell: cwd '$cwd' is under another user's home dir." Yellow
+                Write-Color "  spawned shell runs as 'claude' and won't have access here." DarkGray
+                Write-Color "  cd into a repo (or pass -Force to override)." DarkGray
+                if (-not $Force) { return }
+            }
+
             $window = if ($PSBoundParameters.ContainsKey('WindowName')) { $WindowName } else { _SelectWtWindow }
             if ($window -eq '__new__') { $window = $null }
             _OpenClaudeShell -Path $cwd `

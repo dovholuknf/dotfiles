@@ -325,7 +325,12 @@ function ltail {
         tail -f $real | cut -b "1-$Cols"
     }
 }
-  
+
+function psfind {
+    param([Parameter(Mandatory, Position=0)][string]$Pattern)
+    Get-ChildItem -Recurse -Filter $Pattern -Name
+}
+
 Set-PSReadLineKeyHandler -Key Ctrl+d -Function DeleteCharOrExit
 
 # ziti completion powershell | Out-String | Invoke-Expression
