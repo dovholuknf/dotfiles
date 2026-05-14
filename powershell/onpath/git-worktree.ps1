@@ -41,7 +41,8 @@ param(
     [switch]$All,           # 'sessions clean -All' = drop STALE + PAUSED + ACTIVE entries
     [switch]$Paused,        # 'sessions clean -Paused' = also drop PAUSED entries (still keeps ACTIVE)
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
-    [string]$Window,        # 'sessions restore' override: 'active-work' / 'tangent' / 'pull-requests' / 'worktrees' / '<custom>'
+    [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
+    [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Help
 )
 
@@ -844,6 +845,57 @@ switch ($Command) {
         if ($parseFails -gt 0) { Write-Color "  $parseFails file(s) failed to parse (skipped)" Yellow }
         Write-Color "  parsed $(@($entries).Count) entry/entries" DarkGray
 
+        # Resolve a candidate set against the (positional) $Match substring plus the
+        # exact-match $Name / $Window filters. If multiple match, prompt with a
+        # numbered picker (or 'a' for all). Returns an array of entries, or $null
+        # on quit. $Verb is shown in messages ("save", "clean", etc).
+        function script:_ResolveSessionTargets {
+            param([array]$Pool, [string]$Verb)
+            $filtered = $Pool
+            if ($Name)   { $filtered = @($filtered | Where-Object { $_.Branch     -ieq $Name   }) }
+            if ($Window) { $filtered = @($filtered | Where-Object { $_.WindowName -ieq $Window }) }
+            if ($Match) {
+                # Exact-Branch match first; fall back to substring only if no exact hits.
+                $exact = @($filtered | Where-Object { $_.Branch -ieq $Match })
+                if ($exact.Count) {
+                    $filtered = $exact
+                } else {
+                    $filtered = @($filtered | Where-Object {
+                        $_.Branch       -like "*$Match*" -or
+                        $_.WorktreePath -like "*$Match*" -or
+                        $_.WindowName   -like "*$Match*"
+                    })
+                    if ($filtered.Count) {
+                        Write-Color "  (no exact branch match for '$Match' -- using substring fallback)" DarkGray
+                    }
+                }
+            }
+            $filtered = @($filtered)
+            if (-not $filtered.Count) {
+                Write-Color "no entries match the given filter" Yellow
+                return $null
+            }
+            if ($filtered.Count -eq 1) { return $filtered }
+            # Multi-match: prompt to disambiguate.
+            Write-Color "multiple matches for $Verb -- pick one (or 'a' for all):" Yellow
+            for ($i = 0; $i -lt $filtered.Count; $i++) {
+                $e = $filtered[$i]
+                Write-Host ("  [{0}] " -f ($i + 1)) -NoNewline -ForegroundColor Cyan
+                Write-Host ("{0,-30} [{1}] @ {2}" -f $e.Branch, $e.WindowName, $e.WorktreePath)
+            }
+            Write-Host "  [a] all"
+            Write-Host "  [q] quit"
+            $resp = (Read-Host "choice").Trim().ToLower()
+            if ($resp -eq 'q' -or -not $resp) { return $null }
+            if ($resp -eq 'a') { return $filtered }
+            $idx = 0
+            if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $filtered.Count) {
+                Write-Color "invalid choice" Yellow
+                return $null
+            }
+            return @($filtered[$idx - 1])
+        }
+
         # subcommand under 'sessions': default = list. 'restore' = relaunch stale.
         # 'clean' = drop stale entries without relaunch.
         switch ($Target) {
@@ -864,19 +916,27 @@ switch ($Command) {
                          } |
                          Sort-Object @{Expression={ if ($_.FirstSpawnedAt) { $_.FirstSpawnedAt } else { $_.SpawnedAt } }}
 
-                # Optional 3rd positional arg = substring filter (Branch, WorktreePath, or WindowName).
-                if ($Match) {
-                    $filtered = @($stale | Where-Object {
-                        $_.Branch -like "*$Match*" -or
-                        $_.WorktreePath -like "*$Match*" -or
-                        $_.WindowName -like "*$Match*"
-                    })
+                # Optional filters: $Match (substring), $Name (exact branch), $Window (exact window).
+                # Note: $Window on restore also serves as the destination override -- here we treat
+                # it as a filter ONLY if $Name or $Match was passed too; bare -Window keeps acting
+                # as the destination override on all paused entries.
+                if ($Match -or $Name -or ($Window -and ($Match -or $Name))) {
+                    $filtered = $stale
+                    if ($Name)   { $filtered = @($filtered | Where-Object { $_.Branch     -ieq $Name }) }
+                    if ($Window) { $filtered = @($filtered | Where-Object { $_.WindowName -ieq $Window }) }
+                    if ($Match)  {
+                        $filtered = @($filtered | Where-Object {
+                            $_.Branch       -like "*$Match*" -or
+                            $_.WorktreePath -like "*$Match*" -or
+                            $_.WindowName   -like "*$Match*"
+                        })
+                    }
                     if (-not $filtered.Count) {
-                        Write-Color "no paused entries match '$Match'" Yellow
+                        Write-Color "no paused entries match the given filter" Yellow
                         return
                     }
                     $stale = $filtered
-                    Write-Color "filter '$Match' -> $($stale.Count) match(es)" Cyan
+                    Write-Color "filter -> $($stale.Count) match(es)" Cyan
                 }
 
                 $dupes = $allStale.Count - @($stale).Count
@@ -996,6 +1056,29 @@ switch ($Command) {
                 }
             }
 
+            { $_ -in 'save','unsave' } {
+                $val = ($Target -eq 'save')
+                if (-not ($Match -or $Name -or $Window)) {
+                    Write-Color "usage: gwt sessions $Target <substring> [-Name <branch>] [-Window <name>]" Yellow
+                    return
+                }
+                $targets = _ResolveSessionTargets -Pool $entries -Verb $Target
+                if (-not $targets) { return }
+                foreach ($m in $targets) {
+                    $e = Get-Content $m.File -Raw | ConvertFrom-Json
+                    if ($e.PSObject.Properties['Saved']) {
+                        $e.Saved = $val
+                    } else {
+                        $e | Add-Member -NotePropertyName Saved -NotePropertyValue $val -Force
+                    }
+                    ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $m.File -Encoding UTF8
+                    $word = if ($val) { 'saved' } else { 'unsaved' }
+                    $col  = if ($val) { 'Green' } else { 'Yellow' }
+                    Write-Color "  $word : $($m.Branch) @ $($m.WorktreePath)" $col
+                }
+                return
+            }
+
             'clean' {
                 # Classify each entry: ACTIVE / PAUSED / STALE
                 #   ACTIVE -- PID running
@@ -1021,6 +1104,22 @@ switch ($Command) {
                 if ($Paused -or $All) { $dropTags += 'PAUSED' }
                 if ($All)             { $dropTags += 'ACTIVE' }
                 $toDrop = @($classified | Where-Object { $_.Tag -in $dropTags })
+
+                # Protect Saved entries from ALL clean operations -- even -All.
+                # Use 'gwt sessions unsave <name>' first if you really mean to drop one.
+                $savedSkipped = @($toDrop | Where-Object { $_.Saved })
+                $toDrop       = @($toDrop | Where-Object { -not $_.Saved })
+
+                # Optional filters: substring $Match plus exact $Name/$Window. With
+                # any filter, multi-match prompts to disambiguate (pick / 'a' / 'q').
+                if ($Match -or $Name -or $Window) {
+                    $resolved = _ResolveSessionTargets -Pool $toDrop -Verb 'clean'
+                    if (-not $resolved) { return }
+                    $toDrop = $resolved
+                }
+                foreach ($s in $savedSkipped) {
+                    Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to drop" DarkGray
+                }
                 $mode = "$($dropTags -join ' + ')"
                 Write-Color "cleaning: $mode" DarkGray
                 if (-not $toDrop.Count) { Write-Color "  nothing to drop" DarkGray; return }
@@ -1067,21 +1166,28 @@ switch ($Command) {
                         } else {
                             $tag = 'STALE';  $col = 'Red';    $staleCount++
                         }
-                        Write-Color ("  [{0}] {1,-30} @ {2}" -f $tag, $s.Branch, $s.WorktreePath) $col
+                        $savedMark  = if ($s.Saved) { '*' } else { ' ' }
+                        $displayName = if ($s.Label) { $s.Label } else { $s.Branch }
+                        Write-Color ("  [{0}]{1} {2,-30} @ {3}" -f $tag, $savedMark, $displayName, $s.WorktreePath) $col
                     }
                 }
                 Write-Host ""
                 if ($dupes -gt 0) {
                     Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean -All' to drop them too" DarkGray
                 }
+                Write-Color "  # mark a session as Saved (protected from every clean) -- shown with '*'" DarkGray
+                Write-Color "  gwt sessions save   <substring> [-Name <branch>] [-Window <name>]" DarkGray
+                Write-Color "  gwt sessions unsave <substring> [-Name <branch>] [-Window <name>]" DarkGray
+                Write-Color "  #   filters combine; multi-match prompts a picker (or 'a' for all)" DarkGray
+                Write-Host ""
                 Write-Color "  # relaunch PAUSED sessions" DarkGray
                 Write-Color "  gwt sessions restore" DarkGray
                 Write-Host ""
                 Write-Color "  # drop STALE entries (worktree gone)" DarkGray
                 Write-Color "  gwt sessions clean" DarkGray
                 Write-Host ""
-                Write-Color "  # also drop PAUSED entries" DarkGray
-                Write-Color "  gwt sessions clean -Paused" DarkGray
+                Write-Color "  # also drop PAUSED entries (add a name to drop just one)" DarkGray
+                Write-Color "  gwt sessions clean -Paused [<name-substring>]" DarkGray
                 Write-Host ""
                 Write-Color "  # drop EVERYTHING (STALE + PAUSED + ACTIVE; running shells unaffected)" DarkGray
                 Write-Color "  gwt sessions clean -All" DarkGray
@@ -1637,6 +1743,81 @@ switch ($Command) {
                 Write-Color "  no worktree or orphan named '$branchFilter' in this repo" Yellow
             }
         }
+    }
+
+    'rename' {
+        # gwt rename <match> <new-label> [-Window <name>] [-Name <branch>]
+        # Set a display Label on a session entry so the 'gwt sessions' listing
+        # shows the label instead of the (often duplicated) branch name.
+        # Pass an empty new-label ("") to clear the label.
+        if (-not $Target -or $null -eq $Match) {
+            Write-Color "usage: gwt rename <match> <new-label> [-Window <name>] [-Name <branch>]" Yellow
+            return
+        }
+        $patternArg = $Target
+        $newLabel   = $Match
+
+        $sessionDir = 'D:\worktrees\sessions'
+        if (-not (Test-Path $sessionDir)) { Write-Color "no session dir at $sessionDir" Yellow; return }
+
+        $files = @(Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)
+        $candidates = @()
+        foreach ($f in $files) {
+            try {
+                $obj = Get-Content $f.FullName -Raw | ConvertFrom-Json
+                $obj | Add-Member -NotePropertyName _File -NotePropertyValue $f.FullName -Force
+                $candidates += $obj
+            } catch {}
+        }
+
+        # Match strategy: exact-Branch match first (avoids "main" hitting "maintenance").
+        # Only fall back to substring across Branch/WorktreePath/WindowName when
+        # no exact branch matches exist.
+        $hits = @($candidates | Where-Object { $_.Branch -ieq $patternArg })
+        if (-not $hits.Count) {
+            $hits = @($candidates | Where-Object {
+                $_.Branch       -like "*$patternArg*" -or
+                $_.WorktreePath -like "*$patternArg*" -or
+                $_.WindowName   -like "*$patternArg*"
+            })
+            if ($hits.Count) {
+                Write-Color "  (no exact branch match for '$patternArg' -- using substring fallback)" DarkGray
+            }
+        }
+        if ($Name)   { $hits = @($hits | Where-Object { $_.Branch     -ieq $Name }) }
+        if ($Window) { $hits = @($hits | Where-Object { $_.WindowName -ieq $Window }) }
+
+        if (-not $hits.Count) {
+            Write-Color "no session entries match '$patternArg'" Yellow
+            return
+        }
+        if ($hits.Count -gt 1) {
+            Write-Color "multiple matches -- pick one (or 'q' to quit):" Yellow
+            for ($i = 0; $i -lt $hits.Count; $i++) {
+                $h = $hits[$i]
+                Write-Host ("  [{0}] " -f ($i + 1)) -NoNewline -ForegroundColor Cyan
+                Write-Host ("{0,-30} [{1}] @ {2}" -f $h.Branch, $h.WindowName, $h.WorktreePath)
+            }
+            $resp = (Read-Host "choice").Trim()
+            if (-not $resp -or $resp -ieq 'q') { return }
+            $idx = 0
+            if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $hits.Count) {
+                Write-Color "invalid choice" Yellow; return
+            }
+            $hits = @($hits[$idx - 1])
+        }
+
+        $entry = $hits[0]
+        $e = Get-Content $entry._File -Raw | ConvertFrom-Json
+        if ([string]::IsNullOrEmpty($newLabel)) {
+            if ($e.PSObject.Properties.Match('Label').Count) { $e.PSObject.Properties.Remove('Label') }
+            Write-Color "  cleared label on $($entry.Branch) @ $($entry.WorktreePath)" DarkGray
+        } else {
+            if ($e.PSObject.Properties.Match('Label').Count) { $e.Label = $newLabel }
+            else { Add-Member -InputObject $e -NotePropertyName Label -NotePropertyValue $newLabel -Force }
+            Write-Color "  renamed: '$($entry.Branch)' -> '$newLabel'  @ $($entry.WorktreePath)" Green
+        }
+        ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $entry._File -Encoding UTF8
     }
 
     { $_ -in 'help','-h','--help' } {
