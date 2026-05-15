@@ -43,6 +43,7 @@ param(
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
+    [switch]$Usage,         # 'sessions list': show the verbose command-tips block
     [switch]$Help
 )
 
@@ -310,6 +311,24 @@ function Save-GwtState {
 # Returns worktree info objects: Branch, Path, Status, Reason
 # Status: MAIN | ACTIVE | ACTIVE-NO-REMOTE | PRUNE | DIRTY
 
+function Test-WorktreeIsSaved {
+    # Returns $true if any session-registry entry for this worktree path has Saved=$true.
+    # Used by 'gwt prune' to refuse deletion of worktrees the user marked as Saved.
+    param([string]$WorktreePath)
+    $sessionDir = 'D:\worktrees\sessions'
+    if (-not (Test-Path $sessionDir)) { return $false }
+    $norm = $WorktreePath.Replace('/', '\').TrimEnd('\').ToLower()
+    foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
+            if (-not $e.WorktreePath) { continue }
+            $epath = ($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+            if ($epath -eq $norm -and $e.Saved) { return $true }
+        } catch {}
+    }
+    return $false
+}
+
 function Get-WorktreeStatuses {
     param([string]$Src)
     # Parse `git worktree list --porcelain` into (path, branch) pairs.
@@ -462,11 +481,94 @@ if ($Command -match '^https?://') {
 
 # ── commands ──────────────────────────────────────────────────────────────────
 
+function Show-SubcommandHelp {
+    param([string]$Cmd, [string]$Sub)
+    $key = if ($Sub) { "$Cmd $Sub".Trim() } else { $Cmd }
+    switch ($key) {
+        'sessions list' {
+            Write-Host ""
+            Write-Color "gwt sessions list [-Usage]" Cyan
+            Write-Color "  List every registered claude session, grouped by wt window." DarkGray
+            Write-Color "  Tags: ACTIVE / PAUSED / STALE / SAVED (saved overrides the lifecycle tag)." DarkGray
+            Write-Color "  -Usage  print the per-subcommand cheat sheet below the listing." DarkGray
+        }
+        'sessions restore' {
+            Write-Host ""
+            Write-Color "gwt sessions restore [<match>] [-Name <branch>] [-Window <name>]" Cyan
+            Write-Color "  Relaunch PAUSED sessions into their original wt window." DarkGray
+            Write-Color "  <match>    substring filter (Branch / WorktreePath / WindowName)" DarkGray
+            Write-Color "  -Name      exact branch match (combines with the others)" DarkGray
+            Write-Color "  -Window    on single-entry restore: override the destination window" DarkGray
+            Write-Color "             on multi-entry restore: also filters by exact window name" DarkGray
+        }
+        'sessions clean' {
+            Write-Host ""
+            Write-Color "gwt sessions clean [<match>] [-Paused | -All] [-Name <branch>] [-Window <name>]" Cyan
+            Write-Color "  Drop entries from the registry. SAVED entries are always protected." DarkGray
+            Write-Color "  default    only STALE (PID dead and worktree dir is gone)" DarkGray
+            Write-Color "  -Paused    also clean PAUSED (PID dead, worktree dir still on disk)" DarkGray
+            Write-Color "  -All       also clean ACTIVE (running shells aren't killed -- entry only)" DarkGray
+        }
+        'sessions save' {
+            Write-Host ""
+            Write-Color "gwt sessions save <match> [-Name <branch>] [-Window <name>]" Cyan
+            Write-Color "  Mark a session as Saved -- shown as [SAVED] and protected from all cleans" DarkGray
+            Write-Color "  and prune-force. Multi-match prompts a picker." DarkGray
+        }
+        'sessions unsave' {
+            Write-Host ""
+            Write-Color "gwt sessions unsave <match> [-Name <branch>] [-Window <name>]" Cyan
+            Write-Color "  Remove the Saved mark. Multi-match prompts a picker." DarkGray
+        }
+        'sessions close' {
+            Write-Host ""
+            Write-Color "gwt sessions close [<match>]" Cyan
+            Write-Color "  Kill the pwsh + claude process for each ACTIVE session." DarkGray
+            Write-Color "  Registry entries stay -- they'll show PAUSED on next listing." DarkGray
+        }
+        'sessions' {
+            Write-Host ""
+            Write-Color "gwt sessions <subcommand> [...]" Cyan
+            Write-Color "  Subcommands: list / restore / close / clean / save / unsave" DarkGray
+            Write-Color "  For details, run e.g.: gwt sessions list -Help" DarkGray
+        }
+        'rename' {
+            Write-Host ""
+            Write-Color "gwt rename <match> <new-label> [-Name <branch>] [-Window <name>]" Cyan
+            Write-Color "  Set the display label on a session entry. Empty label clears it." DarkGray
+            Write-Color "  Does NOT rename the underlying git branch." DarkGray
+        }
+        default {
+            Write-Color "no targeted help for '$key' -- showing main help instead" DarkGray
+            Write-Host ""
+            $script:_FallbackToFullHelp = $true
+        }
+    }
+}
+
+if ($env:GWT_DEBUG_HELP) {
+    Write-Host "[DEBUG] Command=[$Command] Target=[$Target] Match=[$Match] Help.IsPresent=[$($Help.IsPresent)]" -ForegroundColor Magenta
+}
+# Also treat a literal '-help' / '--help' that landed in $Target or $Match as a help flag.
+# (Catches the case where users put it AFTER positionals and PS binds it positionally.)
+$_wantSubHelp = $Help.IsPresent
+if ($Target -in @('-help','--help','-h','-Help','-H')) { $_wantSubHelp = $true; $Target = $null }
+if ($Match  -in @('-help','--help','-h','-Help','-H')) { $_wantSubHelp = $true; $Match  = $null }
+
+if ($_wantSubHelp -and $Command -and $Command -notin @('help','-h','--help')) {
+    $script:_FallbackToFullHelp = $false
+    Show-SubcommandHelp -Cmd $Command -Sub $Target
+    if (-not $script:_FallbackToFullHelp) { exit 0 }
+    $Command = 'help'
+}
+
 try {
 switch ($Command) {
 
     'new' {
-        if (-not $Target) { throw "'new' requires a branch name" }
+        if (-not $Target)      { throw "'new' requires a branch name" }
+        if ($Target -eq '.')   { throw "'new' needs an explicit branch name (the '.' shortcut is only for 'gwt claude .')" }
+        if ($Target -match '^\s|\s$|[\\\/:\?\*\[\]~^]') { throw "branch name '$Target' contains an illegal character" }
         $ctx = Resolve-RepoContext
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
         Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
@@ -586,7 +688,48 @@ switch ($Command) {
 
         if ($existingWt) {
             if ($existingWt.Replace('\','/') -ne $wtPath.Replace('\','/')) {
-                throw "branch '$branch' already checked out at '$existingWt' -- is there another PR against this branch?"
+                # Branch already lives at a different path (e.g., 'gwt new <branch>'
+                # created it, then 'gwt pr <num>' wants pr-<num> as the dir name).
+                # Offer: focus existing wt tab, open a fresh claude tab there, or cancel.
+                Write-Color "branch '$branch' is already checked out at '$existingWt'." Yellow
+                $state = Load-GwtState $existingWt
+                $win   = if ($state -and $state.Window) { $state.Window } else { $null }
+
+                if (-not $state) {
+                    # No saved state -- skip prompt, just open in existing path.
+                    Write-Color "no saved gwt state -- opening claude in existing worktree" DarkGray
+                    _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                    return
+                }
+
+                if ($win) {
+                    Write-Color "saved wt window: $win" DarkGray
+                    $resp = (Read-Host "(f)ocus existing wt window / (o)pen new claude tab in existing worktree / (c)ancel? [f]").Trim().ToLower()
+                    if (-not $resp) { $resp = 'f' }
+                } else {
+                    # State exists but no window -> can't focus; offer open/cancel only.
+                    $resp = (Read-Host "(o)pen new claude tab in existing worktree / (c)ancel? [o]").Trim().ToLower()
+                    if (-not $resp) { $resp = 'o' }
+                    if ($resp -eq 'f') { $resp = 'o' }
+                }
+
+                switch ($resp) {
+                    'f' {
+                        # wt windows are owned by the claude user, so the focus command
+                        # must run as claude too (same shape used by _OpenClaudeShell).
+                        Write-Color "focusing wt window '$win' (as claude user)..." DarkGray
+                        & runas /user:claude /savecred "wt.exe -w `"$win`" focus-tab" 2>&1 | Out-Null
+                        return
+                    }
+                    'o' {
+                        _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                        return
+                    }
+                    default {
+                        Write-Color "cancelled" Yellow
+                        return
+                    }
+                }
             }
             $resp = Read-Host "worktree already exists at '$existingWt'. remove it? (y/N)"
             if ($resp -match '^[Yy]$') {
@@ -941,7 +1084,7 @@ switch ($Command) {
 
                 $dupes = $allStale.Count - @($stale).Count
                 if (-not $Match -and $dupes -gt 0) {
-                    Write-Color "skipping $dupes duplicate(s) -- run 'gwt sessions clean' to drop them" DarkGray
+                    Write-Color "skipping $dupes duplicate(s) -- run 'gwt sessions clean' to clean them" DarkGray
                 }
 
                 # Single-entry restore: show the wt window picker (with the entry's
@@ -1118,11 +1261,11 @@ switch ($Command) {
                     $toDrop = $resolved
                 }
                 foreach ($s in $savedSkipped) {
-                    Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to drop" DarkGray
+                    Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to clean" DarkGray
                 }
                 $mode = "$($dropTags -join ' + ')"
                 Write-Color "cleaning: $mode" DarkGray
-                if (-not $toDrop.Count) { Write-Color "  nothing to drop" DarkGray; return }
+                if (-not $toDrop.Count) { Write-Color "  nothing to clean" DarkGray; return }
                 foreach ($s in $toDrop) {
                     Remove-Item $s.File -Force -ErrorAction SilentlyContinue
                     $note = switch ($s.Tag) {
@@ -1166,31 +1309,40 @@ switch ($Command) {
                         } else {
                             $tag = 'STALE';  $col = 'Red';    $staleCount++
                         }
-                        $savedMark  = if ($s.Saved) { '*' } else { ' ' }
+                        # Saved entries get a distinct SAVED tag (overrides the lifecycle
+                        # label so they pop visually). Color still reflects underlying state.
+                        if ($s.Saved) { $tag = 'SAVED' }
                         $displayName = if ($s.Label) { $s.Label } else { $s.Branch }
-                        Write-Color ("  [{0}]{1} {2,-30} @ {3}" -f $tag, $savedMark, $displayName, $s.WorktreePath) $col
+                        Write-Color ("  [{0,-7}] {1,-30} @ {2}" -f $tag, $displayName, $s.WorktreePath) $col
                     }
                 }
                 Write-Host ""
                 if ($dupes -gt 0) {
-                    Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean -All' to drop them too" DarkGray
+                    Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean -All' to clean them too" DarkGray
                 }
-                Write-Color "  # mark a session as Saved (protected from every clean) -- shown with '*'" DarkGray
-                Write-Color "  gwt sessions save   <substring> [-Name <branch>] [-Window <name>]" DarkGray
-                Write-Color "  gwt sessions unsave <substring> [-Name <branch>] [-Window <name>]" DarkGray
-                Write-Color "  #   filters combine; multi-match prompts a picker (or 'a' for all)" DarkGray
-                Write-Host ""
-                Write-Color "  # relaunch PAUSED sessions" DarkGray
-                Write-Color "  gwt sessions restore" DarkGray
-                Write-Host ""
-                Write-Color "  # drop STALE entries (worktree gone)" DarkGray
-                Write-Color "  gwt sessions clean" DarkGray
-                Write-Host ""
-                Write-Color "  # also drop PAUSED entries (add a name to drop just one)" DarkGray
-                Write-Color "  gwt sessions clean -Paused [<name-substring>]" DarkGray
-                Write-Host ""
-                Write-Color "  # drop EVERYTHING (STALE + PAUSED + ACTIVE; running shells unaffected)" DarkGray
-                Write-Color "  gwt sessions clean -All" DarkGray
+                if ($Usage) {
+                    Write-Color "  # mark a session as Saved (protected from every clean) -- shown as [SAVED]" DarkGray
+                    Write-Color "  gwt sessions save   <substring> [-Name <branch>] [-Window <name>]" DarkGray
+                    Write-Color "  gwt sessions unsave <substring> [-Name <branch>] [-Window <name>]" DarkGray
+                    Write-Color "  #   filters combine; multi-match prompts a picker (or 'a' for all)" DarkGray
+                    Write-Host ""
+                    Write-Color "  # relabel a session's display name (does not rename the git branch)" DarkGray
+                    Write-Color "  gwt rename <match> <new-label> [-Name <branch>] [-Window <name>]" DarkGray
+                    Write-Host ""
+                    Write-Color "  # relaunch PAUSED sessions" DarkGray
+                    Write-Color "  gwt sessions restore" DarkGray
+                    Write-Host ""
+                    Write-Color "  # clean STALE entries (worktree gone)" DarkGray
+                    Write-Color "  gwt sessions clean" DarkGray
+                    Write-Host ""
+                    Write-Color "  # also clean PAUSED entries (add a name to clean just one)" DarkGray
+                    Write-Color "  gwt sessions clean -Paused [<name-substring>]" DarkGray
+                    Write-Host ""
+                    Write-Color "  # clean EVERYTHING (STALE + PAUSED + ACTIVE; running shells unaffected)" DarkGray
+                    Write-Color "  gwt sessions clean -All" DarkGray
+                } else {
+                    Write-Color "  (pass -Usage for command tips)" DarkGray
+                }
             }
         }
     }
@@ -1658,6 +1810,15 @@ switch ($Command) {
             foreach ($wt in $prunable) {
                 $raw   = if ($wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
                 $label = $raw.PadRight(16)
+
+                # Saved guard: refuse to prune any worktree marked Saved in the session
+                # registry, even with -Force. User must `gwt sessions unsave <branch>` first.
+                if (Test-WorktreeIsSaved $wt.Path) {
+                    Write-Color "  [SAVED   ] $($wt.Branch) @ $($wt.Path)" Cyan
+                    Write-Color "                    protected -- run 'gwt sessions unsave $($wt.Branch)' first" DarkGray
+                    continue
+                }
+
                 switch ($wt.Status) {
                     'PRUNE'            {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Red
@@ -1859,18 +2020,16 @@ switch ($Command) {
         Write-Host "        (no-op if dotfiles repo is cloned -- update via git pull instead)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt sessions " -NoNewline -ForegroundColor Cyan
-        Write-Host "[restore [<match>] | close [<match>] | clean [-All]]"
-        Write-Host "        list registered Claude sessions; mark live vs. stale" -ForegroundColor DarkGray
-        Write-Host "        restore         relaunch stale sessions into their original windows" -ForegroundColor DarkGray
-        Write-Host "                        prompts: open all? (Y/n) -> if no, individually? (y/N)" -ForegroundColor DarkGray
-        Write-Host "                        skips entries that are already alive (idempotent)" -ForegroundColor DarkGray
-        Write-Host "        restore <match> filter to entries whose Branch or path contains <match>" -ForegroundColor DarkGray
-        Write-Host "        close           kill the pwsh + claude process for each ACTIVE session" -ForegroundColor DarkGray
-        Write-Host "                        (registry entries stay, will show PAUSED next listing)" -ForegroundColor DarkGray
-        Write-Host "        close <match>   close only matching ACTIVE sessions" -ForegroundColor DarkGray
-        Write-Host "        clean            drop only STALE entries (worktree gone) -- default" -ForegroundColor DarkGray
-        Write-Host "        clean -Paused    also drop PAUSED entries" -ForegroundColor DarkGray
-        Write-Host "        clean -All       drop STALE + PAUSED + ACTIVE (running shells unaffected)" -ForegroundColor DarkGray
+        Write-Host "[list | restore | close | clean | save | unsave] [<match>] [flags]"
+        Write-Host "        manage registered Claude sessions across windows + repos" -ForegroundColor DarkGray
+        Write-Host "        states: ACTIVE (pid alive) / PAUSED (pid dead, worktree on disk) /" -ForegroundColor DarkGray
+        Write-Host "                STALE (pid dead, worktree gone) / SAVED (protected from clean)" -ForegroundColor DarkGray
+        Write-Host "        run 'gwt sessions list -Usage' for the per-subcommand cheat sheet" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt rename " -NoNewline -ForegroundColor Cyan
+        Write-Host "<match> <new-label> [-Name <branch>] [-Window <name>]"
+        Write-Host "        set a display label on a session entry (git branch untouched)" -ForegroundColor DarkGray
+        Write-Host "        empty <new-label> (\"\") clears the label" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "  GLOBAL FLAGS" -ForegroundColor DarkGray
         Write-Host "    -V              show runas chatter on launch (the 'Attempting to start...' noise)" -ForegroundColor DarkGray

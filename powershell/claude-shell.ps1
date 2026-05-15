@@ -217,13 +217,22 @@ function _ConfirmNoAliveSessionAt {
                 default         { 'White'    }
             }
             Write-Host "  window : " -NoNewline -ForegroundColor DarkGray
-            Write-Host $e.WindowName -NoNewline -ForegroundColor $winColor
-            Write-Host "  (jump with: wt -w $($e.WindowName) focus-tab)" -ForegroundColor DarkGray
+            Write-Host $e.WindowName -ForegroundColor $winColor
             Write-Color ("  pid    : {0}" -f $e.Pid) DarkGray
-            $resp = Read-Host "open another? (y/N)"
-            if (-not ($resp -match '^[Yy]$')) {
-                Write-Color "aborted -- tip: 'wt -w $($e.WindowName) focus-tab' brings that window forward" DarkGray
-                return $false
+            $resp = (Read-Host "(f)ocus existing window / (o)pen another tab / (c)ancel? [f]").Trim().ToLower()
+            if (-not $resp) { $resp = 'f' }
+            switch ($resp) {
+                'f' {
+                    # wt windows are owned by the claude user, so focus must run there too.
+                    Write-Color "focusing wt window '$($e.WindowName)' (as claude user)..." DarkGray
+                    & runas /user:claude /savecred "wt.exe -w `"$($e.WindowName)`" focus-tab" 2>&1 | Out-Null
+                    return $false
+                }
+                'o' { return $true }
+                default {
+                    Write-Color "cancelled" Yellow
+                    return $false
+                }
             }
             return $true
         } catch {}
@@ -297,6 +306,12 @@ function _OpenClaudeShell {
     } else {
         $wtArgs = "wt.exe -d `"$Path`" pwsh -NoExit -EncodedCommand $enc"
     }
+    # Admin shells can't read the unelevated /savecred vault -- warn early.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        Write-Color "  note: elevated (Admin) shell -- runas /savecred reads a different vault here." Yellow
+    }
+
     if ($Verbose) {
         runas /user:claude /savecred $wtArgs
     } else {
@@ -307,7 +322,12 @@ function _OpenClaudeShell {
                 Write-Color "  output: $runasOut" Red
             } else {
                 Write-Color "  (no output captured -- often means saved credential missing/expired)" DarkGray
-                Write-Color "  to re-save credential, run interactively once: runas /user:claude /savecred wt.exe" DarkGray
+                if ($isAdmin) {
+                    Write-Color "  -> Admin shell credential vault is separate. Try a non-admin shell." Yellow
+                }
+                Write-Color "  to (re-)save credential, run interactively once:" DarkGray
+                Write-Color "      runas /user:claude /savecred wt.exe" Cyan
+                Write-Color "  it will prompt for claude's password; subsequent gwt calls won't ask again." DarkGray
             }
             $encLen = $wtArgs.Length
             Write-Color "  full wt args length: $encLen chars (runas command-line limit ~2048)" DarkGray
@@ -323,10 +343,15 @@ function _OpenClaudeShell {
 function _ConfirmOpenOrCd {
     param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen)
 
+    # Short-circuit: if an alive session already exists for this path, show the
+    # same heads-up _OpenClaudeShell would print -- but do it BEFORE running
+    # through the window/prompt picker. Saves the user a bunch of dead clicks.
+    if (-not (_ConfirmNoAliveSessionAt -Path $Path)) { return }
+
     if ($AutoOpen) {
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { (_GetClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text }
-        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work'
+        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work' -Force
         return
     }
 
@@ -336,7 +361,7 @@ function _ConfirmOpenOrCd {
         if ($window -eq '__new__') { $window = $null }
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { Select-ClaudePrompt -Repo $Repo -Branch $Branch }
-        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window
+        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window -Force
     } else {
         $cd = Read-Host "cd there? (Y/n)"
         if ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$') {

@@ -281,7 +281,7 @@ Function Prompt () {
     Write-Host ": " -NoNewLine
     Write-Host $pwd.ProviderPath -ForegroundColor "Green"
     Write-Host "PS>" -NoNewLine -ForegroundColor "DarkGray"
-    return " " 
+    return " "
 }
 function Set-ConsoleColor ($bc, $fc) {
     $Host.UI.RawUI.BackgroundColor = $bc
@@ -327,8 +327,24 @@ function ltail {
 }
 
 function psfind {
-    param([Parameter(Mandatory, Position=0)][string]$Pattern)
-    Get-ChildItem -Recurse -Filter $Pattern -Name
+    # usage: psfind [<path>] <pattern>
+    #   psfind *.env            -> search cwd for *.env
+    #   psfind . *.env          -> same
+    #   psfind src *.ts         -> search ./src for *.ts
+    #   psfind D:\work *.log    -> absolute path
+    param(
+        [Parameter(Position=0)][string]$First,
+        [Parameter(Position=1)][string]$Second
+    )
+    if ($Second) {
+        $path    = $First
+        $pattern = $Second
+    } else {
+        $path    = '.'
+        $pattern = $First
+    }
+    if (-not $pattern) { Write-Host "usage: psfind [<path>] <pattern>" -ForegroundColor Yellow; return }
+    Get-ChildItem -Path $path -Recurse -Filter $pattern -Name -ErrorAction SilentlyContinue
 }
 
 Set-PSReadLineKeyHandler -Key Ctrl+d -Function DeleteCharOrExit
