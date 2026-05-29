@@ -44,6 +44,7 @@ param(
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
+    [switch]$WithSize,      # 'summary': also walk each worktree for byte totals (slow)
     [switch]$Help
 )
 
@@ -94,6 +95,35 @@ function Resolve-RepoContext {
     # default to github.com) -- we don't need to consult a git remote at all.
     if ($script:Org -and $script:Repo -and -not $script:RemoteHost) {
         $script:RemoteHost = if ($RemoteHost) { $RemoteHost } else { 'github.com' }
+    }
+
+    # Path-based inference: if cwd sits inside the canonical layout
+    # (<SourceRoot> or <WorktreeRoot>)\<host>\<org>\<repo>[\...] we can pull
+    # host/org/repo out without needing a git remote. Lets `gwt list` work
+    # from the repo's worktree-root dir (which has no .git of its own).
+    if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
+        $cwdNorm = (Get-Location).Path.Replace('/','\').TrimEnd('\')
+        foreach ($root in @($WorktreeRoot, $SourceRoot)) {
+            $rootNorm = $root.Replace('/','\').TrimEnd('\')
+            if (-not $cwdNorm.StartsWith("$rootNorm\", [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $rest  = $cwdNorm.Substring($rootNorm.Length + 1)
+            $parts = $rest -split '\\'
+            if ($parts.Count -lt 3) { continue }
+            $hostShort = $parts[0]
+            $orgGuess  = $parts[1]
+            $repoGuess = $parts[2]
+            $hostFull = switch ($hostShort) {
+                'github'    { 'github.com'    }
+                'bitbucket' { 'bitbucket.org' }
+                'gitlab'    { 'gitlab.com'    }
+                default     { $hostShort      }
+            }
+            if (-not $script:Org)        { $script:Org        = $orgGuess  }
+            if (-not $script:Repo)       { $script:Repo       = $repoGuess }
+            if (-not $script:RemoteHost) { $script:RemoteHost = $hostFull  }
+            $script:OrgRepoFromCwd = $true
+            break
+        }
     }
 
     if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
@@ -199,8 +229,18 @@ function Ensure-Worktree {
     # valid worktrees have a `.git` file (not dir) pointing at the gitdir
     if (Test-Path (Join-Path $WtPath '.git')) { return }
     if (Test-Path $WtPath) {
+        # Refuse to wipe residue if a claude session is live in that path -- that's
+        # the case where the user would lose work without realizing it.
+        $alive = Get-AliveSessionForPath $WtPath
+        if ($alive) {
+            Write-Color "REFUSING to clean residue at '$WtPath' -- a claude session is alive there" Red
+            Write-Color "  branch=$($alive.Branch)  window=$($alive.WindowName)  pid=$($alive.Pid)" DarkGray
+            Write-Color "  close that session first (or 'gwt sessions clean -Paused <name>'), then retry" DarkGray
+            throw "aborting -- alive session would lose state"
+        }
         Write-Color "path '$WtPath' exists but isn't a valid worktree -- cleaning up residue" Yellow
         try {
+            _AssertUnderWorktreeRoot $WtPath
             Remove-Item $WtPath -Recurse -Force -ErrorAction Stop
         } catch {
             throw "couldn't remove residual '$WtPath' (often: another shell has it as cwd). Close that shell or 'cd' away, then retry."
@@ -241,18 +281,169 @@ function Sync-PrBranch {
     }
 }
 
+function _AssertUnderWorktreeRoot {
+    # Defense-in-depth: any destructive op must verify the target sits under
+    # $WorktreeRoot. Throws if it doesn't. Cheap, called from every Remove-Item
+    # site so a bug elsewhere can't accidentally wipe a main clone or home dir.
+    param([Parameter(Mandatory)][string]$Path)
+    $rootNorm = $WorktreeRoot.Replace('/','\').TrimEnd('\').ToLower()
+    $tgtNorm  = $Path.Replace('/','\').TrimEnd('\').ToLower()
+    if (-not ($tgtNorm.StartsWith("$rootNorm\"))) {
+        throw "REFUSING destructive op on '$Path' -- not under WorktreeRoot '$WorktreeRoot'"
+    }
+}
+
 function Remove-Worktree {
     param([string]$Src, [string]$WtPath, [switch]$AutoConfirm)
+
+    # Hard guard #0: the path MUST live under $WorktreeRoot (default
+    # D:\worktrees). Refuses any registration that points at a main clone, a
+    # user-home dir, an external drive, or anywhere else weird. This is the
+    # one rule no other code path can override.
+    $rootNorm = $WorktreeRoot.Replace('/','\').TrimEnd('\').ToLower()
+    $tgtNorm  = $WtPath.Replace('/','\').TrimEnd('\').ToLower()
+    if (-not ($tgtNorm.StartsWith("$rootNorm\"))) {
+        Write-Color "REFUSING to remove '$WtPath'" Red
+        Write-Color "  path is not under '$WorktreeRoot' -- this guard rejects EVERYTHING outside that root" DarkGray
+        Write-Color "  if you really need to remove this manually: git -C '$Src' worktree remove --force '$WtPath'" DarkGray
+        return
+    }
+
     if (-not (Test-Path $WtPath)) {
         Write-Color "worktree not found at '$WtPath', pruning stale registrations" DarkYellow
         Invoke-Git $Src @('worktree','prune')
         return
     }
+
+    # Hard guard #1: refuse if a claude session is alive at this path. The
+    # session has uncommitted state and our process would either fail mid-delete
+    # (file locks) or wipe work the user didn't know was there.
+    $alive = Get-AliveSessionForPath $WtPath
+    if ($alive) {
+        Write-Color "REFUSING to remove '$WtPath' -- claude session is alive there" Red
+        Write-Color "  branch=$($alive.Branch)  window=$($alive.WindowName)  pid=$($alive.Pid)" DarkGray
+        Write-Color "  close that session first (or 'gwt sessions clean -Paused <name>'), then retry" DarkGray
+        return
+    }
+
+    # Hard guard #2: if the parent shell's cwd is inside (or equal to) the path
+    # we're about to delete, hint the gwt wrapper to cd us to the main clone
+    # first -- otherwise the FS locks the dir and Remove fails partway.
+    $cwd       = (Get-Location).Path.TrimEnd('\').ToLower()
+    $wtNorm    = $WtPath.TrimEnd('\').ToLower()
+    if ($cwd -eq $wtNorm -or $cwd.StartsWith("$wtNorm\")) {
+        Write-Color "  cwd is inside the worktree about to be removed -- hopping to MAIN ($Src)" DarkGray
+        Set-Location $Src
+        _SetGwtCwdHint $Src
+    }
+
     $ok = $AutoConfirm -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "remove worktree at '$WtPath'? (Y/n)")) -or $r -match '^[Yy]$')
     if ($ok) {
         Invoke-Git $Src @('worktree','remove','--force',$WtPath)
         Write-Color "removed: $WtPath" Green
+        # If 'current' was pointing at this worktree, repoint it to MAIN
+        # ($Src is the main clone dir) instead of leaving a dangling symlink.
+        _DropCurrentSymlinkIfPointsAt -WtRoot (Split-Path $WtPath -Parent) -WorktreePath $WtPath -MainPath $Src
     }
+}
+
+function Get-AliveSessionForPath {
+    # Return the alive session-registry entry whose WorktreePath matches the given
+    # path (case-insensitive, normalized). Returns $null if none. Used by destructive
+    # ops to warn before nuking a worktree someone has claude open in.
+    param([string]$WorktreePath)
+    $sessionDir = 'D:\worktrees\sessions'
+    if (-not $WorktreePath -or -not (Test-Path $sessionDir)) { return $null }
+    $norm = ($WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+    $procMap = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $procMap[[int]$_.ProcessId] = $_
+    }
+    foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
+            if (-not $e.WorktreePath) { continue }
+            if ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -ne $norm) { continue }
+            if (-not ($e.Pid -and $e.Pid -ne 0)) { continue }
+            $cim = $procMap[[int]$e.Pid]
+            if (-not $cim) { continue }
+            if ($e.StartTime -and $cim.CreationDate) {
+                $delta = [math]::Abs(($cim.CreationDate - [datetime]::Parse($e.StartTime)).TotalSeconds)
+                if ($delta -gt 2) { continue }
+            }
+            return $e
+        } catch {}
+    }
+    return $null
+}
+
+function _SetCurrentSymlink {
+    # Maintain a stable "current" symlink at <WtRoot>\current -> $WorktreePath.
+    # Lets the IDE pin one project per repo and follow whichever branch is hot.
+    param([Parameter(Mandatory)][string]$WtRoot, [Parameter(Mandatory)][string]$WorktreePath)
+    if (-not (Test-Path $WtRoot)) {
+        [System.IO.Directory]::CreateDirectory($WtRoot) | Out-Null
+    }
+    $link = Join-Path $WtRoot 'current'
+    if (Test-Path $link) {
+        try { Remove-Item $link -Force -ErrorAction Stop } catch {
+            Write-Color "  could not replace existing 'current' at $link : $($_.Exception.Message)" Yellow
+            return
+        }
+    }
+    try {
+        New-Item -ItemType SymbolicLink -Path $link -Target $WorktreePath -ErrorAction Stop | Out-Null
+        Write-Color "  current -> $WorktreePath" DarkGray
+    } catch {
+        Write-Color "  symlink failed (need Developer Mode or admin): $($_.Exception.Message)" Yellow
+    }
+}
+
+function _DropCurrentSymlinkIfPointsAt {
+    # If <WtRoot>\current points at the given worktree (the one we just removed),
+    # repoint it at the main clone instead so the IDE-pinned path keeps working.
+    # Falls back to deletion if MainPath isn't provided or doesn't exist.
+    param(
+        [Parameter(Mandatory)][string]$WtRoot,
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [string]$MainPath
+    )
+    $link = Join-Path $WtRoot 'current'
+    if (-not (Test-Path $link)) { return }
+    try {
+        $item = Get-Item $link -Force
+        if ($item.LinkType -ne 'SymbolicLink') { return }
+        $target = ($item.Target | Select-Object -First 1)
+        if (-not $target) { return }
+        $norm = (Resolve-Path $target -ErrorAction SilentlyContinue).Path
+        if (-not $norm) { $norm = $target }
+        if ($norm.TrimEnd('\').ToLower() -ne $WorktreePath.TrimEnd('\').ToLower()) { return }
+
+        # It WAS pointing at the removed worktree. Repoint to main if possible.
+        Remove-Item $link -Force -ErrorAction SilentlyContinue
+        if ($MainPath -and (Test-Path $MainPath)) {
+            try {
+                New-Item -ItemType SymbolicLink -Path $link -Target $MainPath -ErrorAction Stop | Out-Null
+                Write-Color "  'current' repointed to MAIN ($MainPath)" DarkGray
+            } catch {
+                Write-Color "  dropped 'current' (couldn't repoint to MAIN: $($_.Exception.Message))" DarkGray
+            }
+        } else {
+            Write-Color "  dropped 'current' symlink (was pointing at the removed worktree)" DarkGray
+        }
+    } catch {}
+}
+
+function _SetGwtCwdHint {
+    # Drop a hint file the gwt profile wrapper reads after the script exits, so it
+    # can Set-Location the parent shell into the newly-created worktree. Keyed on
+    # $PID so concurrent gwt calls don't trample each other.
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        $hintFile = Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt"
+        Set-Content -Path $hintFile -Value $Path -Encoding UTF8 -NoNewline
+    } catch {}
 }
 
 function _CleanupWorktreeMetadata {
@@ -590,6 +781,7 @@ switch ($Command) {
             } else {
                 Write-Color "ready: $existingWt" Green
                 _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+                _SetGwtCwdHint $existingWt
                 return
             }
         }
@@ -660,7 +852,81 @@ switch ($Command) {
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
+        $r = Read-Host "activate this worktree (point '$($ctx.WtRoot)\current' here)? (y/N)"
+        if ($r -match '^[Yy]$') { _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath }
         _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+        _SetGwtCwdHint $wtPath
+    }
+
+    'current' {
+        # Manage <WtRoot>\current -- the IDE-pinned symlink.
+        #   gwt current           -- print what 'current' points at
+        #   gwt current .         -- set to cwd's worktree (validated as a real worktree)
+        #   gwt current <branch>  -- set to that branch's worktree
+        $ctx  = Resolve-RepoContext
+        $link = Join-Path $ctx.WtRoot 'current'
+
+        if (-not $Target) {
+            if (-not (Test-Path $link)) {
+                Write-Color "no 'current' symlink in $($ctx.WtRoot)" DarkGray
+                return
+            }
+            try {
+                $li = Get-Item $link -Force
+                if ($li.LinkType -ne 'SymbolicLink') {
+                    Write-Color "$link exists but is NOT a symlink" Yellow
+                    return
+                }
+                $tgt = ($li.Target | Select-Object -First 1)
+                Write-Color "current -> $tgt" Cyan
+                if (-not (Test-Path $tgt)) {
+                    Write-Color "  (target is missing!)" Red
+                }
+            } catch {
+                Write-Color "could not read symlink: $($_.Exception.Message)" Red
+            }
+            return
+        }
+
+        # Resolve the desired target.
+        if ($Target -eq '.') {
+            $cwd = (Get-Location).Path.Replace('/','\').TrimEnd('\').ToLower()
+            $wtPath = $null
+            foreach ($wt in (Get-WorktreeStatuses $ctx.Src)) {
+                if ($wt.Status -eq 'MAIN') { continue }
+                $p = $wt.Path.Replace('/','\').TrimEnd('\').ToLower()
+                if ($cwd -eq $p -or $cwd.StartsWith("$p\")) { $wtPath = $wt.Path; break }
+            }
+            if (-not $wtPath) { throw "cwd '$cwd' isn't inside a worktree of $($ctx.Org)/$($ctx.Repo)" }
+        } else {
+            $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
+            if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
+            if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing -- run 'gwt prune'" }
+        }
+        _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath
+    }
+
+    'activate' {
+        # Point <WtRoot>\current at a worktree -- IDE-friendly stable path.
+        #   gwt activate            -- uses the current cwd's worktree
+        #   gwt activate <branch>   -- looks up that branch's worktree
+        $ctx = Resolve-RepoContext
+        if ($Target) {
+            $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
+            if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
+        } else {
+            # Default to whichever worktree contains cwd. Normalize separators on
+            # both sides -- git emits forward slashes; Get-Location uses backslashes.
+            $cwd = (Get-Location).Path.Replace('/','\').TrimEnd('\').ToLower()
+            $wtPath = $null
+            foreach ($wt in (Get-WorktreeStatuses $ctx.Src)) {
+                if ($wt.Status -eq 'MAIN') { continue }
+                $p = $wt.Path.Replace('/','\').TrimEnd('\').ToLower()
+                if ($cwd -eq $p -or $cwd.StartsWith("$p\")) { $wtPath = $wt.Path; break }
+            }
+            if (-not $wtPath) { throw "no branch given and cwd '$cwd' isn't inside a worktree" }
+        }
+        _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath
     }
 
     'pr' {
@@ -699,6 +965,7 @@ switch ($Command) {
                     # No saved state -- skip prompt, just open in existing path.
                     Write-Color "no saved gwt state -- opening claude in existing worktree" DarkGray
                     _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                _SetGwtCwdHint $existingWt
                     return
                 }
 
@@ -723,6 +990,7 @@ switch ($Command) {
                     }
                     'o' {
                         _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                _SetGwtCwdHint $existingWt
                         return
                     }
                     default {
@@ -737,6 +1005,7 @@ switch ($Command) {
             } else {
                 Write-Color "ready: $existingWt" Green
                 _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                _SetGwtCwdHint $existingWt
                 return
             }
         }
@@ -746,6 +1015,7 @@ switch ($Command) {
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
         _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+        _SetGwtCwdHint $wtPath
     }
 
     'discourse' {
@@ -910,6 +1180,7 @@ switch ($Command) {
 
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
         _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+        _SetGwtCwdHint $wtPath
         return
     }
 
@@ -1208,6 +1479,15 @@ switch ($Command) {
                 $targets = _ResolveSessionTargets -Pool $entries -Verb $Target
                 if (-not $targets) { return }
                 foreach ($m in $targets) {
+                    # Ad-hoc entries (registered when claude was launched outside any
+                    # git repo) are permanently locked Saved -- the underlying cwd
+                    # is often something dangerous like D:\worktrees itself.
+                    $isAdhoc = ($m.WindowName -eq 'ad-hoc') -or ($m.Branch -like '(adhoc:*)')
+                    if ($isAdhoc -and -not $val) {
+                        Write-Color "  refusing to unsave ad-hoc entry: $($m.Branch) @ $($m.WorktreePath)" Red
+                        Write-Color "    (ad-hoc entries stay Saved permanently for safety)" DarkGray
+                        continue
+                    }
                     $e = Get-Content $m.File -Raw | ConvertFrom-Json
                     if ($e.PSObject.Properties['Saved']) {
                         $e.Saved = $val
@@ -1248,6 +1528,21 @@ switch ($Command) {
                 if ($All)             { $dropTags += 'ACTIVE' }
                 $toDrop = @($classified | Where-Object { $_.Tag -in $dropTags })
 
+                # Canonical-path guard: only clean entries whose WorktreePath sits at
+                # the expected 4+-deep layout:
+                #   D:\worktrees\<provider>\<org>\<repo>\<branch>   (worktree session)
+                #   D:\git\<provider>\<org>\<repo>                  (main-clone session)
+                # Anything shallower (D:\worktrees, D:\, arbitrary paths) gets
+                # protected -- even -All won't touch it. This is the safety net for
+                # the case where a registration somehow points at a dangerous root.
+                $canonicalRegex = '^[A-Za-z]:\\(worktrees\\[^\\]+\\[^\\]+\\[^\\]+\\[^\\]+|git\\[^\\]+\\[^\\]+\\[^\\]+)(\\|$)'
+                $offLayoutSkipped = @($toDrop | Where-Object {
+                    -not $_.WorktreePath -or ($_.WorktreePath -notmatch $canonicalRegex)
+                })
+                $toDrop = @($toDrop | Where-Object {
+                    $_.WorktreePath -and ($_.WorktreePath -match $canonicalRegex)
+                })
+
                 # Protect Saved entries from ALL clean operations -- even -All.
                 # Use 'gwt sessions unsave <name>' first if you really mean to drop one.
                 $savedSkipped = @($toDrop | Where-Object { $_.Saved })
@@ -1259,6 +1554,10 @@ switch ($Command) {
                     $resolved = _ResolveSessionTargets -Pool $toDrop -Verb 'clean'
                     if (-not $resolved) { return }
                     $toDrop = $resolved
+                }
+                foreach ($s in $offLayoutSkipped) {
+                    Write-Color "  protected (off-layout): $($s.Branch) @ $($s.WorktreePath)" Red
+                    Write-Color "    path is not under D:\worktrees\<host>\<org>\<repo>\<branch> -- refusing to touch" DarkGray
                 }
                 foreach ($s in $savedSkipped) {
                     Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to clean" DarkGray
@@ -1348,16 +1647,42 @@ switch ($Command) {
     }
 
     'claude' {
+        # 'gwt claude' (or 'gwt claude .') tries hard to open claude here:
+        #   1. resolve current branch + repo context + worktree
+        #   2. if any step fails (fresh 'git init', no remote, no commits yet,
+        #      not even a git repo) fall back to a tangent-style launch at cwd
+        # That way `git init` + `gwt claude .` Just Works.
+        $tangentFallback = $false
         if (-not $Target -or $Target -eq '.') {
             $Target = (& git rev-parse --abbrev-ref HEAD 2>&1 | Out-String).Trim()
             if ($LASTEXITCODE -ne 0 -or -not $Target -or $Target -eq 'HEAD') {
-                throw "'claude' requires a branch name -- and you don't appear to be inside a worktree"
+                $tangentFallback = $true
             }
         }
-        $ctx    = Resolve-RepoContext
-        $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
-        if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
-        if (-not (Test-Path $wtPath)) { throw "worktree path '$wtPath' is registered but missing -- run 'gwt prune'" }
+
+        if (-not $tangentFallback) {
+            try   { $ctx = Resolve-RepoContext }
+            catch { $tangentFallback = $true }
+        }
+        if (-not $tangentFallback) {
+            $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
+            if (-not $wtPath -or -not (Test-Path $wtPath)) { $tangentFallback = $true }
+        }
+
+        if ($tangentFallback) {
+            # No usable git context -- open claude in cwd, no worktree machinery.
+            $tanPath = (Get-Location).Path
+            $tanLeaf = Split-Path $tanPath -Leaf
+            Write-Color "no worktree/branch context -- opening as a tangent at $tanPath" DarkGray
+            if (-not (_ConfirmNoAliveSessionAt -Path $tanPath)) { return }
+            $window     = if ($y) { 'tangent' } else { _SelectWtWindow -Default 'tangent' }
+            $promptText = if ($Prompt) { $Prompt }
+                          elseif ($y) { '' }
+                          else { Select-ClaudePrompt -Repo $tanLeaf -Branch 'tangent' }
+            _OpenClaudeShell -Path $tanPath -Repo $tanLeaf -Branch "tangent:$tanLeaf" `
+                             -PromptText $promptText -WindowName $window -Force
+            return
+        }
 
         # Active-session check FIRST, before any state/picks prompts.
         if (-not (_ConfirmNoAliveSessionAt -Path $wtPath)) { return }
@@ -1405,6 +1730,24 @@ switch ($Command) {
     'cd' {
         if (-not $Target) { throw "'cd' requires a branch or worktree dir name" }
         $ctx    = Resolve-RepoContext
+
+        # Special case: 'gwt cd current' resolves to whatever <WtRoot>\current
+        # points at. Useful for IDE-pinned setups: cd straight to the active wt.
+        if ($Target -ieq 'current') {
+            $link = Join-Path $ctx.WtRoot 'current'
+            if (-not (Test-Path $link)) {
+                throw "no 'current' symlink at $link -- run 'gwt activate <branch>' first"
+            }
+            try {
+                $li = Get-Item $link -Force
+                if ($li.LinkType -ne 'SymbolicLink') { throw "'current' exists but is not a symlink" }
+                $wtPath = ($li.Target | Select-Object -First 1)
+            } catch { throw "could not resolve 'current' symlink: $($_.Exception.Message)" }
+            if (-not (Test-Path $wtPath)) { throw "'current' points at '$wtPath' which is missing" }
+            Write-Output $wtPath
+            return
+        }
+
         $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
         if (-not $wtPath) {
             # Fall back to matching by worktree directory name (case-insensitive).
@@ -1543,10 +1886,28 @@ switch ($Command) {
         }
 
         $printedMain = $false
+        # Look up the 'current' symlink target if any -- print it right under
+        # MAIN as a quick "this is what your IDE follows" hint.
+        $currentLink = Join-Path $ctx.WtRoot 'current'
+        $currentTgt  = $null
+        if (Test-Path $currentLink) {
+            try {
+                $cli = Get-Item $currentLink -Force
+                if ($cli.LinkType -eq 'SymbolicLink') {
+                    $currentTgt = ($cli.Target | Select-Object -First 1)
+                }
+            } catch {}
+        }
         foreach ($wt in $statuses) {
             # Print a divider after the MAIN row to visually separate the main
-            # clone from the worktrees below.
+            # clone from the worktrees below. If 'current' is set, print it
+            # right above the divider so it sits in the MAIN block.
             if ($printedMain -and $wt.Status -ne 'MAIN') {
+                if ($currentTgt) {
+                    $tgtNorm = $currentTgt.Replace('\','/').TrimEnd('/')
+                    Write-Host "    [CURRENT         ] " -NoNewline -ForegroundColor White
+                    Write-Host "-> $tgtNorm" -ForegroundColor DarkCyan
+                }
                 Write-Host ('    ' + ('-' * 90)) -ForegroundColor DarkGray
                 $printedMain = $false
             }
@@ -1604,7 +1965,10 @@ switch ($Command) {
         # tracks. Mirrors the same logic 'gwt prune' uses, but read-only here.
         if (Test-Path $ctx.WtRoot) {
             $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
-            Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
+                # Skip symlinks (e.g. our 'current' shortcut) -- they're not worktrees.
+                $_.LinkType -ne 'SymbolicLink'
+            } | ForEach-Object {
                 $p     = $_.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
                 if ($registered -contains $pNorm) { return }
@@ -1694,7 +2058,10 @@ switch ($Command) {
         # Skip the orphan sweep when filtering to a specific branch -- orphans by
         # definition aren't tied to a branch in git's view.
         if (-not $Target -and (Test-Path $ctx.WtRoot)) {
-            Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
+                # Skip symlinks (e.g. our 'current' shortcut) -- they're not worktrees.
+                $_.LinkType -ne 'SymbolicLink'
+            } | ForEach-Object {
                 $p     = $_.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
                 if ($registered -contains $pNorm) { return }
@@ -1747,6 +2114,25 @@ switch ($Command) {
     }
 
     'prune' {
+        # If $Target looks like a path (., .., contains a backslash, or is
+        # rooted with a drive letter), resolve it to an absolute path and peel
+        # off the last folder. That folder name is the branch under gwt's
+        # canonical D:\worktrees\<host>\<org>\<repo>\<branch>\ layout.
+        $isPathish = $Target -and (
+            $Target -eq '.' -or $Target -eq '..' -or
+            $Target -match '\\' -or $Target -match '^[A-Za-z]:'
+        )
+        if ($isPathish) {
+            try {
+                $resolved = (Resolve-Path -LiteralPath $Target -ErrorAction Stop).Path
+                $orig     = $Target
+                $Target   = Split-Path $resolved.TrimEnd('\') -Leaf
+                Write-Color "resolved '$orig' -> branch '$Target' (from $resolved)" DarkGray
+            } catch {
+                throw "could not resolve path '$Target'"
+            }
+        }
+
         $reposToProcess = @()
 
         if ($Org) {
@@ -1779,14 +2165,35 @@ switch ($Command) {
             if (-not $NoFetch) {
                 & git -C $repoPath fetch origin --prune 2>&1 | Out-Null
             }
+            # Clean any stale entries inside .git/worktrees/ first -- e.g. if a
+            # previous prune deleted the working dir but the internal record
+            # survived (or the user 'gwt new'd then twigged the branch and
+            # garbage was left behind). Makes downstream detection consistent.
+            & git -C $repoPath worktree prune 2>&1 | Out-Null
 
             $statuses   = Get-WorktreeStatuses $repoPath
             $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
 
             $filterMatchedWorktree = $false
             if ($branchFilter) {
-                $filtered = $statuses | Where-Object { $_.Branch -eq $branchFilter }
-                if ($filtered) {
+                $filtered = @($statuses | Where-Object { $_.Branch -eq $branchFilter })
+                if ($filtered.Count -eq 0) {
+                    # No branch named that. Maybe the user typed a worktree DIR
+                    # name whose branch differs (e.g. 'release-v1.5.x' dir holding
+                    # branch 'quickstart-never-latest-on-maint-branch'). Offer it.
+                    $byDir = @($statuses | Where-Object { (Split-Path $_.Path -Leaf) -ieq $branchFilter })
+                    if ($byDir.Count -eq 1) {
+                        $b = $byDir[0]
+                        Write-Color "  no branch named '$branchFilter' -- found a worktree dir with that name holding branch '$($b.Branch)'" Yellow
+                        $r = Read-Host "  use that worktree? (Y/n)"
+                        if ([string]::IsNullOrWhiteSpace($r) -or $r -match '^[Yy]') {
+                            $filtered = $byDir
+                        }
+                    } elseif ($byDir.Count -gt 1) {
+                        Write-Color "  no branch named '$branchFilter' -- multiple worktree dirs share that leaf name; type the full branch name to disambiguate" Yellow
+                    }
+                }
+                if ($filtered.Count) {
                     $statuses = $filtered
                     $filterMatchedWorktree = $true
                 } else {
@@ -1804,8 +2211,15 @@ switch ($Command) {
             $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','UNTRACKED-ONLY') } else { @('PRUNE') }
             $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses })
             if ($branchFilter -and -not $prunable) {
-                $hint = if (-not $Force) { " (re-run with -Force to delete a DIRTY/UNTRACKED-ONLY worktree)" } else { '' }
-                Write-Color "  '$branchFilter' is not in a prunable state -- nothing to do$hint" DarkGray
+                # Be specific about WHY it's not prunable. Always point at
+                # `gwt rm` as the always-works escape hatch; only mention
+                # -Force when it'd actually help (DIRTY / UNTRACKED-ONLY).
+                $actualStatus = if ($statuses.Count -eq 1) { $statuses[0].Status } else { $null }
+                Write-Color "  '$branchFilter' is $actualStatus -- prune won't touch it" Yellow
+                if ($actualStatus -in @('DIRTY','UNTRACKED-ONLY') -and -not $Force) {
+                    Write-Color "    -> gwt prune $branchFilter -Force   (deletes DIRTY/UNTRACKED-ONLY)" DarkGray
+                }
+                Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
             }
             foreach ($wt in $prunable) {
                 $raw   = if ($wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
@@ -1826,6 +2240,7 @@ switch ($Command) {
                         if ($ok) {
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
                             if (Test-Path $wt.Path) {
+                                _AssertUnderWorktreeRoot $wt.Path
                                 Remove-Item $wt.Path -Recurse -Force -ErrorAction SilentlyContinue
                             }
                             Write-Color "                    removed." DarkGray
@@ -1845,6 +2260,7 @@ switch ($Command) {
                             # `worktree remove --force` can leave the directory if it
                             # contains ignored/untracked files. Stomp it explicitly.
                             if (Test-Path $wt.Path) {
+                                _AssertUnderWorktreeRoot $wt.Path
                                 Remove-Item $wt.Path -Recurse -Force -ErrorAction SilentlyContinue
                             }
                             Write-Color "                    removed." DarkGray
@@ -1872,17 +2288,29 @@ switch ($Command) {
 
             $orphanMatchFound = $false
             foreach ($d in (Get-ChildItem $wtRoot -Directory -ErrorAction SilentlyContinue)) {
+                if ($d.LinkType -eq 'SymbolicLink') { continue }   # skip 'current' and friends
                 $p     = $d.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
                 if ($registered -contains $pNorm) { continue }
                 if ($branchFilter -and ($d.Name -ine $branchFilter)) { continue }
                 $orphanMatchFound = $true
 
+                # Alive-session guard applies to both orphan branches -- if a claude
+                # session is sitting in the dir, Remove-Item will fail with "in use".
+                $alive = Get-AliveSessionForPath $p
+                if ($alive) {
+                    Write-Color "  REFUSING to remove orphan '$p' -- claude session is alive there" Red
+                    Write-Color "    branch=$($alive.Branch)  window=$($alive.WindowName)  pid=$($alive.Pid)" DarkGray
+                    Write-Color "    close that tab (or 'gwt focus $($alive.Branch)' then exit), then retry" DarkGray
+                    continue
+                }
+
                 $dirty = (& git -C $p status --porcelain 2>&1 | Out-String).Trim()
                 if ([string]::IsNullOrWhiteSpace($dirty)) {
                     Write-Color "  [ORPHAN ] $p" Magenta
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove orphan? (Y/n)")) -or $r -match '^[Yy]$')
                     if ($ok) {
+                        _AssertUnderWorktreeRoot $p
                         Remove-Item $p -Recurse -Force
                         _CleanupWorktreeMetadata $p
                     }
@@ -1891,6 +2319,7 @@ switch ($Command) {
                     Write-Color "                    no .git linkage -- not a working tree anymore" Red
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                     if ($ok) {
+                        _AssertUnderWorktreeRoot $p
                         Remove-Item $p -Recurse -Force
                         Write-Color "                    removed." DarkGray
                         _CleanupWorktreeMetadata $p
@@ -1903,6 +2332,184 @@ switch ($Command) {
             if ($branchFilter -and -not $filterMatchedWorktree -and -not $orphanMatchFound) {
                 Write-Color "  no worktree or orphan named '$branchFilter' in this repo" Yellow
             }
+        }
+    }
+
+    'focus' {
+        # Find the alive claude session(s) matching <Target> and focus their wt
+        # window. Target is a substring match against Branch/WorktreePath/WindowName.
+        # No args -> pick from a list of every alive session.
+        $sessionDir = 'D:\worktrees\sessions'
+        if (-not (Test-Path $sessionDir)) { Write-Color "no session dir at $sessionDir" Yellow; return }
+
+        $procMap = @{}
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+            $procMap[[int]$_.ProcessId] = $_
+        }
+        $alive = @()
+        foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+            try {
+                $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
+                if (-not ($e.Pid -and $e.Pid -ne 0)) { continue }
+                if (-not $procMap[[int]$e.Pid]) { continue }
+                $alive += $e
+            } catch {}
+        }
+        if (-not $alive.Count) { Write-Color "no alive sessions" DarkGray; return }
+
+        $hits = if ($Target) {
+            @($alive | Where-Object {
+                $_.Branch       -like "*$Target*" -or
+                $_.WorktreePath -like "*$Target*" -or
+                $_.WindowName   -like "*$Target*"
+            })
+        } else { @($alive) }
+
+        if (-not $hits.Count) {
+            Write-Color "no alive sessions match '$Target'" Yellow
+            return
+        }
+        if ($hits.Count -gt 1) {
+            Write-Color "multiple alive sessions match -- pick one (or 'q' to quit):" Yellow
+            for ($i = 0; $i -lt $hits.Count; $i++) {
+                $h = $hits[$i]
+                Write-Host ("  [{0}] " -f ($i + 1)) -NoNewline -ForegroundColor Cyan
+                Write-Host ("{0,-30} [{1}] @ {2}" -f $h.Branch, $h.WindowName, $h.WorktreePath)
+            }
+            $resp = (Read-Host "choice").Trim()
+            if (-not $resp -or $resp -ieq 'q') { return }
+            $idx = 0
+            if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $hits.Count) {
+                Write-Color "invalid choice" Yellow; return
+            }
+            $hits = @($hits[$idx - 1])
+        }
+        $h = $hits[0]
+        if (-not $h.WindowName) {
+            Write-Color "session has no WindowName -- can't focus a wt window" Yellow
+            return
+        }
+        Write-Color "focusing wt window '$($h.WindowName)' (branch=$($h.Branch), pid=$($h.Pid))..." DarkGray
+        & runas /user:claude /savecred "wt.exe -w `"$($h.WindowName)`" focus-tab" 2>&1 | Out-Null
+    }
+
+    'summary' {
+        # Cross-repo worktree summary: count + optional on-disk size.
+        # Walks $WorktreeRoot\<host>\<org>\<repo>\<branch>. Each branch dir is a
+        # worktree. Group by repo, count. Pass -WithSize to also do the (slow)
+        # per-worktree byte walk.
+        if (-not (Test-Path $WorktreeRoot)) {
+            Write-Color "no worktree root at $WorktreeRoot" Yellow
+            return
+        }
+
+        # Collect <host, org, repo, branch, path> rows.
+        $rows = @()
+        foreach ($hostDir in (Get-ChildItem $WorktreeRoot -Directory -ErrorAction SilentlyContinue)) {
+            if ($hostDir.Name -in @('sessions','hooks','templates')) { continue }
+            foreach ($orgDir in (Get-ChildItem $hostDir.FullName -Directory -ErrorAction SilentlyContinue)) {
+                foreach ($repoDir in (Get-ChildItem $orgDir.FullName -Directory -ErrorAction SilentlyContinue)) {
+                    foreach ($wtDir in (Get-ChildItem $repoDir.FullName -Directory -ErrorAction SilentlyContinue)) {
+                        if ($wtDir.LinkType -eq 'SymbolicLink') { continue }  # 'current' and other shortcuts
+                        $rows += [PSCustomObject]@{
+                            Host   = $hostDir.Name
+                            Org    = $orgDir.Name
+                            Repo   = $repoDir.Name
+                            Branch = $wtDir.Name
+                            Path   = $wtDir.FullName
+                        }
+                    }
+                }
+            }
+        }
+
+        if (-not $rows.Count) {
+            Write-Color "no worktrees found under $WorktreeRoot" Yellow
+            return
+        }
+
+        # Size walk (parallel across rows for speed). Off by default since it
+        # walks every file in every worktree. Opt-in via -WithSize.
+        if ($WithSize) {
+            Write-Color "scanning $($rows.Count) worktrees for size..." DarkGray
+            $sized = $rows | ForEach-Object -Parallel {
+                $r = $_
+                $bytes = 0L
+                try {
+                    Get-ChildItem -LiteralPath $r.Path -Recurse -File -Force -ErrorAction SilentlyContinue |
+                        ForEach-Object { $bytes += $_.Length }
+                } catch {}
+                $r | Add-Member -NotePropertyName Bytes -NotePropertyValue $bytes -PassThru
+            } -ThrottleLimit 8
+            $rows = @($sized)
+        }
+
+        function _FmtBytes($n) {
+            if ($null -eq $n) { return '' }
+            if ($n -lt 1KB) { return "$n B" }
+            if ($n -lt 1MB) { return "{0:N1} KB" -f ($n / 1KB) }
+            if ($n -lt 1GB) { return "{0:N1} MB" -f ($n / 1MB) }
+            return "{0:N2} GB" -f ($n / 1GB)
+        }
+
+        # Group by host/org/repo. When sizes are present, sort by total size
+        # desc; otherwise sort by count desc.
+        $groups = $rows |
+            Group-Object @{Expression={ "$($_.Host)/$($_.Org)/$($_.Repo)" }} |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Key    = $_.Name
+                    Count  = $_.Group.Count
+                    Bytes  = if ($WithSize) { ($_.Group | Measure-Object -Property Bytes -Sum).Sum } else { $null }
+                    Items  = if ($WithSize) { $_.Group | Sort-Object Bytes -Descending } else { $_.Group | Sort-Object Branch }
+                }
+            } | Sort-Object @{Expression = { if ($WithSize) { $_.Bytes } else { $_.Count } }} -Descending
+
+        Write-Host ""
+        Write-Color "worktree summary @ $WorktreeRoot" Cyan
+        Write-Host ""
+        foreach ($g in $groups) {
+            if ($WithSize) {
+                Write-Color ("  {0,-50} {1,3} wt   {2,10}" -f $g.Key, $g.Count, (_FmtBytes $g.Bytes)) White
+                foreach ($it in $g.Items) {
+                    Write-Color ("    {0,-50} {1,10}" -f $it.Branch, (_FmtBytes $it.Bytes)) DarkGray
+                }
+            } else {
+                Write-Color ("  {0,-50} {1,3} wt" -f $g.Key, $g.Count) White
+                foreach ($it in $g.Items) {
+                    Write-Color ("    {0}" -f $it.Branch) DarkGray
+                }
+            }
+        }
+
+        $totalCount = $rows.Count
+        $repoCount  = $groups.Count
+        Write-Host ""
+        if ($WithSize) {
+            $totalBytes = ($rows | Measure-Object -Property Bytes -Sum).Sum
+            Write-Color ("TOTAL: $totalCount worktrees across $repoCount repos, " + (_FmtBytes $totalBytes)) Green
+        } else {
+            Write-Color "TOTAL: $totalCount worktrees across $repoCount repos  (pass -WithSize for on-disk totals)" Green
+        }
+    }
+
+    'rehook' {
+        # Re-run the per-repo worktree hook against every existing worktree of
+        # the current repo. Useful after the hook itself changes (e.g., we
+        # switched CMakeUserPresets.json from Copy-Item to a symlink and want
+        # all pre-existing worktrees to get the upgrade with confirmation).
+        $ctx     = Resolve-RepoContext
+        $allWts  = @(Get-WorktreeStatuses $ctx.Src)
+        $targets = @($allWts | Where-Object { $_.Status -ne 'MAIN' })
+        if (-not $targets.Count) {
+            Write-Color "no non-main worktrees in this repo -- nothing to do" DarkGray
+            return
+        }
+        Write-Color "re-running hook for $($targets.Count) worktree(s) in $($ctx.Org)/$($ctx.Repo):" Cyan
+        foreach ($wt in $targets) {
+            Write-Host ""
+            Write-Color ">>> $($wt.Branch) @ $($wt.Path)" Cyan
+            _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wt.Path -RemoteHost $ctx.RemoteHost
         }
     }
 
@@ -2018,6 +2625,25 @@ switch ($Command) {
         Write-Host "    gwt update-registry" -ForegroundColor Cyan
         Write-Host "        fetch fallback gwt-session-registry.ps1 from github into ~\.gwt\" -ForegroundColor DarkGray
         Write-Host "        (no-op if dotfiles repo is cloned -- update via git pull instead)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt current " -NoNewline -ForegroundColor Cyan
+        Write-Host "[. | <branch>]"
+        Write-Host "        manage the <WtRoot>\current symlink (IDE-pinned active worktree)" -ForegroundColor DarkGray
+        Write-Host "        no arg    print what 'current' points at" -ForegroundColor DarkGray
+        Write-Host "        .         repoint to whatever worktree contains cwd" -ForegroundColor DarkGray
+        Write-Host "        <branch>  repoint to that branch's worktree" -ForegroundColor DarkGray
+        Write-Host "        also: 'gwt cd current' to cd into whatever it points at" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt focus " -NoNewline -ForegroundColor Cyan
+        Write-Host "[<match>]"
+        Write-Host "        bring an alive claude session's wt window forward" -ForegroundColor DarkGray
+        Write-Host "        <match>  substring against Branch / WorktreePath / WindowName" -ForegroundColor DarkGray
+        Write-Host "        no arg   prompts a picker of all alive sessions" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt summary " -NoNewline -ForegroundColor Cyan
+        Write-Host "[-WithSize]"
+        Write-Host "        count every worktree under $WorktreeRoot, grouped by repo" -ForegroundColor DarkGray
+        Write-Host "        -WithSize  also walk each tree for byte totals (slow)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt sessions " -NoNewline -ForegroundColor Cyan
         Write-Host "[list | restore | close | clean | save | unsave] [<match>] [flags]"

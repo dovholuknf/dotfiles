@@ -598,6 +598,19 @@ function _RegisterOrClaimClaudeSession {
     } catch {}
     if (-not $repo) { $repo = Split-Path $cwd -Leaf }
 
+    # Ad-hoc claude launches outside a git checkout (no branch detectable):
+    # bucket them under [ad-hoc] in the listing and use the leaf dir as the
+    # "branch" so they show up identifiable rather than blank. Mark them Saved
+    # so 'gwt sessions clean' (any tier) and 'gwt prune -Force' refuse to touch
+    # them -- the cwd might be something dangerous like D:\worktrees itself.
+    $windowForEntry = $null
+    $savedForEntry  = $false
+    if (-not $branch) {
+        $branch         = "(adhoc:$(Split-Path $cwd -Leaf))"
+        $windowForEntry = 'ad-hoc'
+        $savedForEntry  = $true
+    }
+
     $now = (Get-Date).ToString('o')
     $sessionId = [guid]::NewGuid().ToString()
     $entry = @{
@@ -611,9 +624,10 @@ function _RegisterOrClaimClaudeSession {
         WorktreePath      = $cwd
         Branch            = $branch
         Repo              = $repo
-        WindowName        = $null
+        WindowName        = $windowForEntry
         PromptText        = $null
         ClaudeSessionName = $branch
+        Saved             = $savedForEntry
     }
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8
 }

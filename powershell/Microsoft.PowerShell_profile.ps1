@@ -55,13 +55,26 @@ function cdzet() { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 function cdds() { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
 
 function gwt {
-    # 'cd' is special-cased: the script prints the worktree path, we Set-Location
-    # here (a child .ps1 can't change the parent shell's cwd).
+    # Two ways the script communicates "cd the parent shell" to us:
+    #   1. 'cd' subcommand: script prints the worktree path on stdout, we cd to it.
+    #   2. Hint file: any other subcommand (new/pr/twig/discourse) that creates or
+    #      lands in a worktree writes the path to %TEMP%\gwt-cwd-hint-<PID>.txt;
+    #      we read it after the script returns and Set-Location.
+    # A child .ps1 can't mutate the parent shell's cwd directly, hence the dance.
+    $hintFile = Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt"
+    Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
+
     if ($args.Count -ge 1 -and $args[0] -eq 'cd') {
         $p = & "$env:ON_PATH\git-worktree.ps1" @args
         if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p }
     } else {
         & "$env:ON_PATH\git-worktree.ps1" @args
+    }
+
+    if (Test-Path $hintFile) {
+        $newCwd = (Get-Content $hintFile -Raw -ErrorAction SilentlyContinue).Trim()
+        Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
+        if ($newCwd -and (Test-Path $newCwd)) { Set-Location $newCwd }
     }
 }
 
@@ -177,9 +190,111 @@ function remove-npm {
     update-path -EnvVarName NPM_DEFAULT  -Remove
 }
 
-$env:ZITI_DEFAULT ="$env:USERPROFILE\.ziti\bin"
-function add-ziti { update-path -EnvVarName ZITI_DEFAULT -First }
+$env:ZITI_HOME    = "$env:USERPROFILE\.ziti\bin"
+$env:ZITI_DEFAULT = $env:ZITI_HOME   # gets pointed at a versioned subdir when 'add-ziti' runs
+
+function add-ziti {
+    # Add a versioned ziti binary dir to PATH.
+    # Layout expected: $env:ZITI_HOME\v<ver>\<ziti binaries>
+    #   - 0 versions:  fall back to $env:ZITI_HOME itself (legacy / flat layout)
+    #   - 1 version:   use it silently
+    #   - N versions:  prompt; -Version <name> bypasses the prompt
+    param([string]$Version)
+
+    if (-not (Test-Path $env:ZITI_HOME)) {
+        Write-Host "ziti home '$env:ZITI_HOME' not found -- nothing to add" -ForegroundColor Yellow
+        return
+    }
+
+    $versions = @(Get-ChildItem $env:ZITI_HOME -Directory -ErrorAction SilentlyContinue |
+                  Where-Object Name -match '^v\d' |
+                  Sort-Object @{Expression = {
+                      # Natural sort: split on dots/dashes, parse ints when possible.
+                      $parts = $_.Name.TrimStart('v') -split '[.\-]'
+                      $parts | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { $_ } }
+                  }} -Descending)
+
+    if (-not $versions.Count) {
+        $env:ZITI_DEFAULT = $env:ZITI_HOME
+    } elseif ($Version) {
+        $hit = $versions | Where-Object Name -ieq $Version | Select-Object -First 1
+        if (-not $hit) {
+            Write-Host "version '$Version' not found in $env:ZITI_HOME -- available:" -ForegroundColor Yellow
+            $versions | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor DarkGray }
+            return
+        }
+        $env:ZITI_DEFAULT = $hit.FullName
+    } elseif ($versions.Count -eq 1) {
+        $env:ZITI_DEFAULT = $versions[0].FullName
+    } else {
+        Write-Host ""
+        Write-Host "choose ziti version:" -ForegroundColor DarkGray
+        for ($i = 0; $i -lt $versions.Count; $i++) {
+            $marker = if ($i -eq 0) { '*' } else { ' ' }
+            Write-Host ("  [{0}]{1} {2}" -f ($i + 1), $marker, $versions[$i].Name) -ForegroundColor Cyan
+        }
+        $resp = (Read-Host "choice [1]").Trim()
+        if (-not $resp) { $resp = '1' }
+        $idx = 0
+        if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $versions.Count) {
+            Write-Host "invalid choice, using latest" -ForegroundColor Yellow
+            $idx = 1
+        }
+        $env:ZITI_DEFAULT = $versions[$idx - 1].FullName
+    }
+
+    update-path -EnvVarName ZITI_DEFAULT -First
+    Write-Host "ziti -> $env:ZITI_DEFAULT" -ForegroundColor Green
+}
+
 function remove-ziti { update-path -EnvVarName ZITI_DEFAULT -Remove }
+
+$env:ZROK_DEFAULT = "$env:USERPROFILE\.local\bin"
+function add-zrok    { update-path -EnvVarName ZROK_DEFAULT -First }
+function remove-zrok { update-path -EnvVarName ZROK_DEFAULT -Remove }
+
+# Java + Gradle: -Version overrides the auto-detected latest. Picks newest
+# Temurin install from "Program Files\Eclipse Adoptium\jdk-*-hotspot" and
+# newest Gradle from "D:\tools\gradle\*".
+function add-java {
+    param([string]$JavaVersion, [string]$GradleVersion)
+
+    # Java
+    $jdks = @(Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-*-hotspot' -ErrorAction SilentlyContinue |
+              Sort-Object @{Expression = { [version](($_.Name -replace '^jdk-','' -replace '-hotspot$','') -split '\.' | Select-Object -First 4 | ForEach-Object {$_ -as [int]} | Join-String -Separator '.') }} -Descending)
+    $jdk = if ($JavaVersion) { $jdks | Where-Object { $_.Name -like "*$JavaVersion*" } | Select-Object -First 1 } else { $jdks | Select-Object -First 1 }
+    if (-not $jdk) {
+        Write-Host "no JDK found under 'C:\Program Files\Eclipse Adoptium\jdk-*-hotspot' (filter: $JavaVersion)" -ForegroundColor Yellow
+    } else {
+        $env:JAVA_HOME = $jdk.FullName
+        $env:JAVA_BIN  = Join-Path $env:JAVA_HOME 'bin'
+        update-path -EnvVarName JAVA_BIN -First
+        Write-Host "java   -> $env:JAVA_HOME" -ForegroundColor Green
+    }
+
+    # Gradle
+    $gradles = @(Get-ChildItem 'D:\tools\gradle' -Directory -ErrorAction SilentlyContinue |
+                 Where-Object { Test-Path (Join-Path $_.FullName 'bin\gradle.bat') } |
+                 Sort-Object @{Expression = { try { [version]$_.Name } catch { [version]'0.0' } }} -Descending)
+    $gradle = if ($GradleVersion) { $gradles | Where-Object { $_.Name -eq $GradleVersion } | Select-Object -First 1 } else { $gradles | Select-Object -First 1 }
+    if (-not $gradle) {
+        Write-Host "no Gradle found under 'D:\tools\gradle\<ver>\bin' (filter: $GradleVersion)" -ForegroundColor Yellow
+    } else {
+        $env:GRADLE_HOME = $gradle.FullName
+        $env:GRADLE_BIN  = Join-Path $env:GRADLE_HOME 'bin'
+        update-path -EnvVarName GRADLE_BIN -First
+        Write-Host "gradle -> $env:GRADLE_HOME" -ForegroundColor Green
+    }
+}
+
+function remove-java {
+    if ($env:JAVA_BIN)   { update-path -EnvVarName JAVA_BIN   -Remove }
+    if ($env:GRADLE_BIN) { update-path -EnvVarName GRADLE_BIN -Remove }
+}
+
+function StartMcpGateway {
+    & 'D:\git\github\openziti\mcp-gateway\build\mcp-gateway.exe' run 'C:\Users\clint\.mcp-gateway\config.yml' @args
+}
 
 $env:CARGO_BIN="$env:USERPROFILE\.cargo\bin"
 function add-rust { update-path -EnvVarName CARGO_BIN -First }

@@ -531,6 +531,91 @@ $theme_monokai = @{
            $null,    '#f92672','#a6e22e','#f4bf75','#66d9ef','#ae81ff','#a1efe4',$null)
 }
 
+# ---- danger / admin themes (warm amber/orange backgrounds, "you're in elevated mode") ----
+$theme_admin_danger = @{
+    # Deep burnt-orange bg; primary "DANGER, you are root" theme.
+    label='admin-danger'; bg='#3a1b08'; fg='#ffe8c4'; cursor='#ff9933'
+    sel_bg='#6b3514'; sel_fg='#fff4d6'
+    ansi=@('#2a1206','#ff5c3c','#d4c46a','#ffaa33','#88b6c2','#d18df0','#7bd6c4','#ffe8c4',
+           $null,    '#ff8866','#e6dd80','#ffcc55','#a5d0dd','#e5b0ff','#a8f0e0',$null)
+}
+
+$theme_admin_caution = @{
+    # Mustard/amber bg, less aggressive than admin-danger. "elevated but you've been here a while."
+    label='admin-caution'; bg='#3d2e0f'; fg='#fff4d0'; cursor='#ffcc00'
+    sel_bg='#705618'; sel_fg='#fffae0'
+    ansi=@('#2a1f08','#ff6b6b','#cad669','#ffaa00','#7fa9c8','#d29be8','#7ed4c2','#fff4d0',
+           $null,    '#ff8a8a','#dde888','#ffcc44','#9cc5dc','#e0b5f0','#a3f0e0',$null)
+}
+
+# ---- more orange-leaning themes (less aggressive than admin-* but same warm family) ----
+$theme_pumpkin = @{
+    # Vivid pumpkin-orange bg; saturated but not "danger". Good general-purpose warm theme.
+    label='pumpkin'; bg='#4a1f08'; fg='#ffe2b8'; cursor='#ff8c1a'
+    sel_bg='#7a3812'; sel_fg='#fff1d6'
+    ansi=@('#321204','#ff5a3a','#c8c768','#ff9933','#7fb2c4','#d68fe8','#7ad1bb','#ffe2b8',
+           $null,    '#ff8866','#dde088','#ffb15a','#a3cedc','#e6b3ee','#a6e8d6',$null)
+}
+
+$theme_terracotta = @{
+    # Earthy red-orange/clay bg; warmer-leaning-red. Less yellow than pumpkin.
+    label='terracotta'; bg='#3b1e15'; fg='#f0d8c4'; cursor='#e07845'
+    sel_bg='#5f3225'; sel_fg='#ffe8d4'
+    ansi=@('#28140d','#e8516a','#b9c270','#e07845','#8fa9bd','#cf8fc4','#7ec4b3','#f0d8c4',
+           $null,    '#ff7589','#c8cf85','#f08e62','#a8c0d2','#dca6cf','#9bd2c0',$null)
+}
+
+# ---- ocean / cool themes ----
+$theme_ocean_deep = @{
+    # Saturated deep-blue, somewhere between solarized-dark and nord.
+    label='ocean-deep'; bg='#0d2440'; fg='#cfe1f5'; cursor='#5cc4ff'
+    sel_bg='#1e3a5f'; sel_fg='#eaf3ff'
+    ansi=@('#091a30','#ff6b7a','#8ad48a','#ffd166','#5cc4ff','#c890ff','#5fd1c1','#cfe1f5',
+           $null,    '#ff8b95','#a4dfa4','#ffe188','#7fd4ff','#dbb0ff','#82e0d3',$null)
+}
+
+$theme_teal_dusk = @{
+    # Slate-teal bg, cool and quiet.
+    label='teal-dusk'; bg='#102e35'; fg='#d9eaea'; cursor='#5fd7b8'
+    sel_bg='#1f4a55'; sel_fg='#ecf6f6'
+    ansi=@('#0a1f24','#ff6e6e','#5fd7b8','#e6c466','#6fb5d6','#c694e8','#7fc6c0','#d9eaea',
+           $null,    '#ff8e8e','#86e3c8','#f0d488','#8fc8e3','#d6abef','#9bd4cf',$null)
+}
+
+# ---- warm / earthy themes ----
+$theme_rosewood = @{
+    # Deep wine bg, warm.
+    label='rosewood'; bg='#2c1216'; fg='#f0d8d8'; cursor='#ff8d8d'
+    sel_bg='#4b1f25'; sel_fg='#ffe6e6'
+    ansi=@('#1a0a0c','#ff5a6e','#a8c285','#e8b66e','#7fa3c2','#c790c8','#7dbfb5','#f0d8d8',
+           $null,    '#ff7a8d','#bbd09a','#f0c987','#9cb9d2','#d8a9d8','#9ed3c9',$null)
+}
+
+$theme_cocoa = @{
+    # Soft brown bg. Cozy, low-contrast.
+    label='cocoa'; bg='#2b1e16'; fg='#e8d8c4'; cursor='#d8a373'
+    sel_bg='#46322a'; sel_fg='#f5e9d6'
+    ansi=@('#1f150f','#cf5560','#9bbf63','#d8a373','#6c92ab','#b986b5','#76b8a8','#e8d8c4',
+           $null,    '#e87580','#b2d480','#e6b88a','#8baac0','#d09acb','#92cdbd',$null)
+}
+
+# ---- high-energy / experimental ----
+$theme_neon_grape = @{
+    # Deep purple bg, vivid neon foreground.
+    label='neon-grape'; bg='#1a0d2e'; fg='#f3e8ff'; cursor='#c084fc'
+    sel_bg='#2e1655'; sel_fg='#faf5ff'
+    ansi=@('#100620','#ff4d8d','#a3e635','#fbbf24','#60a5fa','#c084fc','#22d3ee','#f3e8ff',
+           $null,    '#ff6ba1','#bef264','#fcd34d','#7eb5fc','#d4a9ff','#5ee6f5',$null)
+}
+
+$theme_matrix = @{
+    # Near-black bg, green-on-black "I'm in the mainframe" vibe.
+    label='matrix'; bg='#020a02'; fg='#a4ffa4'; cursor='#00ff66'
+    sel_bg='#0c280c'; sel_fg='#e8ffe8'
+    ansi=@('#031003','#ff5c5c','#00cc44','#cccc44','#5dbbd6','#a05fb0','#3fbfaa','#a4ffa4',
+           $null,    '#ff8080','#33ff66','#e8e858','#88d4e6','#c089d2','#65d8c3',$null)
+}
+
 $script:WtThemes = @{
     # gwt-window themes (each also has a convenience function: ActiveWork, etc.)
     'worktrees'      = $theme_worktrees
@@ -545,6 +630,21 @@ $script:WtThemes = @{
     'synthwave'      = $theme_synthwave
     'dracula'        = $theme_dracula
     'monokai'        = $theme_monokai
+    # admin / danger -- warm orange/amber backgrounds for elevated sessions
+    'admin-danger'   = $theme_admin_danger
+    'admin-caution'  = $theme_admin_caution
+    # additional orange-family backgrounds (less aggressive than admin-*)
+    'pumpkin'        = $theme_pumpkin
+    'terracotta'     = $theme_terracotta
+    # cool / oceanic
+    'ocean-deep'     = $theme_ocean_deep
+    'teal-dusk'      = $theme_teal_dusk
+    # warm / earthy
+    'rosewood'       = $theme_rosewood
+    'cocoa'          = $theme_cocoa
+    # high-energy
+    'neon-grape'     = $theme_neon_grape
+    'matrix'         = $theme_matrix
 }
 
 Set-Alias aw    ActiveWork
@@ -788,6 +888,48 @@ function Show-ThemeDemo {
     Write-Host (_C "Show-Theme -All     " $hint) -NoNewline
     Write-Host "all three with pauses between"
     Write-Host ""
+}
+
+function Tour-Themes {
+    # Apply every theme in $script:WtThemes in turn, show a quick demo, wait for
+    # input between each. -Palette / -Sample to swap the preview mode. -Filter
+    # narrows to matching names. -RestoreOnExit puts the original theme back.
+    param(
+        [ValidateSet('Demo','Palette','Sample','All')] [string]$Mode = 'Demo',
+        [string]$Filter,
+        [switch]$RestoreOnExit
+    )
+    $original = $global:WtThemeName
+    $names = @($script:WtThemes.Keys | Sort-Object)
+    if ($Filter) { $names = @($names | Where-Object { $_ -like "*$Filter*" }) }
+    if (-not $names.Count) { Write-Host "no themes match '$Filter'" -ForegroundColor Yellow; return }
+
+    Write-Host ""
+    Write-Host "Tour-Themes: $($names.Count) theme(s). Enter=next, q=quit." -ForegroundColor DarkGray
+    Write-Host ""
+
+    for ($i = 0; $i -lt $names.Count; $i++) {
+        $n = $names[$i]
+        Write-Host ""
+        Write-Host ("===== [{0}/{1}] {2} =====" -f ($i+1), $names.Count, $n) -ForegroundColor Cyan
+        Set-Theme $n
+        switch ($Mode) {
+            'Demo'    { Show-Theme -Demo }
+            'Palette' { Show-Theme -Palette }
+            'Sample'  { Show-Theme -Sample }
+            'All'     { Show-Theme -All }
+        }
+        if ($i -lt ($names.Count - 1)) {
+            $r = Read-Host "Enter for next, q to quit"
+            if ($r -ieq 'q') { break }
+        }
+    }
+
+    if ($RestoreOnExit -and $original) {
+        Set-Theme $original
+        Write-Host ""
+        Write-Host "restored: $original" -ForegroundColor DarkGray
+    }
 }
 
 function Show-Theme {
