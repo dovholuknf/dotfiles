@@ -193,6 +193,74 @@ function remove-npm {
 $env:ZITI_HOME    = "$env:USERPROFILE\.ziti\bin"
 $env:ZITI_DEFAULT = $env:ZITI_HOME   # gets pointed at a versioned subdir when 'add-ziti' runs
 
+function _TuiSelect {
+    # Arrow-key picker. Returns the chosen item (object) or $null if cancelled.
+    # Up/Down/k/j to move, Enter to select, Esc/q to cancel. Uses VT escapes
+    # for relative cursor motion so it works with Windows Terminal's tight buffer.
+    param(
+        [Parameter(Mandatory)] [array]$Items,
+        [string]$Prompt = 'choose:',
+        [string]$DisplayProperty
+    )
+    if (-not $Items.Count) { return $null }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        return $Items[0]
+    }
+
+    $ESC = [char]27
+    $idx = 0
+    $cursorWasVisible = [Console]::CursorVisible
+    [Console]::CursorVisible = $false
+
+    $render = {
+        # Erase from cursor to end of screen, then write all rows. Cursor lands
+        # on the line just below the last row.
+        Write-Host -NoNewline "$ESC[J"
+        for ($i = 0; $i -lt $Items.Count; $i++) {
+            $label = if ($DisplayProperty) { $Items[$i].$DisplayProperty } else { "$($Items[$i])" }
+            $line  = if ($i -eq $idx) { "> $label" } else { "  $label" }
+            $color = if ($i -eq $idx) { 'Cyan' } else { 'DarkGray' }
+            Write-Host $line -ForegroundColor $color
+        }
+    }
+
+    try {
+        Write-Host ""
+        Write-Host $Prompt -ForegroundColor DarkGray
+        & $render
+
+        while ($true) {
+            $k = [Console]::ReadKey($true)
+            $sel = $null; $cancel = $false
+            switch ($k.Key) {
+                'UpArrow'   { if ($idx -gt 0) { $idx-- } }
+                'DownArrow' { if ($idx -lt $Items.Count - 1) { $idx++ } }
+                'Home'      { $idx = 0 }
+                'End'       { $idx = $Items.Count - 1 }
+                'Enter'     { $sel = $Items[$idx] }
+                'Escape'    { $cancel = $true }
+                default {
+                    switch ($k.KeyChar) {
+                        'k' { if ($idx -gt 0) { $idx-- } }
+                        'j' { if ($idx -lt $Items.Count - 1) { $idx++ } }
+                        'q' { $cancel = $true }
+                    }
+                }
+            }
+            if ($sel)    { return $sel }
+            if ($cancel) { return $null }
+
+            # Move cursor UP by N lines (back to first item), redraw. Render
+            # itself moves the cursor back down past the items.
+            Write-Host -NoNewline "`r$ESC[$($Items.Count)A"
+            & $render
+        }
+    } finally {
+        [Console]::CursorVisible = $cursorWasVisible
+        Write-Host ""
+    }
+}
+
 function add-ziti {
     # Add a versioned ziti binary dir to PATH.
     # Layout expected: $env:ZITI_HOME\v<ver>\<ziti binaries>
@@ -227,20 +295,9 @@ function add-ziti {
     } elseif ($versions.Count -eq 1) {
         $env:ZITI_DEFAULT = $versions[0].FullName
     } else {
-        Write-Host ""
-        Write-Host "choose ziti version:" -ForegroundColor DarkGray
-        for ($i = 0; $i -lt $versions.Count; $i++) {
-            $marker = if ($i -eq 0) { '*' } else { ' ' }
-            Write-Host ("  [{0}]{1} {2}" -f ($i + 1), $marker, $versions[$i].Name) -ForegroundColor Cyan
-        }
-        $resp = (Read-Host "choice [1]").Trim()
-        if (-not $resp) { $resp = '1' }
-        $idx = 0
-        if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $versions.Count) {
-            Write-Host "invalid choice, using latest" -ForegroundColor Yellow
-            $idx = 1
-        }
-        $env:ZITI_DEFAULT = $versions[$idx - 1].FullName
+        $pick = _TuiSelect -Items $versions -Prompt "choose ziti version (Up/Down + Enter, Esc to cancel):" -DisplayProperty 'Name'
+        if (-not $pick) { Write-Host "cancelled" -ForegroundColor Yellow; return }
+        $env:ZITI_DEFAULT = $pick.FullName
     }
 
     update-path -EnvVarName ZITI_DEFAULT -First
@@ -248,6 +305,113 @@ function add-ziti {
 }
 
 function remove-ziti { update-path -EnvVarName ZITI_DEFAULT -Remove }
+
+function cleanup-ziti {
+    # Trim old ziti installs from $env:ZITI_HOME. Per-version y/N walk only,
+    # newest first. Always refuses to delete the currently-active version
+    # ($env:ZITI_DEFAULT). Also offers to clean leftover ziti-*.zip files
+    # in $env:ZITI_HOME.
+    #   -DryRun  -- list selections, don't actually remove
+    [CmdletBinding()]
+    param(
+        [switch]$DryRun
+    )
+
+    if (-not (Test-Path $env:ZITI_HOME)) {
+        Write-Host "no ziti home at $env:ZITI_HOME -- nothing to clean" -ForegroundColor Yellow
+        return
+    }
+
+    # SemVer-aware sort key. Splits the version into numeric and non-numeric
+    # runs, zero-pads the numerics to 8 chars, then appends '~' (0x7E) to
+    # release versions (no '-pre' suffix). '~' is higher than any letter or
+    # digit, so a release sorts above its own pre-releases:
+    #   v2.0.0      -> '00000002.00000000.00000000~'
+    #   v2.0.0-pre14-> '00000002.00000000.00000000-pre00000014'
+    # Descending string compare gives: v2.0.0, v2.0.0-pre14, v2.0.0-pre13, ...
+    $padKey = {
+        param($name)
+        $name = $name.TrimStart('v')
+        $hasSuffix = $name.Contains('-')
+        $sb = [System.Text.StringBuilder]::new()
+        foreach ($m in [System.Text.RegularExpressions.Regex]::Matches($name, '\d+|\D+')) {
+            $t = $m.Value
+            if ($t -match '^\d+$') { [void]$sb.Append($t.PadLeft(8,'0')) }
+            else                   { [void]$sb.Append($t) }
+        }
+        if (-not $hasSuffix) { [void]$sb.Append('~') }
+        $sb.ToString()
+    }
+    $versions = @(Get-ChildItem $env:ZITI_HOME -Directory -ErrorAction SilentlyContinue |
+                  Where-Object Name -match '^v\d' |
+                  Sort-Object @{Expression = { & $padKey $_.Name }} -Descending)
+
+    if (-not $versions.Count) {
+        Write-Host "no ziti versions found under $env:ZITI_HOME" -ForegroundColor Yellow
+        return
+    }
+
+    $activeNorm = if ($env:ZITI_DEFAULT) { $env:ZITI_DEFAULT.TrimEnd('\').ToLower() } else { $null }
+
+    Write-Host ""
+    Write-Host "for each installed ziti version (newest first): Y=keep (default), n=remove, q=stop" -ForegroundColor DarkGray
+    $toRemove = @()
+    foreach ($v in $versions) {
+        $tag = ''
+        if ($activeNorm -and $v.FullName.TrimEnd('\').ToLower() -eq $activeNorm) { $tag = ' (ACTIVE -- always kept)' }
+        $resp = (Read-Host "keep '$($v.Name)'$tag? (Y/n/q)").Trim().ToLower()
+        if ($resp -eq 'q') { break }
+        if ($resp -eq 'n') { $toRemove += $v }
+        # default (Enter / 'y') = keep
+    }
+
+    if (-not $toRemove.Count) { Write-Host "nothing selected" -ForegroundColor DarkGray; return }
+
+    Write-Host ""
+    Write-Host "would remove $($toRemove.Count) version(s):" -ForegroundColor Yellow
+    foreach ($v in $toRemove) {
+        $tag = ''
+        if ($activeNorm -and $v.FullName.TrimEnd('\').ToLower() -eq $activeNorm) { $tag = ' (ACTIVE -- will be skipped)' }
+        Write-Host "  $($v.Name)$tag" -ForegroundColor DarkGray
+    }
+
+    if ($DryRun) { Write-Host "-DryRun: not actually removing" -ForegroundColor DarkGray; return }
+
+    $confirm = Read-Host "proceed? (y/N)"
+    if (-not ($confirm -match '^[Yy]')) { Write-Host "aborted" -ForegroundColor Yellow; return }
+
+    foreach ($v in $toRemove) {
+        if ($activeNorm -and $v.FullName.TrimEnd('\').ToLower() -eq $activeNorm) {
+            Write-Host "  skipped (currently active): $($v.Name)" -ForegroundColor Yellow
+            continue
+        }
+        try {
+            Remove-Item $v.FullName -Recurse -Force -ErrorAction Stop
+            Write-Host "  removed: $($v.Name)" -ForegroundColor Green
+        } catch {
+            Write-Host "  failed: $($v.Name) -- $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+
+    # Sweep leftover ziti-*.zip files from getZiti.ps1 / older flows.
+    $zips = @(Get-ChildItem $env:ZITI_HOME -Filter 'ziti-*.zip' -File -ErrorAction SilentlyContinue)
+    if ($zips.Count) {
+        Write-Host ""
+        Write-Host "leftover zip files:" -ForegroundColor DarkGray
+        foreach ($z in $zips) { Write-Host "  $($z.Name)  ($([int]($z.Length/1MB)) MB)" -ForegroundColor DarkGray }
+        $rmZips = Read-Host "remove these zips too? (y/N)"
+        if ($rmZips -match '^[Yy]') {
+            foreach ($z in $zips) {
+                try {
+                    Remove-Item $z.FullName -Force -ErrorAction Stop
+                    Write-Host "  removed: $($z.Name)" -ForegroundColor Green
+                } catch {
+                    Write-Host "  failed: $($z.Name) -- $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+        }
+    }
+}
 
 $env:ZROK_DEFAULT = "$env:USERPROFILE\.local\bin"
 function add-zrok    { update-path -EnvVarName ZROK_DEFAULT -First }

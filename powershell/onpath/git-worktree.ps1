@@ -102,7 +102,16 @@ function Resolve-RepoContext {
     # host/org/repo out without needing a git remote. Lets `gwt list` work
     # from the repo's worktree-root dir (which has no .git of its own).
     if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
+        # Resolve symlinks before parsing -- otherwise a path like
+        # D:\git\github\openziti\nf\ziti (where nf\ziti is a symlink to ziti)
+        # gets parsed as repo=nf instead of ziti. Walk each path segment and
+        # follow any symlink we find; the final path is the canonical one.
         $cwdNorm = (Get-Location).Path.Replace('/','\').TrimEnd('\')
+        try {
+            $di = [System.IO.DirectoryInfo]::new($cwdNorm)
+            $target = $di.ResolveLinkTarget($true)   # $true = recursive
+            if ($target) { $cwdNorm = $target.FullName.TrimEnd('\') }
+        } catch {}
         foreach ($root in @($WorktreeRoot, $SourceRoot)) {
             $rootNorm = $root.Replace('/','\').TrimEnd('\')
             if (-not $cwdNorm.StartsWith("$rootNorm\", [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -393,7 +402,7 @@ function _SetCurrentSymlink {
     }
     try {
         New-Item -ItemType SymbolicLink -Path $link -Target $WorktreePath -ErrorAction Stop | Out-Null
-        Write-Color "  current -> $WorktreePath" DarkGray
+        Write-Color "  $link -> $WorktreePath" DarkGray
     } catch {
         Write-Color "  symlink failed (need Developer Mode or admin): $($_.Exception.Message)" Yellow
     }
@@ -666,8 +675,28 @@ function Get-WorktreeStatuses {
 if ($Help -or -not $Command) { $Command = 'help' }
 
 if ($Command -match '^https?://') {
-    $Target  = $Command
-    $Command = 'pr'
+    # Two URL shapes get routed differently:
+    #   1. <host>/<org>/<repo>/pull/<num>  -> 'pr' (existing behavior)
+    #   2. <host>/<org>/<repo>             -> 'clone' (parse host/org/repo,
+    #                                                 clone if missing, open)
+    if ($Command -match '^https?://[^/]+/[^/]+/[^/]+/pull/\d+') {
+        $Target  = $Command
+        $Command = 'pr'
+    } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)/issues/(?<num>\d+)') {
+        $script:RemoteHost = $Matches.host
+        $script:Org        = $Matches.org
+        $script:Repo       = $Matches.repo
+        $Target  = $Matches.num
+        $Command = 'issue'
+    } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+?)(?:\.git)?/?\s*$') {
+        $script:RemoteHost = $Matches.host
+        $script:Org        = $Matches.org
+        $script:Repo       = $Matches.repo
+        $Target  = $Command
+        $Command = 'clone'
+    }
+    # Anything else falls through with $Command still set to the URL -- the
+    # default switch case will print "unknown command" with the URL as the name.
 }
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -710,6 +739,13 @@ function Show-SubcommandHelp {
             Write-Host ""
             Write-Color "gwt sessions unsave <match> [-Name <branch>] [-Window <name>]" Cyan
             Write-Color "  Remove the Saved mark. Multi-match prompts a picker." DarkGray
+        }
+        'sessions move' {
+            Write-Host ""
+            Write-Color "gwt sessions move <match> -Window <new-window> [-Name <branch>]" Cyan
+            Write-Color "  Move an ACTIVE session to a different wt window." DarkGray
+            Write-Color "  Kills the existing pwsh+claude, re-spawns in the target window," DarkGray
+            Write-Color "  reusing the same session id (in-place update, not duplicate)." DarkGray
         }
         'sessions close' {
             Write-Host ""
@@ -878,7 +914,7 @@ switch ($Command) {
                     return
                 }
                 $tgt = ($li.Target | Select-Object -First 1)
-                Write-Color "current -> $tgt" Cyan
+                Write-Color "$link -> $tgt" Cyan
                 if (-not (Test-Path $tgt)) {
                     Write-Color "  (target is missing!)" Red
                 }
@@ -892,12 +928,14 @@ switch ($Command) {
         if ($Target -eq '.') {
             $cwd = (Get-Location).Path.Replace('/','\').TrimEnd('\').ToLower()
             $wtPath = $null
+            # Walk all worktrees (INCLUDING MAIN). Pointing 'current' at main
+            # is legit -- same effect as the auto-fallback when a worktree gets
+            # pruned. User explicitly asked for "current = here", we honor it.
             foreach ($wt in (Get-WorktreeStatuses $ctx.Src)) {
-                if ($wt.Status -eq 'MAIN') { continue }
                 $p = $wt.Path.Replace('/','\').TrimEnd('\').ToLower()
                 if ($cwd -eq $p -or $cwd.StartsWith("$p\")) { $wtPath = $wt.Path; break }
             }
-            if (-not $wtPath) { throw "cwd '$cwd' isn't inside a worktree of $($ctx.Org)/$($ctx.Repo)" }
+            if (-not $wtPath) { throw "cwd '$cwd' isn't inside the main clone or any worktree of $($ctx.Org)/$($ctx.Repo)" }
         } else {
             $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
             if (-not $wtPath) { throw "no worktree for branch '$Target' in $($ctx.Org)/$($ctx.Repo)" }
@@ -927,6 +965,66 @@ switch ($Command) {
             if (-not $wtPath) { throw "no branch given and cwd '$cwd' isn't inside a worktree" }
         }
         _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath
+    }
+
+    'issue' {
+        # Triggered by an issue URL: github.com/<org>/<repo>/issues/<num>.
+        # Creates a worktree at 'issue-<num>' branched off main, opens claude
+        # with a prompt that points at the issue.
+        if (-not $Target -or $Target -notmatch '^\d+$') {
+            throw "'issue' expects a numeric issue id (got '$Target') -- use a github issue URL"
+        }
+        $issueNum = $Target
+        $branch   = "issue-$issueNum"
+        $ctx      = Resolve-RepoContext
+        [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
+
+        # Best-effort fetch the issue title from gh, for nicer prompts.
+        $issueTitle = $null
+        try {
+            $j = & gh issue view $issueNum --repo "$($ctx.Org)/$($ctx.Repo)" --json title 2>$null | ConvertFrom-Json
+            if ($j -and $j.title) { $issueTitle = $j.title }
+        } catch {}
+
+        Write-Color "issue:  $($ctx.Org)/$($ctx.Repo)#$issueNum" Cyan
+        if ($issueTitle) { Write-Color "title:  $issueTitle" DarkGray }
+        Write-Color "branch: $branch" DarkGray
+
+        # Forward to 'new' with explicit host/org/repo so Resolve-RepoContext
+        # doesn't try to re-detect from cwd (which is unrelated here). Pass
+        # named args via hashtable splat -- array splat is unreliable for
+        # mixing positional + named values across script invocations.
+        if (-not $Prompt -and $issueTitle) {
+            $Prompt = "investigate $($ctx.Org)/$($ctx.Repo)#$issueNum -- ""$issueTitle"". start by reading the issue thread (gh issue view $issueNum --repo $($ctx.Org)/$($ctx.Repo) --comments) and propose next steps before changing anything."
+        } elseif (-not $Prompt) {
+            $Prompt = "investigate $($ctx.Org)/$($ctx.Repo)#$issueNum -- read the issue thread (gh issue view $issueNum --repo $($ctx.Org)/$($ctx.Repo) --comments) and propose next steps before changing anything."
+        }
+        $pass = @{
+            Org        = $ctx.Org
+            Repo       = $ctx.Repo
+            RemoteHost = $ctx.RemoteHost
+            Prompt     = $Prompt
+        }
+        if ($y) { $pass.y = $true }
+        & $PSCommandPath new $branch @pass
+    }
+
+    'clone' {
+        # Triggered by a bare repo URL (no /pull/<num>) or invoked directly.
+        # Clones to the canonical D:\git\<host>\<org>\<repo> path if missing,
+        # otherwise fetches + refreshes. Then opens claude in the main clone.
+        $ctx = Resolve-RepoContext   # host/org/repo were set by URL parsing
+        [System.IO.Directory]::CreateDirectory((Split-Path $ctx.Src -Parent)) | Out-Null
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
+
+        # Default branch = whatever HEAD points at after clone (main, master, etc).
+        $branch = (& git -C $ctx.Src symbolic-ref --short HEAD 2>$null | Out-String).Trim()
+        if (-not $branch) { $branch = 'main' }
+
+        Write-Color "ready: $($ctx.Src) (branch $branch)" Green
+        _ConfirmOpenOrCd -Path $ctx.Src -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+        _SetGwtCwdHint $ctx.Src
     }
 
     'pr' {
@@ -1468,6 +1566,85 @@ switch ($Command) {
                         Write-Color "  failed to close: $($s.Branch) (pid $($s.Pid)) -- exit $LASTEXITCODE" Red
                     }
                 }
+            }
+
+            'move' {
+                # Move an ACTIVE session from one wt window to another.
+                # Internally: close (kill pwsh+claude) -> wait for stale -> restore -Window <new>.
+                # Requires -Window (target window) and a way to identify the session
+                # (positional $Match, or $Name + optional $Window-as-source... no,
+                # $Window is the destination here, so use $Match or $Name to identify).
+                if (-not $Window) {
+                    Write-Color "usage: gwt sessions move <match> -Window <new-window-name> [-Name <branch>]" Yellow
+                    return
+                }
+                if (-not ($Match -or $Name)) {
+                    Write-Color "usage: gwt sessions move <match> -Window <new-window-name> [-Name <branch>]" Yellow
+                    Write-Color "  pass a substring or -Name to identify the session to move" DarkGray
+                    return
+                }
+
+                # Find ACTIVE candidates that match the identifier.
+                $candidates = @($entries | Where-Object {
+                    $_.Alive -and (
+                        ($Match -and (
+                            $_.Branch       -like "*$Match*" -or
+                            $_.WorktreePath -like "*$Match*"
+                        )) -or
+                        ($Name -and ($_.Branch -ieq $Name))
+                    )
+                })
+                if (-not $candidates.Count) {
+                    Write-Color "no ACTIVE sessions match the identifier" Yellow
+                    return
+                }
+                if ($candidates.Count -gt 1) {
+                    Write-Color "multiple ACTIVE sessions match -- pick one:" Yellow
+                    for ($i = 0; $i -lt $candidates.Count; $i++) {
+                        $c = $candidates[$i]
+                        Write-Host ("  [{0}] {1,-30} [{2}] @ {3}" -f ($i+1), $c.Branch, $c.WindowName, $c.WorktreePath) -ForegroundColor Cyan
+                    }
+                    $resp = (Read-Host "choice (or 'q')").Trim()
+                    if (-not $resp -or $resp -ieq 'q') { return }
+                    $idx = 0
+                    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $candidates.Count) {
+                        Write-Color "invalid choice" Yellow; return
+                    }
+                    $candidates = @($candidates[$idx-1])
+                }
+
+                $s = $candidates[0]
+                if ($s.WindowName -ieq $Window) {
+                    Write-Color "already in '$Window' -- nothing to do" DarkGray
+                    return
+                }
+                Write-Color "moving '$($s.Branch)' from '$($s.WindowName)' to '$Window' ..." Cyan
+
+                # 1. Kill the live process -- entry becomes stale.
+                $killed = $false
+                $null = & taskkill /T /F /PID $($s.Pid) 2>&1
+                if ($LASTEXITCODE -eq 0) { $killed = $true }
+                if (-not $killed) {
+                    # Cross-user requires runas. Best-effort.
+                    $null = & runas /user:claude /savecred "taskkill /T /F /PID $($s.Pid)" 2>&1
+                    if ($LASTEXITCODE -eq 0) { $killed = $true }
+                }
+                if (-not $killed) {
+                    Write-Color "failed to kill pid $($s.Pid) -- aborting move" Red
+                    return
+                }
+
+                # 2. Wait for the registry entry to settle (PID dies, SessionEnd
+                # hook zeroes Pid). Brief poll.
+                Start-Sleep -Milliseconds 500
+
+                # 3. Re-spawn in the new window via _OpenClaudeShell, reusing the
+                # original session id so we update in place rather than dup.
+                _OpenClaudeShell -Path $s.WorktreePath -Repo $s.Repo -Branch $s.Branch `
+                                 -PromptText $s.PromptText -WindowName $Window `
+                                 -ReuseSessionId $s.Id -Force
+                Write-Color "  moved to '$Window'" Green
+                return
             }
 
             { $_ -in 'save','unsave' } {
@@ -2338,9 +2515,35 @@ switch ($Command) {
     'focus' {
         # Find the alive claude session(s) matching <Target> and focus their wt
         # window. Target is a substring match against Branch/WorktreePath/WindowName.
-        # No args -> pick from a list of every alive session.
+        # No args + cwd is inside a worktree -> auto-pick the session for cwd.
+        # No args + not in a worktree         -> picker of all alive sessions.
         $sessionDir = 'D:\worktrees\sessions'
         if (-not (Test-Path $sessionDir)) { Write-Color "no session dir at $sessionDir" Yellow; return }
+
+        # If no Target, try to default to whichever worktree contains cwd.
+        # Track whether we cwd-resolved so we can offer to spawn one if none alive.
+        $cwdResolved = $false
+        $cwdWtPath   = $null
+        $cwdWtBranch = $null
+        $cwdRepo     = $null
+        if (-not $Target) {
+            $cwd = (Get-Location).Path.Replace('/','\').TrimEnd('\').ToLower()
+            try {
+                $ctxCwd = Resolve-RepoContext
+                foreach ($wt in (Get-WorktreeStatuses $ctxCwd.Src)) {
+                    $p = $wt.Path.Replace('/','\').TrimEnd('\').ToLower()
+                    if ($cwd -eq $p -or $cwd.StartsWith("$p\")) {
+                        $Target      = $wt.Path
+                        $cwdResolved = $true
+                        $cwdWtPath   = $wt.Path
+                        $cwdWtBranch = $wt.Branch
+                        $cwdRepo     = $ctxCwd.Repo
+                        Write-Color "  (cwd-resolved -> $($wt.Path))" DarkGray
+                        break
+                    }
+                }
+            } catch {}
+        }
 
         $procMap = @{}
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
@@ -2357,16 +2560,29 @@ switch ($Command) {
         }
         if (-not $alive.Count) { Write-Color "no alive sessions" DarkGray; return }
 
+        # Normalize the path-shaped portion of Target so backslash-vs-forward-slash
+        # mismatches don't tank the match. Get-WorktreeStatuses emits forward
+        # slashes; registered entries store backslashes.
+        $targetAlt = if ($Target) { $Target.Replace('/','\') } else { '' }
         $hits = if ($Target) {
             @($alive | Where-Object {
-                $_.Branch       -like "*$Target*" -or
-                $_.WorktreePath -like "*$Target*" -or
-                $_.WindowName   -like "*$Target*"
+                $wp = if ($_.WorktreePath) { $_.WorktreePath.Replace('/','\') } else { '' }
+                $_.Branch     -like "*$Target*" -or
+                $wp           -like "*$targetAlt*" -or
+                $_.WindowName -like "*$Target*"
             })
         } else { @($alive) }
 
         if (-not $hits.Count) {
             Write-Color "no alive sessions match '$Target'" Yellow
+            # Special case: we cwd-resolved into a worktree but nothing's alive
+            # there. Offer to spawn a fresh claude tab in that worktree.
+            if ($cwdResolved -and $cwdWtPath) {
+                $r = Read-Host "open a new claude tab for '$cwdWtBranch' here? (y/N)"
+                if ($r -match '^[Yy]$') {
+                    _ConfirmOpenOrCd -Path $cwdWtPath -Repo $cwdRepo -Branch $cwdWtBranch -PromptOverride $Prompt -AutoOpen:$y
+                }
+            }
             return
         }
         if ($hits.Count -gt 1) {
@@ -2620,7 +2836,10 @@ switch ($Command) {
         Write-Host ""
         Write-Host "    gwt <url> " -NoNewline -ForegroundColor Cyan
         Write-Host "[-y]"
-        Write-Host "        shorthand -- bare URL auto-routes to 'pr'" -ForegroundColor DarkGray
+        Write-Host "        shorthand -- bare URL auto-routes:" -ForegroundColor DarkGray
+        Write-Host "          .../pull/<num>          -> 'pr' (worktree for that PR)" -ForegroundColor DarkGray
+        Write-Host "          .../issues/<num>        -> 'issue' (worktree branched off main, named issue-<num>)" -ForegroundColor DarkGray
+        Write-Host "          .../<org>/<repo>        -> 'clone' (clone if missing, open main)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt update-registry" -ForegroundColor Cyan
         Write-Host "        fetch fallback gwt-session-registry.ps1 from github into ~\.gwt\" -ForegroundColor DarkGray
