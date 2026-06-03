@@ -2387,11 +2387,11 @@ switch ($Command) {
             # -Force without -y still requires the per-row Y/n prompt.
             $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','UNTRACKED-ONLY') } else { @('PRUNE') }
             $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses })
-            if ($branchFilter -and -not $prunable) {
-                # Be specific about WHY it's not prunable. Always point at
-                # `gwt rm` as the always-works escape hatch; only mention
-                # -Force when it'd actually help (DIRTY / UNTRACKED-ONLY).
-                $actualStatus = if ($statuses.Count -eq 1) { $statuses[0].Status } else { $null }
+            if ($branchFilter -and -not $prunable -and $filterMatchedWorktree) {
+                # Only fire when we DID find a worktree, but its status isn't in
+                # the prunable set. If no match was found at all, fall through to
+                # the orphan sweep below -- it'll handle the "not found" case.
+                $actualStatus = if ($statuses.Count -eq 1) { $statuses[0].Status } else { 'unknown' }
                 Write-Color "  '$branchFilter' is $actualStatus -- prune won't touch it" Yellow
                 if ($actualStatus -in @('DIRTY','UNTRACKED-ONLY') -and -not $Force) {
                     Write-Color "    -> gwt prune $branchFilter -Force   (deletes DIRTY/UNTRACKED-ONLY)" DarkGray

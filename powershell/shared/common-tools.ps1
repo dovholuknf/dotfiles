@@ -1,0 +1,434 @@
+# Shared helpers + add-/remove- tool toggles. Dot-source from both
+# clint's $PROFILE and claude's ~/.profile.ps1 so future additions only
+# need to land here once. Assumes $env:DOTFILES is already set.
+#
+# Things that stay in the per-user profile:
+#   - env var declarations whose paths are user-specific
+#   - cd* shortcuts
+#   - prompt functions
+#   - the `gwt` wrapper (clint's variant captures cwd hints; claude's is simpler)
+#   - admin / per-user one-off functions
+#
+# Things that live HERE:
+#   - update-path / show-path / dedupe-path
+#   - _TuiSelect (arrow-key picker)
+#   - psfind
+#   - add-/remove- pairs for tools whose install paths are stable across users
+#   - add-ziti / cleanup-ziti (sophisticated; want one canonical copy)
+#   - add-java / remove-java
+#   - add-docker / remove-docker
+#
+# Each add-* expects the env var it references to already exist. We set
+# the universally-same ones below; per-user variations (PYTHON_HOME version
+# pin, ZITI_HOME base) are still declared in each profile.
+
+# ── PATH manipulation ────────────────────────────────────────────────────────
+
+function update-path {
+    param(
+        [Parameter(Mandatory)] [string]$EnvVarName,
+        [switch]$Remove,
+        [switch]$First
+    )
+    $value = (Get-Item -Path "Env:$EnvVarName").Value
+    if ($Remove) {
+        $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne $value }) -join ';'
+    } else {
+        # Dedupe first so re-sourcing $PROFILE doesn't pile up duplicates.
+        $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -ne $value) }) -join ';'
+        if ($First) { $env:PATH = "$value;$env:PATH" }
+        else        { $env:PATH += ";$value" }
+    }
+}
+
+function show-path {
+    # -Sort alphabetizes; default is source order.
+    param([switch]$Sort)
+    $entries = $env:PATH -split ';' | Where-Object { $_ }
+    if ($Sort) { $entries | Sort-Object } else { $entries }
+}
+
+function dedupe-path {
+    # Drop empty + duplicate entries from $env:PATH while preserving order.
+    # Normalizes for comparison: collapses '\\' -> '\', strips trailing '\'.
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $kept = foreach ($e in ($env:PATH -split ';')) {
+        if (-not $e) { continue }
+        $key = ($e -replace '\\\\','\').TrimEnd('\')
+        if ($seen.Add($key)) { $e }
+    }
+    $env:PATH = $kept -join ';'
+}
+
+# ── TUI picker ───────────────────────────────────────────────────────────────
+
+function _TuiSelect {
+    # Arrow-key picker. Returns the chosen item (object) or $null if cancelled.
+    # Up/Down/k/j to move, Enter to select, Esc/q to cancel. Uses VT escapes
+    # for relative cursor motion so it works with Windows Terminal's tight buffer.
+    param(
+        [Parameter(Mandatory)] [array]$Items,
+        [string]$Prompt = 'choose:',
+        [string]$DisplayProperty
+    )
+    if (-not $Items.Count) { return $null }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        return $Items[0]
+    }
+
+    $ESC = [char]27
+    $idx = 0
+    $cursorWasVisible = [Console]::CursorVisible
+    [Console]::CursorVisible = $false
+
+    $render = {
+        Write-Host -NoNewline "$ESC[J"
+        for ($i = 0; $i -lt $Items.Count; $i++) {
+            $label = if ($DisplayProperty) { $Items[$i].$DisplayProperty } else { "$($Items[$i])" }
+            $line  = if ($i -eq $idx) { "> $label" } else { "  $label" }
+            $color = if ($i -eq $idx) { 'Cyan' } else { 'DarkGray' }
+            Write-Host $line -ForegroundColor $color
+        }
+    }
+
+    try {
+        Write-Host ""
+        Write-Host $Prompt -ForegroundColor DarkGray
+        & $render
+
+        while ($true) {
+            $k = [Console]::ReadKey($true)
+            $sel = $null; $cancel = $false
+            switch ($k.Key) {
+                'UpArrow'   { if ($idx -gt 0) { $idx-- } }
+                'DownArrow' { if ($idx -lt $Items.Count - 1) { $idx++ } }
+                'Home'      { $idx = 0 }
+                'End'       { $idx = $Items.Count - 1 }
+                'Enter'     { $sel = $Items[$idx] }
+                'Escape'    { $cancel = $true }
+                default {
+                    switch ($k.KeyChar) {
+                        'k' { if ($idx -gt 0) { $idx-- } }
+                        'j' { if ($idx -lt $Items.Count - 1) { $idx++ } }
+                        'q' { $cancel = $true }
+                    }
+                }
+            }
+            if ($sel)    { return $sel }
+            if ($cancel) { return $null }
+            Write-Host -NoNewline "`r$ESC[$($Items.Count)A"
+            & $render
+        }
+    } finally {
+        [Console]::CursorVisible = $cursorWasVisible
+        Write-Host ""
+    }
+}
+
+# ── psfind ───────────────────────────────────────────────────────────────────
+
+function psfind {
+    # usage: psfind [<path>] <pattern>
+    #   psfind *.env            -> search cwd for *.env
+    #   psfind . *.env          -> same
+    #   psfind src *.ts         -> search ./src for *.ts
+    #   psfind D:\work *.log    -> absolute path
+    param(
+        [Parameter(Position=0)][string]$First,
+        [Parameter(Position=1)][string]$Second
+    )
+    if ($Second) { $path = $First; $pattern = $Second }
+    else         { $path = '.';    $pattern = $First }
+    if (-not $pattern) { Write-Host "usage: psfind [<path>] <pattern>" -ForegroundColor Yellow; return }
+    Get-ChildItem -Path $path -Recurse -Filter $pattern -Name -ErrorAction SilentlyContinue
+}
+
+# ── common env vars + simple add/remove pairs ────────────────────────────────
+# Paths here are identical across users; user-specific ones stay in each profile.
+
+$env:GO_BIN          = "V:\work\tools\go\current\bin"
+$env:DOTNET_DEFAULT  = "C:\Program Files\dotnet"
+$env:DOXYGEN_DEFAULT = "C:\Program Files\doxygen\bin"
+$env:CHOCO_DEFAULT   = "C:\ProgramData\chocolatey\bin"
+$env:DOCKER_DEFAULT  = "$env:ProgramFiles\Docker\Docker\resources\bin"
+$env:NODE_DEFAULT    = "C:\Program Files\nodejs"
+$env:NPM_DEFAULT     = Join-Path $env:APPDATA 'npm'
+$env:CARGO_BIN       = "$env:USERPROFILE\.cargo\bin"
+$env:OLLAMA_HOME     = "$env:LOCALAPPDATA\Programs\Ollama"
+$env:ZROK_DEFAULT    = "$env:USERPROFILE\.local\bin"
+$env:CLION_TOOL_ROOT = "C:\Program Files\JetBrains\CLion 2025.3.3\bin"
+$env:CLION_MINGW     = "$env:CLION_TOOL_ROOT\mingw\bin"
+$env:CLION_CMAKE     = "$env:CLION_TOOL_ROOT\cmake\win\x64\bin\"
+$env:CLION_NINJA     = "$env:CLION_TOOL_ROOT\ninja\win\x64"
+
+function add-linux_commands    { update-path -EnvVarName LINUX_COMMANDS -First }
+function remove-linux_commands { update-path -EnvVarName LINUX_COMMANDS -Remove }
+
+function add-go_current        { update-path -EnvVarName GO_BIN -First }
+function remove-go_current     { update-path -EnvVarName GO_BIN -Remove }
+
+function add-dotnet            { update-path -EnvVarName DOTNET_DEFAULT -First }
+function remove-dotnet         { update-path -EnvVarName DOTNET_DEFAULT -Remove }
+
+function add-doxygen           { update-path -EnvVarName DOXYGEN_DEFAULT -First }
+function remove-doxygen        { update-path -EnvVarName DOXYGEN_DEFAULT -Remove }
+
+function add-choco             { update-path -EnvVarName CHOCO_DEFAULT -First }
+function remove-choco          { update-path -EnvVarName CHOCO_DEFAULT -Remove }
+
+function add-rust              { update-path -EnvVarName CARGO_BIN -First }
+function remove-rust           { update-path -EnvVarName CARGO_BIN -Remove }
+
+function add-ollama            { update-path -EnvVarName OLLAMA_HOME -First }
+function remove-ollama         { update-path -EnvVarName OLLAMA_HOME -Remove }
+
+function add-zrok              { update-path -EnvVarName ZROK_DEFAULT -First }
+function remove-zrok           { update-path -EnvVarName ZROK_DEFAULT -Remove }
+
+function add-npm {
+    update-path -EnvVarName NODE_DEFAULT -First
+    update-path -EnvVarName NPM_DEFAULT  -First
+}
+function remove-npm {
+    update-path -EnvVarName NODE_DEFAULT -Remove
+    update-path -EnvVarName NPM_DEFAULT  -Remove
+}
+
+function add-clion_tools {
+    update-path -EnvVarName CLION_MINGW -First
+    update-path -EnvVarName CLION_CMAKE -First
+    update-path -EnvVarName CLION_NINJA -First
+    if (-not $env:VCPKG_ROOT) {
+        $env:VCPKG_ROOT = $env:VCPKG_ROOT_DEFAULT
+    }
+}
+function remove-clion_tools {
+    update-path -EnvVarName CLION_MINGW -Remove
+    update-path -EnvVarName CLION_CMAKE -Remove
+    update-path -EnvVarName CLION_NINJA -Remove
+}
+
+# Python: each profile sets PYTHON_HOME to its preferred version dir.
+function add-python {
+    update-path -EnvVarName PYTHON_HOME    -First
+    update-path -EnvVarName PYTHON_SCRIPTS -First
+}
+function remove-python {
+    update-path -EnvVarName PYTHON_HOME    -Remove
+    update-path -EnvVarName PYTHON_SCRIPTS -Remove
+}
+
+# ── docker via WSL TCP ───────────────────────────────────────────────────────
+
+function add-docker {
+    update-path -EnvVarName DOCKER_DEFAULT -First
+    # Point at WSL/Ubuntu dockerd via TCP rather than the Docker-Desktop named pipe.
+    $env:DOCKER_HOST = "tcp://127.0.0.1:2375"
+    Write-Host "docker -> $env:DOCKER_HOST" -ForegroundColor Green
+    $null = & docker ps 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "docker ps failed against $env:DOCKER_HOST -- dockerd probably not listening on 2375." -ForegroundColor Yellow
+        Write-Host "Inside the WSL/Ubuntu shell, run ONCE:" -ForegroundColor DarkGray
+        Write-Host @'
+  sudo mkdir -p /etc/systemd/system/docker.service.d && \
+  sudo tee /etc/systemd/system/docker.service.d/override.conf >/dev/null <<'EOF'
+  [Service]
+  ExecStart=
+  ExecStart=/usr/bin/dockerd \
+    -H unix:///run/docker.sock \
+    -H tcp://127.0.0.1:2375 \
+    --containerd=/run/containerd/containerd.sock
+  EOF
+  sudo systemctl daemon-reload && sudo systemctl restart docker docker.socket
+'@ -ForegroundColor DarkGray
+    }
+}
+function remove-docker {
+    update-path -EnvVarName DOCKER_DEFAULT -Remove
+    Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
+}
+
+# ── java + gradle (auto-pick newest) ─────────────────────────────────────────
+
+function add-java {
+    # -JavaVersion / -GradleVersion override the auto-detected latest. Picks newest
+    # Temurin under 'Program Files\Eclipse Adoptium\jdk-*-hotspot' and newest
+    # Gradle under 'D:\tools\gradle\*'.
+    param([string]$JavaVersion, [string]$GradleVersion)
+
+    $jdks = @(Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-*-hotspot' -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending)
+    $jdk = if ($JavaVersion) { $jdks | Where-Object { $_.Name -like "*$JavaVersion*" } | Select-Object -First 1 } else { $jdks | Select-Object -First 1 }
+    if (-not $jdk) {
+        Write-Host "no JDK found under 'C:\Program Files\Eclipse Adoptium\jdk-*-hotspot' (filter: $JavaVersion)" -ForegroundColor Yellow
+    } else {
+        $env:JAVA_HOME = $jdk.FullName
+        $env:JAVA_BIN  = Join-Path $env:JAVA_HOME 'bin'
+        update-path -EnvVarName JAVA_BIN -First
+        Write-Host "java   -> $env:JAVA_HOME" -ForegroundColor Green
+    }
+
+    $gradles = @(Get-ChildItem 'D:\tools\gradle' -Directory -ErrorAction SilentlyContinue |
+                 Where-Object { Test-Path (Join-Path $_.FullName 'bin\gradle.bat') } |
+                 Sort-Object @{Expression = { try { [version]$_.Name } catch { [version]'0.0' } }} -Descending)
+    $gradle = if ($GradleVersion) { $gradles | Where-Object { $_.Name -eq $GradleVersion } | Select-Object -First 1 } else { $gradles | Select-Object -First 1 }
+    if (-not $gradle) {
+        Write-Host "no Gradle found under 'D:\tools\gradle\<ver>\bin' (filter: $GradleVersion)" -ForegroundColor Yellow
+    } else {
+        $env:GRADLE_HOME = $gradle.FullName
+        $env:GRADLE_BIN  = Join-Path $env:GRADLE_HOME 'bin'
+        update-path -EnvVarName GRADLE_BIN -First
+        Write-Host "gradle -> $env:GRADLE_HOME" -ForegroundColor Green
+    }
+}
+
+function remove-java {
+    if ($env:JAVA_BIN)   { update-path -EnvVarName JAVA_BIN   -Remove }
+    if ($env:GRADLE_BIN) { update-path -EnvVarName GRADLE_BIN -Remove }
+}
+
+# ── ziti (versioned, with TUI picker) ────────────────────────────────────────
+# Each profile sets $env:ZITI_HOME to its own .ziti\bin base. ZITI_DEFAULT
+# gets pointed at a versioned subdir by add-ziti.
+
+function add-ziti {
+    # Add a versioned ziti binary dir to PATH.
+    # Layout expected: $env:ZITI_HOME\v<ver>\<ziti binaries>
+    #   - 0 versions:  fall back to $env:ZITI_HOME itself (legacy / flat layout)
+    #   - 1 version:   use it silently
+    #   - N versions:  TUI picker; -Version <name> bypasses the prompt
+    param([string]$Version)
+
+    if (-not (Test-Path $env:ZITI_HOME)) {
+        Write-Host "ziti home '$env:ZITI_HOME' not found -- nothing to add" -ForegroundColor Yellow
+        return
+    }
+
+    $versions = @(Get-ChildItem $env:ZITI_HOME -Directory -ErrorAction SilentlyContinue |
+                  Where-Object Name -match '^v\d' |
+                  Sort-Object @{Expression = {
+                      $parts = $_.Name.TrimStart('v') -split '[.\-]'
+                      $parts | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { $_ } }
+                  }} -Descending)
+
+    if (-not $versions.Count) {
+        $env:ZITI_DEFAULT = $env:ZITI_HOME
+    } elseif ($Version) {
+        $hit = $versions | Where-Object Name -ieq $Version | Select-Object -First 1
+        if (-not $hit) {
+            Write-Host "version '$Version' not found in $env:ZITI_HOME -- available:" -ForegroundColor Yellow
+            $versions | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor DarkGray }
+            return
+        }
+        $env:ZITI_DEFAULT = $hit.FullName
+    } elseif ($versions.Count -eq 1) {
+        $env:ZITI_DEFAULT = $versions[0].FullName
+    } else {
+        $pick = _TuiSelect -Items $versions -Prompt "choose ziti version (Up/Down + Enter, Esc to cancel):" -DisplayProperty 'Name'
+        if (-not $pick) { Write-Host "cancelled" -ForegroundColor Yellow; return }
+        $env:ZITI_DEFAULT = $pick.FullName
+    }
+
+    update-path -EnvVarName ZITI_DEFAULT -First
+    Write-Host "ziti -> $env:ZITI_DEFAULT" -ForegroundColor Green
+}
+
+function remove-ziti { update-path -EnvVarName ZITI_DEFAULT -Remove }
+
+function cleanup-ziti {
+    # Per-version y/N walk, newest first. Always refuses to delete the
+    # currently-active version ($env:ZITI_DEFAULT). Sweeps leftover ziti-*.zip
+    # files in $env:ZITI_HOME afterwards.
+    #   -DryRun  -- list selections, don't actually remove
+    [CmdletBinding()]
+    param([switch]$DryRun)
+
+    if (-not (Test-Path $env:ZITI_HOME)) {
+        Write-Host "no ziti home at $env:ZITI_HOME -- nothing to clean" -ForegroundColor Yellow
+        return
+    }
+
+    # SemVer-aware sort: zero-pad digit runs, append '~' to release versions
+    # so they sort above their pre-releases.
+    $padKey = {
+        param($name)
+        $name = $name.TrimStart('v')
+        $hasSuffix = $name.Contains('-')
+        $sb = [System.Text.StringBuilder]::new()
+        foreach ($m in [System.Text.RegularExpressions.Regex]::Matches($name, '\d+|\D+')) {
+            $t = $m.Value
+            if ($t -match '^\d+$') { [void]$sb.Append($t.PadLeft(8,'0')) }
+            else                   { [void]$sb.Append($t) }
+        }
+        if (-not $hasSuffix) { [void]$sb.Append('~') }
+        $sb.ToString()
+    }
+    $versions = @(Get-ChildItem $env:ZITI_HOME -Directory -ErrorAction SilentlyContinue |
+                  Where-Object Name -match '^v\d' |
+                  Sort-Object @{Expression = { & $padKey $_.Name }} -Descending)
+
+    if (-not $versions.Count) {
+        Write-Host "no ziti versions found under $env:ZITI_HOME" -ForegroundColor Yellow
+        return
+    }
+
+    $activeNorm = if ($env:ZITI_DEFAULT) { $env:ZITI_DEFAULT.TrimEnd('\').ToLower() } else { $null }
+
+    Write-Host ""
+    Write-Host "for each installed ziti version (newest first): Y=keep (default), n=remove, q=stop" -ForegroundColor DarkGray
+    $toRemove = @()
+    foreach ($v in $versions) {
+        $tag = ''
+        if ($activeNorm -and $v.FullName.TrimEnd('\').ToLower() -eq $activeNorm) { $tag = ' (ACTIVE -- always kept)' }
+        $resp = (Read-Host "keep '$($v.Name)'$tag? (Y/n/q)").Trim().ToLower()
+        if ($resp -eq 'q') { break }
+        if ($resp -eq 'n') { $toRemove += $v }
+    }
+
+    if (-not $toRemove.Count) { Write-Host "nothing selected" -ForegroundColor DarkGray; return }
+
+    Write-Host ""
+    Write-Host "would remove $($toRemove.Count) version(s):" -ForegroundColor Yellow
+    foreach ($v in $toRemove) {
+        $tag = ''
+        if ($activeNorm -and $v.FullName.TrimEnd('\').ToLower() -eq $activeNorm) { $tag = ' (ACTIVE -- will be skipped)' }
+        Write-Host "  $($v.Name)$tag" -ForegroundColor DarkGray
+    }
+
+    if ($DryRun) { Write-Host "-DryRun: not actually removing" -ForegroundColor DarkGray; return }
+
+    $confirm = Read-Host "proceed? (y/N)"
+    if (-not ($confirm -match '^[Yy]')) { Write-Host "aborted" -ForegroundColor Yellow; return }
+
+    foreach ($v in $toRemove) {
+        if ($activeNorm -and $v.FullName.TrimEnd('\').ToLower() -eq $activeNorm) {
+            Write-Host "  skipped (currently active): $($v.Name)" -ForegroundColor Yellow
+            continue
+        }
+        try {
+            Remove-Item $v.FullName -Recurse -Force -ErrorAction Stop
+            Write-Host "  removed: $($v.Name)" -ForegroundColor Green
+        } catch {
+            Write-Host "  failed: $($v.Name) -- $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+
+    $zips = @(Get-ChildItem $env:ZITI_HOME -Filter 'ziti-*.zip' -File -ErrorAction SilentlyContinue)
+    if ($zips.Count) {
+        Write-Host ""
+        Write-Host "leftover zip files:" -ForegroundColor DarkGray
+        foreach ($z in $zips) { Write-Host "  $($z.Name)  ($([int]($z.Length/1MB)) MB)" -ForegroundColor DarkGray }
+        $rmZips = Read-Host "remove these zips too? (y/N)"
+        if ($rmZips -match '^[Yy]') {
+            foreach ($z in $zips) {
+                try {
+                    Remove-Item $z.FullName -Force -ErrorAction Stop
+                    Write-Host "  removed: $($z.Name)" -ForegroundColor Green
+                } catch {
+                    Write-Host "  failed: $($z.Name) -- $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+        }
+    }
+}

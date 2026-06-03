@@ -78,3 +78,60 @@ secrets.*
 node_modules/
 __pycache__/
 *.pyc
+
+# --- direnv / tooling auto-load ---
+.envrc
+
+# --- terraform (state files often have plaintext secrets) ---
+*.tfvars
+!*.tfvars.example
+.terraformrc
+terraform.rc
+terraform.tfstate
+terraform.tfstate.*
+.terraform/
+
+# --- gcloud service accounts (very common leak vector) ---
+*-key.json
+*-credentials.json
+serviceAccount*.json
+service-account*.json
+
+# --- package-manager auth ---
+.yarnrc.yml
+.yarnrc
+.cargo/credentials
+.cargo/credentials.toml
+.pip/pip.conf
+nuget.config
+NuGet.config
+
+# --- gh / glab CLI ---
+.config/gh/hosts.yml
+.config/glab-cli/
+
+# --- Azure Functions / common appsettings patterns ---
+local.settings.json
+appsettings.Local.json
+appsettings.*.Local.json
+
+# --- VPN / remote-access configs ---
+*.ovpn
+wireguard.conf
+*.wg
+
+# --- password manager exports ---
+*.kdbx
+*.1pux
+*.opvault
+
+# --- repl + shell history not already listed ---
+.python_history
+.node_repl_history
+Microsoft.PowerShell_history
+
+# --- IDE per-user state (paths, history) ---
+*.user
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/shelf/
