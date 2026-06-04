@@ -25,8 +25,6 @@ param(
     [Parameter(Position=2)]
     [string]$Match,         # 'gwt sessions restore <pattern>' filters by Branch/WorktreePath substring
 
-    [switch]$V,             # show runas chatter ("Attempting to start..." etc); off by default
-
     [string]$From,          # 'new': create branch from this source
     [string]$Org,
     [string]$Repo,
@@ -44,6 +42,7 @@ param(
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
+    [switch]$DryRun,        # 'sessions clean': preview targets without removing
     [switch]$WithSize,      # 'summary': also walk each worktree for byte totals (slow)
     [switch]$Help
 )
@@ -365,7 +364,7 @@ function Get-AliveSessionForPath {
     if (-not $WorktreePath -or -not (Test-Path $sessionDir)) { return $null }
     $norm = ($WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
     $procMap = @{}
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
         $procMap[[int]$_.ProcessId] = $_
     }
     foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
@@ -455,13 +454,31 @@ function _SetGwtCwdHint {
     } catch {}
 }
 
+function _ClaudeProjectDirFor {
+    # Encodes a cwd into the form claude code uses for $env:USERPROFILE\.claude\projects\<name>.
+    # Forward direction only (unambiguous): replace ':' and '\' with '-'.
+    param([string]$Path)
+    $p = $Path.TrimEnd('\').Replace(':', '-').Replace('\', '-')
+    Join-Path $env:USERPROFILE ".claude\projects\$p"
+}
+
 function _CleanupWorktreeMetadata {
-    # Drops the session-registry entries and picks state file for a removed
-    # worktree. Used by both 'rm' and 'prune' so the cleanup is consistent.
-    # Claude project history is left in place (separate user-controlled concern).
+    # Drops the session-registry entries, picks state file, AND the claude-code
+    # transcript dir for a removed worktree. Used by both 'rm' and 'prune' so the
+    # cleanup is consistent.
     param([string]$WtPath)
     $sessionDir = 'D:\worktrees\sessions'
     $normWt = ($WtPath -replace '/', '\').TrimEnd('\').ToLower()
+
+    $projDir = _ClaudeProjectDirFor $WtPath
+    if (Test-Path -LiteralPath $projDir) {
+        try {
+            Remove-Item -LiteralPath $projDir -Recurse -Force -ErrorAction Stop
+            Write-Color "    dropped claude project dir" DarkGray
+        } catch {
+            Write-Color "    failed to drop claude project dir: $_" DarkYellow
+        }
+    }
 
     if (Test-Path $sessionDir) {
         Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -509,7 +526,7 @@ function Save-GwtState {
 
 
 # Returns worktree info objects: Branch, Path, Status, Reason
-# Status: MAIN | ACTIVE | ACTIVE-NO-REMOTE | PRUNE | DIRTY
+# Status: MAIN | ACTIVE | ACTIVE-REMOTE-GONE | PRUNE | DIRTY
 
 function Test-WorktreeIsSaved {
     # Returns $true if any session-registry entry for this worktree path has Saved=$true.
@@ -570,19 +587,17 @@ function Get-WorktreeStatuses {
         } else {
             $porc = (& git -C $cur status --porcelain 2>&1 | Out-String).Trim()
             $isDirty = -not [string]::IsNullOrWhiteSpace($porc)
-            # Distinguish "only untracked files" from "tracked changes".
-            # All `??` lines = nothing in the index/working-tree has been modified;
-            # the worktree just has extra files lying around.
-            $onlyUntracked = $false
-            if ($isDirty) {
-                $nonUntracked = @($porc -split "`r?`n" | Where-Object { $_ -and ($_ -notmatch '^\?\?') })
-                $onlyUntracked = ($nonUntracked.Count -eq 0)
-            }
-            $dirtyLabel  = if ($onlyUntracked) { 'UNTRACKED-ONLY' } else { 'DIRTY' }
-            $dirtyReason = if ($onlyUntracked) { 'untracked files only' } else { 'has local changes' }
+            # UNTRACKED-ONLY used to be its own state; collapsed into DIRTY since
+            # the practical distinction (`git stash` not catching `??`) wasn't
+            # worth a separate label. -Verbose on gwt list shows the actual files.
+            $dirtyLabel  = 'DIRTY'
+            $dirtyReason = 'has local changes'
 
-            & git -C $Src rev-parse --abbrev-ref "${b}@{upstream}" 2>&1 | Out-Null
-            $hasUpstreamConfig = $LASTEXITCODE -eq 0
+            # Check config directly -- `rev-parse @{upstream}` can fail after a
+            # --prune even though branch.X.merge is still set (the ref's gone,
+            # not the config). config --get returns the value and exit 0 iff set.
+            $cfgMerge = & git -C $Src config --get "branch.$b.merge" 2>$null
+            $hasUpstreamConfig = -not [string]::IsNullOrWhiteSpace($cfgMerge)
 
             if (-not $hasUpstreamConfig) {
                 & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
@@ -590,19 +605,35 @@ function Get-WorktreeStatuses {
 
                 if ($isDirty) {
                     $status = $dirtyLabel
-                    $reason = if ($atOrBehindMain) { "no commits yet, $dirtyReason" } else { $dirtyReason }
+                    $reason = $dirtyReason
                 } elseif ($atOrBehindMain) {
                     $status = 'PRUNE'; $reason = 'no commits, at main'
                 } else {
-                    $status = 'ACTIVE-NO-REMOTE'; $reason = 'no upstream, has unpushed commits'
+                    $status = 'ACTIVE'; $reason = 'no upstream configured -- has local commits'
                 }
             } else {
                 & git -C $Src rev-parse --verify "origin/$b" 2>&1 | Out-Null
                 $remoteExists = $LASTEXITCODE -eq 0
 
                 if (-not $remoteExists) {
-                    if ($isDirty) { $status = $dirtyLabel; $reason = "remote gone, $dirtyReason" }
-                    else          { $status = 'PRUNE';     $reason = 'gone' }
+                    # branch.X.merge config exists but origin/X is gone --
+                    # i.e. the branch WAS pushed at some point, and the remote
+                    # ref has since been deleted (typical after a PR merge).
+                    if ($isDirty) {
+                        $status = $dirtyLabel
+                        $reason = "WAS pushed, remote ref deleted -- $dirtyReason"
+                    } else {
+                        # Clean tree. If the branch has commits NOT in main,
+                        # those would be lost on PRUNE -- split out as
+                        # ACTIVE-REMOTE-GONE so the user notices.
+                        & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
+                        $atOrBehindMain = $LASTEXITCODE -eq 0
+                        if ($atOrBehindMain) {
+                            $status = 'PRUNE';              $reason = 'WAS pushed, remote ref deleted'
+                        } else {
+                            $status = 'ACTIVE-REMOTE-GONE'; $reason = 'WAS pushed, remote ref deleted -- has commits not on main (do not lose)'
+                        }
+                    }
                 } else {
                     & git -C $Src merge-base --is-ancestor $b origin/main 2>&1 | Out-Null
                     $isMerged = $LASTEXITCODE -eq 0
@@ -627,9 +658,9 @@ function Get-WorktreeStatuses {
             [datetime]::TryParse($commitInfo.Iso, [ref]$lcDate) | Out-Null
         }
 
-        # For DIRTY / UNTRACKED-ONLY, the commit date is misleading -- it predates
-        # the actual edits. Replace with the most recent mtime of dirty files.
-        if ($status -in @('DIRTY','UNTRACKED-ONLY') -and $porc) {
+        # For DIRTY, the commit date is misleading -- it predates the actual
+        # edits. Replace with the most recent mtime of dirty files.
+        if ($status -eq 'DIRTY' -and $porc) {
             $latest = [datetime]::MinValue
             foreach ($l in ($porc -split "`r?`n")) {
                 if (-not $l) { continue }
@@ -1325,7 +1356,7 @@ switch ($Command) {
         # One batched CIM query for all running processes -- keyed by PID for O(1) lookup.
         # Avoids per-entry WMI calls which were ~200ms each (13 entries = 2.6s).
         $procMap = @{}
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
             $procMap[[int]$_.ProcessId] = $_
         }
 
@@ -1686,13 +1717,18 @@ switch ($Command) {
                 #   STALE  -- PID dead AND worktree dir is gone (cruft)
                 # Default: drop STALE only. With -All, also drop PAUSED (and ACTIVE --
                 # removes the registry entry, leaves the running shell alone).
+                # STALE is restricted to D:\worktrees\... entries -- main-clone
+                # entries (D:\git\...) with a missing path stay PAUSED so a
+                # temporary unmount or path move never auto-nukes them.
                 $classified = $entries | ForEach-Object {
                     $tag = if ($_.Alive) {
                         'ACTIVE'
                     } elseif ($_.WorktreePath -and (Test-Path $_.WorktreePath)) {
                         'PAUSED'
-                    } else {
+                    } elseif ($_.WorktreePath -and $_.WorktreePath -match '^[A-Za-z]:\\worktrees\\') {
                         'STALE'
+                    } else {
+                        'PAUSED'
                     }
                     $_ | Add-Member -NotePropertyName Tag -NotePropertyValue $tag -PassThru
                 }
@@ -1740,17 +1776,23 @@ switch ($Command) {
                     Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to clean" DarkGray
                 }
                 $mode = "$($dropTags -join ' + ')"
-                Write-Color "cleaning: $mode" DarkGray
+                $verb = if ($DryRun) { 'would clean' } else { 'cleaning' }
+                Write-Color "${verb}: $mode" DarkGray
                 if (-not $toDrop.Count) { Write-Color "  nothing to clean" DarkGray; return }
                 foreach ($s in $toDrop) {
-                    Remove-Item $s.File -Force -ErrorAction SilentlyContinue
                     $note = switch ($s.Tag) {
                         'ACTIVE' { '(was active -- entry removed; running shell unaffected)' }
                         'PAUSED' { '(paused -- worktree still on disk)' }
                         default  { '(stale)' }
                     }
-                    Write-Color "  removed: $($s.Branch) $note" DarkGray
+                    if ($DryRun) {
+                        Write-Color ("  [{0,-6}] {1,-30} @ {2}  {3}" -f $s.Tag, $s.Branch, $s.WorktreePath, $note) DarkGray
+                    } else {
+                        Remove-Item $s.File -Force -ErrorAction SilentlyContinue
+                        Write-Color "  removed: $($s.Branch) $note" DarkGray
+                    }
                 }
+                if ($DryRun) { Write-Color "  -- preview only; re-run without -DryRun to act" Cyan }
             }
             default {
                 if (-not $entries) { Write-Color "no sessions registered yet" DarkGray; return }
@@ -1770,7 +1812,10 @@ switch ($Command) {
                 # Lifecycle states (3 buckets, picked by Alive + worktree-on-disk):
                 #   ACTIVE -- PID is running
                 #   PAUSED -- PID dead, but worktree dir still exists on disk (restorable)
-                #   STALE  -- PID dead AND worktree dir is gone (real cruft)
+                #   STALE  -- PID dead AND worktree dir is gone (real cruft).
+                #            STALE is restricted to D:\worktrees\... entries; missing
+                #            main-clone paths (D:\git\...) stay PAUSED so a temporary
+                #            unmount or path move never gets called cruft.
                 $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
                 $pausedCount = 0
                 $staleCount  = 0
@@ -1782,8 +1827,10 @@ switch ($Command) {
                             $tag = 'ACTIVE'; $col = 'Green'
                         } elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath)) {
                             $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
-                        } else {
+                        } elseif ($s.WorktreePath -and $s.WorktreePath -match '^[A-Za-z]:\\worktrees\\') {
                             $tag = 'STALE';  $col = 'Red';    $staleCount++
+                        } else {
+                            $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
                         }
                         # Saved entries get a distinct SAVED tag (overrides the lifecycle
                         # label so they pop visually). Color still reflects underlying state.
@@ -1793,8 +1840,14 @@ switch ($Command) {
                     }
                 }
                 Write-Host ""
+                $noShellCount = $pausedCount + $staleCount
+                $totalRows    = @($deduped).Count
+                Write-Color ("  - $totalRows entries: $($totalRows - $noShellCount) live, $noShellCount with no live shell ($pausedCount paused, $staleCount stale)") DarkGray
+                if ($noShellCount -gt 10) {
+                    Write-Color "  - $noShellCount abandoned sessions: 'gwt sessions clean -Paused' to drop (preview with -DryRun)" Yellow
+                }
                 if ($dupes -gt 0) {
-                    Write-Color "  $dupes duplicate entrie(s) hidden -- run 'gwt sessions clean -All' to clean them too" DarkGray
+                    Write-Color "  - $dupes duplicate entrie(s) hidden: 'gwt sessions clean -All' to drop them too" DarkGray
                 }
                 if ($Usage) {
                     Write-Color "  # mark a session as Saved (protected from every clean) -- shown as [SAVED]" DarkGray
@@ -1817,7 +1870,7 @@ switch ($Command) {
                     Write-Color "  # clean EVERYTHING (STALE + PAUSED + ACTIVE; running shells unaffected)" DarkGray
                     Write-Color "  gwt sessions clean -All" DarkGray
                 } else {
-                    Write-Color "  (pass -Usage for command tips)" DarkGray
+                    Write-Color "  - pass -Usage for command tips" DarkGray
                 }
             }
         }
@@ -1957,7 +2010,7 @@ switch ($Command) {
 
         # Refuse if a session is still alive on this worktree (unless -y/-Force).
         $procMap = @{}
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
             $procMap[[int]$_.ProcessId] = $_
         }
         $aliveHits = @()
@@ -2030,7 +2083,7 @@ switch ($Command) {
         $sessionDir = 'D:\worktrees\sessions'
         if (Test-Path $sessionDir) {
             $procMap = @{}
-            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
                 $procMap[[int]$_.ProcessId] = $_
             }
             Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -2047,10 +2100,9 @@ switch ($Command) {
         $statusColorMap = @{
             'MAIN'              = 'DarkGray'
             'ACTIVE'            = 'Green'
-            'ACTIVE-NO-REMOTE'  = 'Cyan'
+            'ACTIVE-REMOTE-GONE'   = 'DarkYellow'
             'PRUNE'             = 'Red'
             'DIRTY'             = 'Yellow'
-            'UNTRACKED-ONLY'    = 'DarkYellow'
             'ORPHAN'            = 'Magenta'
             'ORPHAN-DIRTY'      = 'Magenta'
             'ORPHAN-NO-GIT'     = 'Red'
@@ -2131,9 +2183,26 @@ switch ($Command) {
             } else {
                 Write-Host "@ $($wt.Path)" -ForegroundColor DarkGray
                 # Second line: (date) reason -- indent under branch column (4 + "[" + 16 + "] " = 23)
+                # If the reason mentions "WAS pushed, remote ref deleted", color
+                # the detail orange regardless of the row's status color so
+                # remote-deleted state always pops.
                 $detail = (@($when, $wt.Reason) | Where-Object { $_ }) -join ' '
                 if ($detail) {
-                    Write-Color ("{0}{1}" -f (' ' * 23), $detail) $statusColor
+                    $detailColor = if ($wt.Reason -match 'WAS pushed, remote ref deleted') { 'DarkYellow' } else { $statusColor }
+                    Write-Color ("{0}{1}" -f (' ' * 23), $detail) $detailColor
+                }
+
+                # -Verbose (-v works too): inline 'git status --short' so the
+                # user sees the actual files contributing to DIRTY. ACTIVE
+                # rows intentionally skipped -- the user just wants to know
+                # what's edited, not the commit history.
+                if ($VerbosePreference -eq 'Continue' -and $wt.Status -eq 'DIRTY') {
+                    $short = (& git -C $wt.Path status --short 2>$null | Out-String).TrimEnd()
+                    if ($short) {
+                        foreach ($line in ($short -split "`r?`n")) {
+                            Write-Host ((' ' * 27) + $line) -ForegroundColor DarkGray
+                        }
+                    }
                 }
             }
         }
@@ -2185,7 +2254,7 @@ switch ($Command) {
 
         foreach ($wt in $statuses) {
             if ($wt.Status -eq 'MAIN') { continue }
-            if ($wt.Status -notin @('ACTIVE','ACTIVE-NO-REMOTE')) { continue }
+            if ($wt.Status -notin @('ACTIVE')) { continue }
 
             # only pull worktrees that have a live remote tracking branch
             & git -C $ctx.Src rev-parse --abbrev-ref "$($wt.Branch)@{upstream}" 2>&1 | Out-Null
@@ -2228,7 +2297,7 @@ switch ($Command) {
         $rows = @()
         foreach ($wt in $statuses) {
             if ($Target -and $wt.Branch -ne $Target -and (Split-Path $wt.Path -Leaf) -ne $Target) { continue }
-            if ($wt.Status -in @('DIRTY','UNTRACKED-ONLY','ACTIVE-NO-REMOTE')) {
+            if ($wt.Status -in @('DIRTY','ACTIVE','ACTIVE-REMOTE-GONE')) {
                 $rows += [PSCustomObject]@{ Label = $wt.Status; Branch = $wt.Branch; Path = $wt.Path }
             }
         }
@@ -2263,8 +2332,8 @@ switch ($Command) {
             $color = switch ($r.Label) {
                 'ORPHAN-DIRTY'     { 'Magenta' }
                 'ORPHAN-NO-GIT'    { 'Red' }
-                'ACTIVE-NO-REMOTE' { 'Cyan' }
-                'UNTRACKED-ONLY'   { 'DarkYellow' }
+                'ACTIVE'              { 'Cyan' }
+                'ACTIVE-REMOTE-GONE'  { 'DarkYellow' }
                 default            { 'Yellow' }
             }
             Write-Host ""
@@ -2273,8 +2342,10 @@ switch ($Command) {
                 Write-Color "    no .git linkage -- not a working tree anymore (safe to inspect/delete)" $color
                 continue
             }
-            if ($r.Label -eq 'ACTIVE-NO-REMOTE') {
-                # Show unpushed commits (vs origin/main) -- they're the "changes" here.
+            if ($r.Label -in @('ACTIVE','ACTIVE-REMOTE-GONE')) {
+                # Show unpushed/orphaned commits (vs origin/main) -- they're the
+                # "changes" here. For ACTIVE-REMOTE-GONE the remote was deleted
+                # so these are the commits at risk if you prune.
                 $log = (& git -C $r.Path log --oneline origin/main..HEAD 2>&1 | Out-String).TrimEnd()
                 if ($log) {
                     foreach ($line in ($log -split "`r?`n")) { Write-Host "    $line" -ForegroundColor $color }
@@ -2380,12 +2451,12 @@ switch ($Command) {
             }
 
             # Only show PRUNE candidates (and orphans below). Skip MAIN/ACTIVE/
-            # ACTIVE-NO-REMOTE/DIRTY -- they're not getting touched, no need to
+            # ACTIVE/DIRTY -- they're not getting touched, no need to
             # narrate them. If a branch filter was passed and yields only a
             # non-prunable hit, say so explicitly.
-            # -Force opens the door to DIRTY / UNTRACKED-ONLY too. For safety,
-            # -Force without -y still requires the per-row Y/n prompt.
-            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','UNTRACKED-ONLY') } else { @('PRUNE') }
+            # -Force opens the door to DIRTY too. For safety, -Force without
+            # -y still requires the per-row Y/n prompt.
+            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY') } else { @('PRUNE') }
             $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses })
             if ($branchFilter -and -not $prunable -and $filterMatchedWorktree) {
                 # Only fire when we DID find a worktree, but its status isn't in
@@ -2393,8 +2464,8 @@ switch ($Command) {
                 # the orphan sweep below -- it'll handle the "not found" case.
                 $actualStatus = if ($statuses.Count -eq 1) { $statuses[0].Status } else { 'unknown' }
                 Write-Color "  '$branchFilter' is $actualStatus -- prune won't touch it" Yellow
-                if ($actualStatus -in @('DIRTY','UNTRACKED-ONLY') -and -not $Force) {
-                    Write-Color "    -> gwt prune $branchFilter -Force   (deletes DIRTY/UNTRACKED-ONLY)" DarkGray
+                if ($actualStatus -eq 'DIRTY' -and -not $Force) {
+                    Write-Color "    -> gwt prune $branchFilter -Force   (deletes DIRTY)" DarkGray
                 }
                 Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
             }
@@ -2424,13 +2495,12 @@ switch ($Command) {
                             _CleanupWorktreeMetadata $wt.Path
                         }
                     }
-                    { $_ -in 'DIRTY','UNTRACKED-ONLY' } {
+                    'DIRTY' {
                         # Reached only when -Force is set. Default the prompt to N because
                         # we're about to destroy real local content.
-                        $rowColor = if ($wt.Status -eq 'UNTRACKED-ONLY') { 'DarkYellow' } else { 'Yellow' }
-                        Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" $rowColor
-                        Write-Color "                    $($wt.Reason)" $rowColor
-                        $kind = if ($wt.Status -eq 'UNTRACKED-ONLY') { 'UNTRACKED-ONLY' } else { 'DIRTY' }
+                        Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Yellow
+                        Write-Color "                    $($wt.Reason)" Yellow
+                        $kind = 'DIRTY'
                         $ok = $y -or (($r = Read-Host "  -Force: delete $kind worktree and lose local content? (y/N)") -match '^[Yy]$')
                         if ($ok) {
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
@@ -2546,7 +2616,7 @@ switch ($Command) {
         }
 
         $procMap = @{}
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
             $procMap[[int]$_.ProcessId] = $_
         }
         $alive = @()
@@ -2898,14 +2968,15 @@ switch ($Command) {
         Write-Host "        skips dirty worktrees and those with no remote branch" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt ls " -NoNewline -ForegroundColor Cyan
-        Write-Host "(alias: list) [-All]"
+        Write-Host "(alias: list) [-All] [-Verbose|-v]"
         Write-Host "        list registered sessions, scoped to the current repo by default" -ForegroundColor DarkGray
-        Write-Host "        -All  show sessions across every repo (auto when run outside a repo)" -ForegroundColor DarkGray
+        Write-Host "        -All       show sessions across every repo (auto when run outside a repo)" -ForegroundColor DarkGray
+        Write-Host "        -Verbose|-v  inline 'git status --short' for DIRTY rows" -ForegroundColor DarkGray
         Write-Host "          [MAIN            ] -- primary clone" -ForegroundColor DarkGray
-        Write-Host "          [ACTIVE          ] -- upstream exists, not yet merged (clean or dirty)" -ForegroundColor Green
-        Write-Host "          [ACTIVE-NO-REMOTE] -- has local changes, no upstream configured" -ForegroundColor Cyan
+        Write-Host "          [ACTIVE          ] -- branch is in-progress (has upstream OR has local commits with no upstream)" -ForegroundColor Green
+        Write-Host "          [ACTIVE-REMOTE-GONE]  -- branch HAD an upstream; remote ref now deleted; you still have commits not in main" -ForegroundColor DarkYellow
         Write-Host "          [PRUNE           ] -- safe to delete (merged, remote deleted, or path missing)" -ForegroundColor Red
-        Write-Host "          [DIRTY           ] -- uncommitted local changes, kept for review" -ForegroundColor Yellow
+        Write-Host "          [DIRTY           ] -- uncommitted local changes (tracked edits and/or untracked files)" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "    gwt changes " -NoNewline -ForegroundColor Cyan
         Write-Host "(alias: status)"

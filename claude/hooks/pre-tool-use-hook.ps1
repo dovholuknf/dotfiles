@@ -27,6 +27,15 @@ if ($json.tool_name -eq "Bash") {
 		} | ConvertTo-Json -Compress
 		exit 0
 	}
+
+	# Docker: forbid inline env-var prefixes; env must be passed via flags
+	if ($cmd -match '^\s*([A-Za-z_]\w*=\S+\s+)+docker\b') {
+		@{
+			decision = "block"
+			reason   = "Do not prefix inline env vars before docker (e.g. 'FOO=bar docker ...'). Pass env explicitly: 'docker run -e VAR=val', a compose block, or '--env-file'."
+		} | ConvertTo-Json -Compress
+		exit 0
+	}
 	
 	if ($cmd -match ';') {
 		@{

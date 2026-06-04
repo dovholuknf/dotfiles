@@ -533,9 +533,17 @@ function _Find-AncestorPwsh {
     # Walk the parent-process chain up from $PID looking for the first pwsh/powershell
     # ancestor (the wt tab hosting claude). The hook itself runs as a child pwsh of
     # claude, so we have to step past the claude.exe layer.
-    $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
+    #
+    # Previous implementation issued a Get-CimInstance per ancestor; each call is
+    # ~400ms and the chain is ~8 deep on this box -- it cost ~6s per SessionStart
+    # hook. Now we do ONE enumeration into a PID->process map and walk in memory.
+    $procMap = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
+        $procMap[[int]$_.ProcessId] = $_
+    }
+    $cur = $procMap[[int]$PID]
     while ($cur -and $cur.ParentProcessId) {
-        $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)" -ErrorAction SilentlyContinue
+        $cur = $procMap[[int]$cur.ParentProcessId]
         if (-not $cur) { break }
         if ($cur.Name -match '^(pwsh|powershell)\.exe$') { return $cur }
     }
