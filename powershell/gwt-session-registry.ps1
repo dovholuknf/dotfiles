@@ -8,7 +8,8 @@
 # the entry on clean exit. on reboot or window-close-by-X, entries remain
 # stale -- gwt sessions list/restore handles them.
 
-$script:GwtSessionDir = 'D:\worktrees\sessions'
+$script:WtRoot        = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
+$script:GwtSessionDir = "$script:WtRoot\sessions"
 
 function _Ensure-GwtSessionDir {
     if (-not (Test-Path $script:GwtSessionDir)) {

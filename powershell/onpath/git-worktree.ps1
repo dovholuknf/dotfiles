@@ -30,8 +30,8 @@ param(
     [string]$Repo,
     [string]$RemoteHost,    # explicit host (e.g. 'github.com', 'bitbucket.org') -- for callers that don't have a git remote to detect from
     [string]$Prompt,
-    [string]$SourceRoot    = 'D:\git',
-    [string]$WorktreeRoot  = 'D:\worktrees',
+    [string]$SourceRoot    = $(if ($env:GIT_ROOT)      { $env:GIT_ROOT.TrimEnd('\') }      else { 'D:\git' }),
+    [string]$WorktreeRoot  = $(if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }),
     [switch]$y,
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
@@ -52,6 +52,13 @@ $ErrorActionPreference = 'Stop'
 # Spawning, theming, hook dispatch, session-tracking, and listing/recovery
 # helpers all live in claude-shell.ps1 -- shared between gwt and claudeshell.
 . (Join-Path $PSScriptRoot '..\claude-shell.ps1')
+
+# Path roots: env-var driven with historical defaults. Mirrors the values
+# claude-shell.ps1 computes; kept script-scoped here so helper functions can
+# reach them without threading $SourceRoot / $WorktreeRoot through every call.
+$script:WtRoot     = $WorktreeRoot.TrimEnd('\')
+$script:GitRoot    = $SourceRoot.TrimEnd('\')
+$script:SessionDir = "$script:WtRoot\sessions"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -261,7 +268,7 @@ function Ensure-Worktree {
 function Invoke-AgentSetup {
     param([string]$Path)
     if ($script:NoAgentSetup) { return }
-    $setupScript = 'D:\git\github\dovholuknf\dotagents\scripts\setup-agents.ps1'
+    $setupScript = "$script:GitRoot\github\dovholuknf\dotagents\scripts\setup-agents.ps1"
     if (-not (Test-Path $setupScript)) {
         Write-Color "dotagents setup-agents.ps1 not found at '$setupScript' -- skipping CLAUDE.md symlink" Yellow
         return
@@ -360,7 +367,7 @@ function Get-AliveSessionForPath {
     # path (case-insensitive, normalized). Returns $null if none. Used by destructive
     # ops to warn before nuking a worktree someone has claude open in.
     param([string]$WorktreePath)
-    $sessionDir = 'D:\worktrees\sessions'
+    $sessionDir = $script:SessionDir
     if (-not $WorktreePath -or -not (Test-Path $sessionDir)) { return $null }
     $norm = ($WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
     $procMap = @{}
@@ -467,7 +474,7 @@ function _CleanupWorktreeMetadata {
     # transcript dir for a removed worktree. Used by both 'rm' and 'prune' so the
     # cleanup is consistent.
     param([string]$WtPath)
-    $sessionDir = 'D:\worktrees\sessions'
+    $sessionDir = $script:SessionDir
     $normWt = ($WtPath -replace '/', '\').TrimEnd('\').ToLower()
 
     $projDir = _ClaudeProjectDirFor $WtPath
@@ -532,7 +539,7 @@ function Test-WorktreeIsSaved {
     # Returns $true if any session-registry entry for this worktree path has Saved=$true.
     # Used by 'gwt prune' to refuse deletion of worktrees the user marked as Saved.
     param([string]$WorktreePath)
-    $sessionDir = 'D:\worktrees\sessions'
+    $sessionDir = $script:SessionDir
     if (-not (Test-Path $sessionDir)) { return $false }
     $norm = $WorktreePath.Replace('/', '\').TrimEnd('\').ToLower()
     foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
@@ -1317,7 +1324,7 @@ switch ($Command) {
         # Manual freshness/fetch for the fallback gwt-session-registry.ps1 at
         # ~\.gwt\. No-op (with a hint) if the dotfiles copy exists -- that's
         # primary, you update it via git pull.
-        $primary  = 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'
+        $primary  = "$script:DotfilesPwsh\gwt-session-registry.ps1"
         $fallback = Join-Path $env:USERPROFILE '.gwt\gwt-session-registry.ps1'
         $stamp    = "$fallback.last-fetched"
         $url      = 'https://raw.githubusercontent.com/dovholuknf/dotfiles/main/powershell/gwt-session-registry.ps1'
@@ -1338,7 +1345,7 @@ switch ($Command) {
 
     'sessions' {
         # Shared location so both clint and the spawned claude user shells can read/write.
-        $sessionDir = 'D:\worktrees\sessions'
+        $sessionDir = $script:SessionDir
         Write-Color "gwt sessions: scanning '$sessionDir'" DarkGray
         if (-not (Test-Path $sessionDir)) {
             Write-Color "  directory does not exist (or not readable from this user)" Yellow
@@ -1419,24 +1426,13 @@ switch ($Command) {
                 return $null
             }
             if ($filtered.Count -eq 1) { return $filtered }
-            # Multi-match: prompt to disambiguate.
-            Write-Color "multiple matches for $Verb -- pick one (or 'a' for all):" Yellow
-            for ($i = 0; $i -lt $filtered.Count; $i++) {
-                $e = $filtered[$i]
-                Write-Host ("  [{0}] " -f ($i + 1)) -NoNewline -ForegroundColor Cyan
-                Write-Host ("{0,-30} [{1}] @ {2}" -f $e.Branch, $e.WindowName, $e.WorktreePath)
-            }
-            Write-Host "  [a] all"
-            Write-Host "  [q] quit"
-            $resp = (Read-Host "choice").Trim().ToLower()
-            if ($resp -eq 'q' -or -not $resp) { return $null }
-            if ($resp -eq 'a') { return $filtered }
-            $idx = 0
-            if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $filtered.Count) {
-                Write-Color "invalid choice" Yellow
-                return $null
-            }
-            return @($filtered[$idx - 1])
+            # Multi-match: prompt to disambiguate. Up/Down + Enter for one,
+            # 'a' for all, Esc/q to cancel.
+            $picked = _TuiSelect -Items $filtered -AllowAll `
+                -Prompt "multiple matches for $Verb -- pick one (or 'a' for all):" `
+                -DisplayScript { param($e) ('{0,-30} [{1}] @ {2}' -f $e.Branch, $e.WindowName, $e.WorktreePath) }
+            if (-not $picked) { return $null }
+            return @($picked)
         }
 
         # subcommand under 'sessions': default = list. 'restore' = relaunch stale.
@@ -1543,7 +1539,7 @@ switch ($Command) {
                                      -ReuseSessionId $s.Id
                     $newId = $script:LastSpawnedSessionId
                     if ($newId) {
-                        $newFile = Join-Path 'D:\worktrees\sessions' "$newId.json"
+                        $newFile = Join-Path $script:SessionDir "$newId.json"
                         $deadline = (Get-Date).AddSeconds(15)
                         while ((Get-Date) -lt $deadline) {
                             try {
@@ -1630,18 +1626,11 @@ switch ($Command) {
                     return
                 }
                 if ($candidates.Count -gt 1) {
-                    Write-Color "multiple ACTIVE sessions match -- pick one:" Yellow
-                    for ($i = 0; $i -lt $candidates.Count; $i++) {
-                        $c = $candidates[$i]
-                        Write-Host ("  [{0}] {1,-30} [{2}] @ {3}" -f ($i+1), $c.Branch, $c.WindowName, $c.WorktreePath) -ForegroundColor Cyan
-                    }
-                    $resp = (Read-Host "choice (or 'q')").Trim()
-                    if (-not $resp -or $resp -ieq 'q') { return }
-                    $idx = 0
-                    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $candidates.Count) {
-                        Write-Color "invalid choice" Yellow; return
-                    }
-                    $candidates = @($candidates[$idx-1])
+                    $picked = _TuiSelect -Items $candidates `
+                        -Prompt "multiple ACTIVE sessions match -- pick one:" `
+                        -DisplayScript { param($c) ('{0,-30} [{1}] @ {2}' -f $c.Branch, $c.WindowName, $c.WorktreePath) }
+                    if (-not $picked) { return }
+                    $candidates = @($picked)
                 }
 
                 $s = $candidates[0]
@@ -1717,15 +1706,16 @@ switch ($Command) {
                 #   STALE  -- PID dead AND worktree dir is gone (cruft)
                 # Default: drop STALE only. With -All, also drop PAUSED (and ACTIVE --
                 # removes the registry entry, leaves the running shell alone).
-                # STALE is restricted to D:\worktrees\... entries -- main-clone
-                # entries (D:\git\...) with a missing path stay PAUSED so a
+                # STALE is restricted to $env:WORKTREE_ROOT entries -- main-clone
+                # entries (under $env:GIT_ROOT) with a missing path stay PAUSED so a
                 # temporary unmount or path move never auto-nukes them.
+                $wtRootRegex = "^$([regex]::Escape($script:WtRoot))\\"
                 $classified = $entries | ForEach-Object {
                     $tag = if ($_.Alive) {
                         'ACTIVE'
                     } elseif ($_.WorktreePath -and (Test-Path $_.WorktreePath)) {
                         'PAUSED'
-                    } elseif ($_.WorktreePath -and $_.WorktreePath -match '^[A-Za-z]:\\worktrees\\') {
+                    } elseif ($_.WorktreePath -and $_.WorktreePath -match $wtRootRegex) {
                         'STALE'
                     } else {
                         'PAUSED'
@@ -1743,12 +1733,14 @@ switch ($Command) {
 
                 # Canonical-path guard: only clean entries whose WorktreePath sits at
                 # the expected 4+-deep layout:
-                #   D:\worktrees\<provider>\<org>\<repo>\<branch>   (worktree session)
-                #   D:\git\<provider>\<org>\<repo>                  (main-clone session)
-                # Anything shallower (D:\worktrees, D:\, arbitrary paths) gets
-                # protected -- even -All won't touch it. This is the safety net for
-                # the case where a registration somehow points at a dangerous root.
-                $canonicalRegex = '^[A-Za-z]:\\(worktrees\\[^\\]+\\[^\\]+\\[^\\]+\\[^\\]+|git\\[^\\]+\\[^\\]+\\[^\\]+)(\\|$)'
+                #   $env:WORKTREE_ROOT\<provider>\<org>\<repo>\<branch>   (worktree session)
+                #   $env:GIT_ROOT\<provider>\<org>\<repo>                 (main-clone session)
+                # Anything shallower (the WORKTREE_ROOT itself, a drive root, arbitrary
+                # paths) gets protected -- even -All won't touch it. This is the safety
+                # net for the case where a registration somehow points at a dangerous root.
+                $wtEsc  = [regex]::Escape($script:WtRoot)
+                $gitEsc = [regex]::Escape($script:GitRoot)
+                $canonicalRegex = "^($wtEsc\\[^\\]+\\[^\\]+\\[^\\]+\\[^\\]+|$gitEsc\\[^\\]+\\[^\\]+\\[^\\]+)(\\|$)"
                 $offLayoutSkipped = @($toDrop | Where-Object {
                     -not $_.WorktreePath -or ($_.WorktreePath -notmatch $canonicalRegex)
                 })
@@ -1770,7 +1762,7 @@ switch ($Command) {
                 }
                 foreach ($s in $offLayoutSkipped) {
                     Write-Color "  protected (off-layout): $($s.Branch) @ $($s.WorktreePath)" Red
-                    Write-Color "    path is not under D:\worktrees\<host>\<org>\<repo>\<branch> -- refusing to touch" DarkGray
+                    Write-Color "    path is not under $script:WtRoot\<host>\<org>\<repo>\<branch> -- refusing to touch" DarkGray
                 }
                 foreach ($s in $savedSkipped) {
                     Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to clean" DarkGray
@@ -1813,9 +1805,10 @@ switch ($Command) {
                 #   ACTIVE -- PID is running
                 #   PAUSED -- PID dead, but worktree dir still exists on disk (restorable)
                 #   STALE  -- PID dead AND worktree dir is gone (real cruft).
-                #            STALE is restricted to D:\worktrees\... entries; missing
-                #            main-clone paths (D:\git\...) stay PAUSED so a temporary
-                #            unmount or path move never gets called cruft.
+                #            STALE is restricted to $env:WORKTREE_ROOT entries; missing
+                #            main-clone paths (under $env:GIT_ROOT) stay PAUSED so a
+                #            temporary unmount or path move never gets called cruft.
+                $wtRootRegex = "^$([regex]::Escape($script:WtRoot))\\"
                 $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
                 $pausedCount = 0
                 $staleCount  = 0
@@ -1827,7 +1820,7 @@ switch ($Command) {
                             $tag = 'ACTIVE'; $col = 'Green'
                         } elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath)) {
                             $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
-                        } elseif ($s.WorktreePath -and $s.WorktreePath -match '^[A-Za-z]:\\worktrees\\') {
+                        } elseif ($s.WorktreePath -and $s.WorktreePath -match $wtRootRegex) {
                             $tag = 'STALE';  $col = 'Red';    $staleCount++
                         } else {
                             $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
@@ -1836,7 +1829,20 @@ switch ($Command) {
                         # label so they pop visually). Color still reflects underlying state.
                         if ($s.Saved) { $tag = 'SAVED' }
                         $displayName = if ($s.Label) { $s.Label } else { $s.Branch }
-                        Write-Color ("  [{0,-7}] {1,-30} @ {2}" -f $tag, $displayName, $s.WorktreePath) $col
+                        # State sub-tag (thinking / idle / needs-input) is set by the
+                        # claude-code hooks via set-session-state.ps1. Only meaningful
+                        # for ALIVE entries; suppress otherwise.
+                        $stateTag = ''
+                        if ($s.Alive -and $s.State) {
+                            $stateTag = switch ($s.State) {
+                                'thinking'    { '[THINK]' }
+                                'idle'        { '[ idle]' }
+                                'needs-input' { '[INPUT]' }
+                                default       { "[$($s.State)]" }
+                            }
+                            if ($s.State -eq 'needs-input') { $col = 'Magenta' }
+                        }
+                        Write-Color ("  [{0,-7}] {1,-7} {2,-30} @ {3}" -f $tag, $stateTag, $displayName, $s.WorktreePath) $col
                     }
                 }
                 Write-Host ""
@@ -2014,7 +2020,7 @@ switch ($Command) {
             $procMap[[int]$_.ProcessId] = $_
         }
         $aliveHits = @()
-        $sessionsDir = 'D:\worktrees\sessions'
+        $sessionsDir = $script:SessionDir
         if (Test-Path $sessionsDir) {
             Get-ChildItem $sessionsDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
                 try {
@@ -2080,7 +2086,7 @@ switch ($Command) {
         # worktrees that currently have a running claude session and show which
         # wt window they're in (active-work / pull-requests / tangent / etc).
         $aliveWindow = @{}
-        $sessionDir = 'D:\worktrees\sessions'
+        $sessionDir = $script:SessionDir
         if (Test-Path $sessionDir) {
             $procMap = @{}
             Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
@@ -2587,7 +2593,7 @@ switch ($Command) {
         # window. Target is a substring match against Branch/WorktreePath/WindowName.
         # No args + cwd is inside a worktree -> auto-pick the session for cwd.
         # No args + not in a worktree         -> picker of all alive sessions.
-        $sessionDir = 'D:\worktrees\sessions'
+        $sessionDir = $script:SessionDir
         if (-not (Test-Path $sessionDir)) { Write-Color "no session dir at $sessionDir" Yellow; return }
 
         # If no Target, try to default to whichever worktree contains cwd.
@@ -2656,19 +2662,11 @@ switch ($Command) {
             return
         }
         if ($hits.Count -gt 1) {
-            Write-Color "multiple alive sessions match -- pick one (or 'q' to quit):" Yellow
-            for ($i = 0; $i -lt $hits.Count; $i++) {
-                $h = $hits[$i]
-                Write-Host ("  [{0}] " -f ($i + 1)) -NoNewline -ForegroundColor Cyan
-                Write-Host ("{0,-30} [{1}] @ {2}" -f $h.Branch, $h.WindowName, $h.WorktreePath)
-            }
-            $resp = (Read-Host "choice").Trim()
-            if (-not $resp -or $resp -ieq 'q') { return }
-            $idx = 0
-            if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $hits.Count) {
-                Write-Color "invalid choice" Yellow; return
-            }
-            $hits = @($hits[$idx - 1])
+            $picked = _TuiSelect -Items $hits `
+                -Prompt "multiple alive sessions match -- pick one:" `
+                -DisplayScript { param($h) ('{0,-30} [{1}] @ {2}' -f $h.Branch, $h.WindowName, $h.WorktreePath) }
+            if (-not $picked) { return }
+            $hits = @($picked)
         }
         $h = $hits[0]
         if (-not $h.WindowName) {
@@ -2811,7 +2809,7 @@ switch ($Command) {
         $patternArg = $Target
         $newLabel   = $Match
 
-        $sessionDir = 'D:\worktrees\sessions'
+        $sessionDir = $script:SessionDir
         if (-not (Test-Path $sessionDir)) { Write-Color "no session dir at $sessionDir" Yellow; return }
 
         $files = @(Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)
@@ -2846,19 +2844,11 @@ switch ($Command) {
             return
         }
         if ($hits.Count -gt 1) {
-            Write-Color "multiple matches -- pick one (or 'q' to quit):" Yellow
-            for ($i = 0; $i -lt $hits.Count; $i++) {
-                $h = $hits[$i]
-                Write-Host ("  [{0}] " -f ($i + 1)) -NoNewline -ForegroundColor Cyan
-                Write-Host ("{0,-30} [{1}] @ {2}" -f $h.Branch, $h.WindowName, $h.WorktreePath)
-            }
-            $resp = (Read-Host "choice").Trim()
-            if (-not $resp -or $resp -ieq 'q') { return }
-            $idx = 0
-            if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $hits.Count) {
-                Write-Color "invalid choice" Yellow; return
-            }
-            $hits = @($hits[$idx - 1])
+            $picked = _TuiSelect -Items $hits `
+                -Prompt "multiple matches -- pick one:" `
+                -DisplayScript { param($h) ('{0,-30} [{1}] @ {2}' -f $h.Branch, $h.WindowName, $h.WorktreePath) }
+            if (-not $picked) { return }
+            $hits = @($picked)
         }
 
         $entry = $hits[0]

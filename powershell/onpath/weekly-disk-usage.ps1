@@ -1,6 +1,7 @@
-# D:\git\github\dovholuknf\dotfiles\powershell\onpath\weekly-disk-usage.ps1
+# $env:ON_PATH\weekly-disk-usage.ps1
 
-$script = "D:\git\github\dovholuknf\dotfiles\powershell\onpath\disk-usage.ps1"
+$onPath = if ($env:ON_PATH) { $env:ON_PATH.TrimEnd('\') } else { $PSScriptRoot }
+$script = "$onPath\disk-usage.ps1"
 $outdir = "V:\disk-usage-history"
 $ts     = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 

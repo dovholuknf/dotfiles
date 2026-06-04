@@ -130,6 +130,11 @@
           {
             "type": "command",
             "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
+            "timeout": 5
           }
         ]
       },
@@ -139,6 +144,23 @@
           {
             "type": "command",
             "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State thinking",
+            "timeout": 5
           }
         ]
       }
@@ -150,6 +172,11 @@
           {
             "type": "command",
             "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/stop.wav').PlaySync()\""
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State idle",
+            "timeout": 5
           }
         ]
       }
@@ -171,7 +198,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \". 'D:/git/github/dovholuknf/dotfiles/powershell/claude-shell.ps1'; _RegisterOrClaimClaudeSession\"",
+            "command": "pwsh -NoProfile -WindowStyle Hidden -File C:/Users/claude/.claude/hooks/session-bootstrap.ps1 -Phase start",
             "timeout": 5
           }
         ]
@@ -183,7 +210,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \". 'D:/git/github/dovholuknf/dotfiles/powershell/claude-shell.ps1'; _UnregisterClaudeSession\"",
+            "command": "pwsh -NoProfile -WindowStyle Hidden -File C:/Users/claude/.claude/hooks/session-bootstrap.ps1 -Phase end",
             "timeout": 5
           }
         ]

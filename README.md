@@ -40,24 +40,47 @@ cmd/                                 # legacy cmd.exe bits
 
 ## Setup (Windows)
 
-The dotfiles assume drives `D:` (code) and ship Windows path layouts. Adapt to your own.
+All paths are env-var driven. There are no hardcoded drive assumptions in the README; pick a code drive (`D:\` in
+this author's setup, but any will do) and set the variables to match. A `~/.profile.ps1` like the one below is the
+single source of truth that every script reads from.
 
 ```powershell
-# clone
-git clone https://github.com/dovholuknf/dotfiles D:\git\github\dovholuknf\dotfiles
+# ~/.profile.ps1 -- minimal setup. Adjust drive letters and paths to suit.
+$env:GIT_ROOT      = 'D:\git'                            # where 'git clone' lands
+$env:GH_ROOT       = "$env:GIT_ROOT\github"
+$env:DOTFILES      = "$env:GH_ROOT\dovholuknf\dotfiles"  # this repo
+$env:DOTFILES_PWSH = "$env:DOTFILES\powershell"
+$env:ON_PATH       = "$env:DOTFILES_PWSH\onpath"
+$env:WORKTREE_ROOT = 'D:\worktrees'                      # where 'gwt new' creates worktrees
 
-# point your pwsh profile at the included one
-New-Item -ItemType SymbolicLink -Path $PROFILE `
-  -Target D:\git\github\dovholuknf\dotfiles\powershell\Microsoft.PowerShell_profile.ps1
+# prepend the onpath dir so the scripts are callable by name
+$env:PATH = "$env:ON_PATH;$env:PATH"
 
-# wire claude-code hooks + settings (requires Developer Mode or an elevated shell)
-New-Item -ItemType SymbolicLink -Path $HOME\.claude\hooks `
-  -Target D:\git\github\dovholuknf\dotfiles\claude\hooks
-New-Item -ItemType SymbolicLink -Path $HOME\.claude\settings.json `
-  -Target D:\git\github\dovholuknf\dotfiles\claude\settings.json
+# shared helpers (PATH add-/remove- toggles, _TuiSelect, etc) and the gwt machinery
+. $env:DOTFILES\powershell\shared\common-tools.ps1
+. $env:DOTFILES\powershell\wt-themes.ps1
+. $env:DOTFILES\powershell\gwt-session-registry.ps1
+. $env:DOTFILES\powershell\claude-shell.ps1
+
+function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
 ```
 
-Then reload pwsh and `gwt -Help` to see what `gwt` can do.
+Then clone and wire the symlinks:
+
+```powershell
+# clone into the location $env:DOTFILES points at
+git clone https://github.com/dovholuknf/dotfiles $env:DOTFILES
+
+# wire claude-code hooks + settings (Developer Mode or an elevated shell)
+New-Item -ItemType SymbolicLink -Path $HOME\.claude\hooks         -Target "$env:DOTFILES\claude\hooks"
+New-Item -ItemType SymbolicLink -Path $HOME\.claude\settings.json -Target "$env:DOTFILES\claude\settings.json"
+```
+
+Reload pwsh and run `gwt -Help`.
+
+`gwt` currently defaults its `-SourceRoot` to `D:\git` and `-WorktreeRoot` to `D:\worktrees` if not passed. Override
+per-call (`gwt new ... -SourceRoot $env:GIT_ROOT -WorktreeRoot $env:WORKTREE_ROOT`) or set those defaults to match
+your env vars in `git-worktree.ps1` if you fork.
 
 ## Conventions in this repo
 

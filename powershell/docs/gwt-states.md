@@ -92,4 +92,4 @@ visible across DIRTY / UNTRACKED-ONLY / PRUNE / ACTIVE-REMOTE-GONE rows.
 | Alive-session check | `Remove-Worktree`, orphan-removal | Refuses to remove a path if a claude session is alive there |
 | cwd-inside-target hop | `Remove-Worktree` | If the parent shell's cwd is inside the worktree about to be deleted, auto-cd's to MAIN and sets the gwt hint file so the wrapper follows |
 | Saved-protection | `Test-WorktreeIsSaved` | Reads session-registry entries; if any has Saved=true for this path, prune refuses (even with -Force). Ad-hoc claude launches in non-git dirs auto-set Saved. |
-| Canonical-path guard in clean | `gwt sessions clean` | Refuses to drop session entries whose WorktreePath isn't under `D:\worktrees\<host>\<org>\<repo>\<branch>` or `D:\git\<host>\<org>\<repo>` |
+| Canonical-path guard in clean | `gwt sessions clean` | Refuses to drop session entries whose WorktreePath isn't under `$env:WORKTREE_ROOT\<host>\<org>\<repo>\<branch>` or `$env:GIT_ROOT\<host>\<org>\<repo>` |

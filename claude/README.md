@@ -10,6 +10,7 @@ claude/
     pre-tool-use-hook.ps1     # the gatekeeper: blocks a handful of footguns
     no-compound-cd.ps1        # older single-purpose version of the cd guard, kept for reference
     set-session-state.ps1     # patches the session ledger with thinking/idle/needs-input
+    session-bootstrap.ps1     # tiny dispatcher invoked by SessionStart / SessionEnd
   settings.json               # permissions, hook bindings, statusline
 ```
 
@@ -19,7 +20,7 @@ After cloning the dotfiles repo, run (in a pwsh shell where the symlink target i
 elevation required):
 
 ```powershell
-$dst = 'D:\git\github\dovholuknf\dotfiles\claude'
+$dst = "$env:DOTFILES\claude"
 New-Item -ItemType SymbolicLink -Path $HOME\.claude\hooks         -Target "$dst\hooks"
 New-Item -ItemType SymbolicLink -Path $HOME\.claude\settings.json -Target "$dst\settings.json"
 ```
@@ -38,8 +39,8 @@ After that, edits to either side resolve through the link. `git status` in the d
 | `Notification` (permission_prompt) | sound + `set-session-state.ps1 -State needs-input` |
 | `Notification` (elicitation_dialog) | sound + `set-session-state.ps1 -State needs-input` |
 | `PermissionRequest` | sound |
-| `SessionStart` | `_RegisterOrClaimClaudeSession` (from `powershell/claude-shell.ps1`) |
-| `SessionEnd` | `_UnregisterClaudeSession` (from `powershell/claude-shell.ps1`) |
+| `SessionStart` | `session-bootstrap.ps1 -Phase start` -> `_RegisterOrClaimClaudeSession` (from `powershell/claude-shell.ps1`) |
+| `SessionEnd` | `session-bootstrap.ps1 -Phase end` -> `_UnregisterClaudeSession` (from `powershell/claude-shell.ps1`) |
 
 ## What `pre-tool-use-hook.ps1` blocks
 
@@ -61,7 +62,7 @@ The state model exists so a single pane of glass (`gwt sessions`) can show what 
 across many wt tabs.
 
 1. On `SessionStart`, `_RegisterOrClaimClaudeSession` reads the hook payload from stdin, extracts `session_id`, and
-   stashes it as `ClaudeSessionId` on the matching ledger entry in `D:\worktrees\sessions\<guid>.json`.
+   stashes it as `ClaudeSessionId` on the matching ledger entry in `<WORKTREE_ROOT>\sessions\<guid>.json`.
 2. On `UserPromptSubmit`, `Stop`, and the two `Notification` matchers, `set-session-state.ps1` reads `session_id`
    from stdin, finds the ledger entry with that `ClaudeSessionId`, and patches `State` + `LastStateChange`.
 3. `gwt sessions` reads `State` and renders a sub-tag (`[THINK]`, `[ idle]`, `[INPUT]` in magenta) next to the

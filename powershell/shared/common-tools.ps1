@@ -66,10 +66,19 @@ function _TuiSelect {
     # Arrow-key picker. Returns the chosen item (object) or $null if cancelled.
     # Up/Down/k/j to move, Enter to select, Esc/q to cancel. Uses VT escapes
     # for relative cursor motion so it works with Windows Terminal's tight buffer.
+    #
+    # -DisplayProperty <name>   pull the label from this property of each item
+    # -DisplayScript  <block>   compute the label by invoking the block with each item
+    # -AllowAll                 enable 'a' to select every item. When 'a' is pressed
+    #                            the function returns the full $Items array; when Enter
+    #                            is pressed it still returns a single item. Caller can
+    #                            distinguish via @(... ).Count.
     param(
         [Parameter(Mandatory)] [array]$Items,
         [string]$Prompt = 'choose:',
-        [string]$DisplayProperty
+        [string]$DisplayProperty,
+        [scriptblock]$DisplayScript,
+        [switch]$AllowAll
     )
     if (-not $Items.Count) { return $null }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
@@ -81,13 +90,25 @@ function _TuiSelect {
     $cursorWasVisible = [Console]::CursorVisible
     [Console]::CursorVisible = $false
 
+    $labelFor = {
+        param($it)
+        if ($DisplayScript)        { return (& $DisplayScript $it) }
+        elseif ($DisplayProperty)  { return $it.$DisplayProperty }
+        else                       { return "$it" }
+    }
+
+    $footerLines = if ($AllowAll) { 1 } else { 0 }
+
     $render = {
         Write-Host -NoNewline "$ESC[J"
         for ($i = 0; $i -lt $Items.Count; $i++) {
-            $label = if ($DisplayProperty) { $Items[$i].$DisplayProperty } else { "$($Items[$i])" }
+            $label = & $labelFor $Items[$i]
             $line  = if ($i -eq $idx) { "> $label" } else { "  $label" }
             $color = if ($i -eq $idx) { 'Cyan' } else { 'DarkGray' }
             Write-Host $line -ForegroundColor $color
+        }
+        if ($AllowAll) {
+            Write-Host "  (press 'a' to select all)" -ForegroundColor DarkGray
         }
     }
 
@@ -98,7 +119,7 @@ function _TuiSelect {
 
         while ($true) {
             $k = [Console]::ReadKey($true)
-            $sel = $null; $cancel = $false
+            $sel = $null; $cancel = $false; $all = $false
             switch ($k.Key) {
                 'UpArrow'   { if ($idx -gt 0) { $idx-- } }
                 'DownArrow' { if ($idx -lt $Items.Count - 1) { $idx++ } }
@@ -111,12 +132,14 @@ function _TuiSelect {
                         'k' { if ($idx -gt 0) { $idx-- } }
                         'j' { if ($idx -lt $Items.Count - 1) { $idx++ } }
                         'q' { $cancel = $true }
+                        'a' { if ($AllowAll) { $all = $true } }
                     }
                 }
             }
             if ($sel)    { return $sel }
+            if ($all)    { return ,@($Items) }
             if ($cancel) { return $null }
-            Write-Host -NoNewline "`r$ESC[$($Items.Count)A"
+            Write-Host -NoNewline "`r$ESC[$($Items.Count + $footerLines)A"
             & $render
         }
     } finally {

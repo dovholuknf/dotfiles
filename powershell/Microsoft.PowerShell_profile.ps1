@@ -22,7 +22,8 @@ $env:PYTHON_HOME    = "$env:LOCALAPPDATA\Programs\Python\Python313"
 $env:PYTHON_SCRIPTS = "$env:PYTHON_HOME\Scripts"
 $env:ZITI_HOME      = "$env:USERPROFILE\.ziti\bin"
 $env:ZITI_DEFAULT   = $env:ZITI_HOME   # gets repointed at a versioned subdir by add-ziti
-$env:DOVHOLUK_ONPATH = "D:\git\github\dovholuknf\dotfiles\powershell\onpath"
+$env:DOVHOLUK_ONPATH = "$env:ON_PATH"
+$env:WORKTREE_ROOT   = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
 
 # shared helpers + add-/remove- tool toggles
 . $env:DOTFILES\powershell\shared\common-tools.ps1
@@ -85,7 +86,7 @@ function gwt {
 }
 
 function StartMcpGateway {
-    & 'D:\git\github\openziti\mcp-gateway\build\mcp-gateway.exe' run 'C:\Users\clint\.mcp-gateway\config.yml' @args
+    & "$env:OZ_ROOT\mcp-gateway\build\mcp-gateway.exe" run "$env:USERPROFILE\.mcp-gateway\config.yml" @args
 }
 
 function editsettings() {

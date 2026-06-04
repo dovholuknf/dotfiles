@@ -16,7 +16,11 @@ if (-not (Get-Command Write-Color -ErrorAction SilentlyContinue)) {
     }
 }
 
-$script:GwtSessionDir = 'D:\worktrees\sessions'
+$script:WtRoot        = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
+$script:GitRoot       = if ($env:GIT_ROOT)      { $env:GIT_ROOT.TrimEnd('\') }      else { 'D:\git' }
+$script:DotfilesPwsh  = if ($env:DOTFILES_PWSH) { $env:DOTFILES_PWSH.TrimEnd('\') } else { "$script:GitRoot\github\dovholuknf\dotfiles\powershell" }
+$script:GwtSessionDir = "$script:WtRoot\sessions"
+$script:GwtHooksDir   = "$script:WtRoot\hooks"
 
 # ---------------------------------------------------------------------------
 # prompt presets + picker
@@ -165,7 +169,7 @@ function _InvokeGwtHook {
         'gitlab.com'    { 'gitlab'    }
         default         { $RemoteHost }
     }
-    $hookFile = Join-Path 'D:\worktrees\hooks' (Join-Path $hostShort (Join-Path $Org (Join-Path $Repo 'worktree.ps1')))
+    $hookFile = Join-Path $script:GwtHooksDir (Join-Path $hostShort (Join-Path $Org (Join-Path $Repo 'worktree.ps1')))
     if (-not (Test-Path $hookFile)) { return }
     Write-Color "running hook: $hookFile" DarkGray
     try {
@@ -298,7 +302,7 @@ function _OpenClaudeShell {
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8
 
     # Tiny encoded command: source the registry, then call the all-in-one helper.
-    $cmd = ". 'D:\git\github\dovholuknf\dotfiles\powershell\gwt-session-registry.ps1'; _InvokeGwtSpawn -Id '$sessionId'"
+    $cmd = ". '$script:DotfilesPwsh\gwt-session-registry.ps1'; _InvokeGwtSpawn -Id '$sessionId'"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
 
     if (-not [string]::IsNullOrWhiteSpace($WindowName)) {
@@ -561,6 +565,20 @@ function _RegisterOrClaimClaudeSession {
     $tabPid   = if ($tabProc) { [int]$tabProc.ProcessId } else { 0 }
     $tabStart = if ($tabProc) { $tabProc.CreationDate.ToString('o') } else { $null }
 
+    # Hook payload (stdin) carries claude's session_id. Stash it so the
+    # set-session-state.ps1 helpers can find this entry by claude id rather
+    # than scanning by Pid/cwd. Best-effort: silent on parse failure.
+    $claudeSessionId = $null
+    try {
+        if ([Console]::IsInputRedirected) {
+            $raw = [Console]::In.ReadToEnd()
+            if ($raw) {
+                $p = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($p.session_id) { $claudeSessionId = $p.session_id }
+            }
+        }
+    } catch {}
+
     # Try to find an existing entry: prefer WtSession match, then WorktreePath.
     $existing = $null
     Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -587,6 +605,11 @@ function _RegisterOrClaimClaudeSession {
         $e.StartTime = $tabStart
         $e.WtSession = $wtSess
         $e.LastSpawnedAt = (Get-Date).ToString('o')
+        if ($claudeSessionId) {
+            $e | Add-Member -NotePropertyName ClaudeSessionId -NotePropertyValue $claudeSessionId -Force
+        }
+        $e | Add-Member -NotePropertyName State           -NotePropertyValue 'idle' -Force
+        $e | Add-Member -NotePropertyName LastStateChange -NotePropertyValue (Get-Date).ToString('o') -Force
         ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $existing.File -Encoding UTF8
         return
     }
@@ -635,6 +658,9 @@ function _RegisterOrClaimClaudeSession {
         WindowName        = $windowForEntry
         PromptText        = $null
         ClaudeSessionName = $branch
+        ClaudeSessionId   = $claudeSessionId
+        State             = 'idle'
+        LastStateChange   = $now
         Saved             = $savedForEntry
     }
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8

@@ -9,8 +9,8 @@ param(
     [switch]$y
 )
 
-$SourceRoot  = 'D:\git'
-$WorktreeRoot = 'D:\worktrees\github'
+$SourceRoot   = if ($env:GIT_ROOT)      { $env:GIT_ROOT.TrimEnd('\') }       else { 'D:\git' }
+$WorktreeRoot = if ($env:WORKTREE_ROOT) { "$($env:WORKTREE_ROOT.TrimEnd('\'))\github" } else { 'D:\worktrees\github' }
 
 function Write-Color {
     param([string]$Text, [string]$Color)
