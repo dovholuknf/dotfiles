@@ -1,0 +1,206 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(ls *)",
+      "Bash(/usr/bin/ls:*)",
+      "Bash(/usr/bin/ls *)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(du:*)",
+      "Bash(grep:*)",
+      "Bash(tee:*)",
+      "Bash(git branch*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git merge-tree*)",
+      "Bash(gh api -X GET:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr status:*)",
+      "Bash(gh pr comments:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue status:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh repo list:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh release list:*)",
+      "Bash(gh release view:*)",
+      "Bash(gh auth status:*)",
+      "Bash(gh status:*)",
+      "Bash(gh search:*)",
+      "Bash(git ls-tree *)",
+      "Bash(git ls-remote *)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(timeout:*)",
+      "Bash(sleep:*)",
+      "Bash(go mod:*)",
+      "Bash(cmake -S*)",
+      "Bash(cmake -B*)",
+      "Bash(cmake --preset*)",
+      "Bash(cmake --build*)",
+      "Bash(cmake --list-presets*)",
+      "Bash(node ./scripts/*)",
+      "Bash(npm run *)",
+      "Bash(yarn run *)",
+      "Bash(rm -rf ./build)",
+      "Bash(rm -rf ./dist)",
+      "Bash(rm -rf ./node_modules)",
+      "Bash(pkill -f node)",
+      "Bash(pkill -f dev-server)",
+      "Bash(echo:*)",
+      "Bash(xargs grep :*)",
+      "Bash(ziti:*)",
+      "Bash(ssh.exe *)",
+      "Bash(go build:*)",
+      "Bash(/v/work/tools/go/current/bin/go build:*)",
+      "Read(//c/temp/**)",
+      "Read(//c/users/claude/**)",
+      "Read(//d/work/**)",
+      "Read(//d/worktrees/**)",
+      "Edit(//d/worktrees/**)",
+      "Read(//d/git/github/openziti/**)",
+      "Read(//d/git/github/netfoundry/**)",
+      "Read(//d/git/github/microsoft/**)",
+      "Read(//d/git/github/dovholuknf/dotagents/**)",
+      "Edit(//d/git/github/dovholuknf/dotagents/**)",
+      "Edit(//c/temp/**)",
+      "Edit(//c/users/claude/**)",
+      "Edit(//d/work/**)",
+      "Read(/tmp/**)",
+      "Edit(/tmp/**)",
+      "WebSearch",
+      "mcp__ziti-mcp__*",
+      "mcp__datawarehouse-mcp__*",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(V:/work/tools/go/current/bin/go.exe build:*)",
+      "Bash(//v/work/tools/go/current/bin/go.exe build:*)"
+    ],
+    "deny": [
+      "Bash(git checkout*)",
+      "Bash(git commit*)",
+      "Bash(git reset*)",
+      "Bash(git restore*)",
+      "Bash(git clean*)",
+      "Bash(git push*)",
+      "Bash(git rebase*)",
+      "Bash(git fetch*)",
+      "Bash(git branch -D*)",
+      "Bash(git branch -d*)",
+      "Bash(git branch -m*)",
+      "Bash(git branch -c*)",
+      "Bash(git checkout -b*)",
+      "Bash(git switch -c*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(~/.encrypted/**)",
+      "Read(~/.aws/**)",
+      "Read(/e/**)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -File C:/Users/claude/.claude/hooks/pre-tool-use-hook.ps1",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
+          }
+        ]
+      },
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "none",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/stop.wav').PlaySync()\""
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/permissionrequest.wav').PlaySync()\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \". 'D:/git/github/dovholuknf/dotfiles/powershell/claude-shell.ps1'; _RegisterOrClaimClaudeSession\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \". 'D:/git/github/dovholuknf/dotfiles/powershell/claude-shell.ps1'; _UnregisterClaudeSession\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash /c/Users/claude/.claude/statusline-command.sh"
+  },
+  "feedbackSurveyRate": 0,
+  "effortLevel": "medium",
+  "autoUpdatesChannel": "latest",
+  "junk": [
+    {
+      "type": "command",
+      "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -File 'C:/Users/claude/.claude/sounds/log-hook.ps1'"
+    }
+  ]
+}
