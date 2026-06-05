@@ -2,6 +2,12 @@
 
 Scripts intended to live on `$env:PATH`. The profile adds this directory automatically.
 
+> **Convention reminder**: any new script that presents a list to pick from MUST use `_TuiSelect` from
+> `../shared/common-tools.ps1`. That gives the user arrow-key navigation, digit-key quick-jump (including
+> multi-digit input for lists > 9), an optional default highlight, and consistent cancel/exit semantics
+> across every tool here. Hand-rolled numbered `Read-Host "choice"` pickers are a regression. See the root
+> `CLAUDE.md` "List pickers" section for the contract and examples.
+
 ## Worktree tooling
 
 | Script | What it does |

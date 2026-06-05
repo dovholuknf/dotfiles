@@ -63,22 +63,48 @@ function dedupe-path {
 # ── TUI picker ───────────────────────────────────────────────────────────────
 
 function _TuiSelect {
-    # Arrow-key picker. Returns the chosen item (object) or $null if cancelled.
-    # Up/Down/k/j to move, Enter to select, Esc/q to cancel. Uses VT escapes
-    # for relative cursor motion so it works with Windows Terminal's tight buffer.
+    # The unified list picker. Use this in EVERY script that asks the user to
+    # pick from a list. Do NOT hand-roll a `for ($i...) { Write-Host "[N]..." } ;
+    # Read-Host "choice"` block; it breaks the consistent UX the user expects
+    # across Set-Theme / gwt sessions / wt-window picker / etc.
     #
-    # -DisplayProperty <name>   pull the label from this property of each item
-    # -DisplayScript  <block>   compute the label by invoking the block with each item
-    # -AllowAll                 enable 'a' to select every item. When 'a' is pressed
-    #                            the function returns the full $Items array; when Enter
-    #                            is pressed it still returns a single item. Caller can
-    #                            distinguish via @(... ).Count.
+    # Returns:
+    #   - the chosen item (one of $Items) on Enter / digit-key selection
+    #   - $Items (the full array) when 'a' is pressed and -AllowAll is set
+    #   - $null on Esc/q (or when stdin is redirected -- non-interactive defaults
+    #     to returning $Items[0] silently; passes through scripts without hanging)
+    #
+    # Keystrokes:
+    #   Up / Down / k / j      cursor move
+    #   Home / End             jump to first / last
+    #   <digit>                jump to that-numbered item (buffered for lists > 9)
+    #   Backspace              pop one digit off the buffer
+    #   Enter                  commit current cursor / digit buffer
+    #   Esc                    1st press: clear the digit buffer; 2nd press: cancel
+    #   q                      cancel (single keystroke when buffer is empty)
+    #   a                      select-all (only when -AllowAll)
+    #
+    # Parameters:
+    #   -Items <array>            REQUIRED. The list to pick from.
+    #   -Prompt <string>          Header text shown above the list.
+    #   -DisplayProperty <name>   Pull the label from this property of each item.
+    #   -DisplayScript  <block>   Compute the label by invoking the block with each item.
+    #                             (-DisplayScript wins over -DisplayProperty when both set.)
+    #   -DefaultIndex <int>       0-based row to highlight on open. Clamped to range.
+    #   -AllowAll                 Enable 'a' = return full list. Caller can distinguish
+    #                             single-item vs all by checking @($picked).Count.
+    #
+    # Behaviors that MUST keep working when this function is edited (see the
+    # "List pickers" section in CLAUDE.md for the full contract).
     param(
         [Parameter(Mandatory)] [array]$Items,
         [string]$Prompt = 'choose:',
         [string]$DisplayProperty,
         [scriptblock]$DisplayScript,
-        [switch]$AllowAll
+        [switch]$AllowAll,
+        # 0-based row to highlight on open. Callers wanting a default of "row N"
+        # in 1-based reasoning pass N-1. Clamped to a valid range.
+        [int]$DefaultIndex = 0
     )
     if (-not $Items.Count) { return $null }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
@@ -86,9 +112,12 @@ function _TuiSelect {
     }
 
     $ESC = [char]27
-    $idx = 0
+    $idx = if ($DefaultIndex -ge 0 -and $DefaultIndex -lt $Items.Count) { $DefaultIndex } else { 0 }
     $cursorWasVisible = [Console]::CursorVisible
     [Console]::CursorVisible = $false
+    # numBuf accumulates digit keystrokes for items > 9. e.g. type '1' '2' to
+    # highlight item 12. Enter confirms; Esc clears the buffer (not the picker).
+    $numBuf = ''
 
     $labelFor = {
         param($it)
@@ -97,15 +126,25 @@ function _TuiSelect {
         else                       { return "$it" }
     }
 
-    $footerLines = if ($AllowAll) { 1 } else { 0 }
+    # Pad index column width to fit Items.Count digits, so two-digit lists line up.
+    $idxWidth = ([string]$Items.Count).Length
+    $footerLines = 1 # the digit-buffer / hint line always renders
+    if ($AllowAll) { $footerLines++ }
 
     $render = {
         Write-Host -NoNewline "$ESC[J"
         for ($i = 0; $i -lt $Items.Count; $i++) {
             $label = & $labelFor $Items[$i]
-            $line  = if ($i -eq $idx) { "> $label" } else { "  $label" }
+            $num   = "[{0,$idxWidth}] " -f ($i + 1)
+            $arrow = if ($i -eq $idx) { '> ' } else { '  ' }
+            $line  = "$arrow$num$label"
             $color = if ($i -eq $idx) { 'Cyan' } else { 'DarkGray' }
             Write-Host $line -ForegroundColor $color
+        }
+        if ($numBuf) {
+            Write-Host "  pick: ${numBuf}_  (Enter to confirm, Esc to clear)" -ForegroundColor Yellow
+        } else {
+            Write-Host "  (type digits to jump, Enter to pick, Esc/q to cancel)" -ForegroundColor DarkGray
         }
         if ($AllowAll) {
             Write-Host "  (press 'a' to select all)" -ForegroundColor DarkGray
@@ -120,17 +159,46 @@ function _TuiSelect {
         while ($true) {
             $k = [Console]::ReadKey($true)
             $sel = $null; $cancel = $false; $all = $false
+
+            # Digits build up a numBuf and just move the cursor; commit on Enter.
+            # Non-digit keys clear the buffer.
+            $ch = $k.KeyChar
+            if ($ch -ge '0' -and $ch -le '9') {
+                $candidate = $numBuf + [string]$ch
+                # cap at 3 digits; nobody is picking item 1000
+                if ($candidate.Length -le 3) {
+                    $n = [int]$candidate
+                    if ($n -ge 1 -and $n -le $Items.Count) {
+                        $numBuf = $candidate
+                        $idx = $n - 1
+                    }
+                }
+                Write-Host -NoNewline "`r$ESC[$($Items.Count + $footerLines)A"
+                & $render
+                continue
+            }
+
             switch ($k.Key) {
-                'UpArrow'   { if ($idx -gt 0) { $idx-- } }
-                'DownArrow' { if ($idx -lt $Items.Count - 1) { $idx++ } }
-                'Home'      { $idx = 0 }
-                'End'       { $idx = $Items.Count - 1 }
-                'Enter'     { $sel = $Items[$idx] }
-                'Escape'    { $cancel = $true }
+                'UpArrow'   { if ($idx -gt 0) { $idx-- }; $numBuf = '' }
+                'DownArrow' { if ($idx -lt $Items.Count - 1) { $idx++ }; $numBuf = '' }
+                'Home'      { $idx = 0; $numBuf = '' }
+                'End'       { $idx = $Items.Count - 1; $numBuf = '' }
+                'Enter'     { $sel = $Items[$idx]; $numBuf = '' }
+                'Escape'    {
+                    if ($numBuf) { $numBuf = '' } else { $cancel = $true }
+                }
+                'Backspace' {
+                    if ($numBuf.Length -gt 0) {
+                        $numBuf = $numBuf.Substring(0, $numBuf.Length - 1)
+                        if ($numBuf) {
+                            $idx = [int]$numBuf - 1
+                        }
+                    }
+                }
                 default {
-                    switch ($k.KeyChar) {
-                        'k' { if ($idx -gt 0) { $idx-- } }
-                        'j' { if ($idx -lt $Items.Count - 1) { $idx++ } }
+                    switch ($ch) {
+                        'k' { if ($idx -gt 0) { $idx-- }; $numBuf = '' }
+                        'j' { if ($idx -lt $Items.Count - 1) { $idx++ }; $numBuf = '' }
                         'q' { $cancel = $true }
                         'a' { if ($AllowAll) { $all = $true } }
                     }

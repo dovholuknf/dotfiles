@@ -88,6 +88,9 @@ your env vars in `git-worktree.ps1` if you fork.
 - No em-dashes (U+2014). No double-hyphen as dash. No semicolons in prose.
 - No `Co-Authored-By:` trailers on commits.
 - Scripts assume PowerShell 7.x. Windows PowerShell 5.1 is not a target.
+- **List pickers use `_TuiSelect`** (in `powershell/shared/common-tools.ps1`). Arrow keys + digit jump + multi-digit
+  buffer + Esc-to-cancel. Used everywhere a numbered list is shown (Set-Theme, gwt sessions, the wt-window
+  picker, etc). Don't hand-roll new ones. See `CLAUDE.md` ("List pickers") for the contract.
 
 ## Further reading
 

@@ -173,8 +173,10 @@ function script:_ValidateTheme([hashtable]$t) {
 
 function Set-Theme {
     # Apply a theme.
-    #   Set-Theme                  -- no args, interactive numbered picker
-    #   Set-Theme tangent          -- by name
+    #   Set-Theme                  -- no args, interactive arrow-key / digit picker
+    #   Set-Theme tangent          -- by name (substring / prefix tolerant)
+    #   Set-Theme 6                -- by 1-based index into the sorted list
+    #   Set-Theme -Tour            -- walk through every theme, Enter between each
     #   Set-Theme @{ ... }         -- by inline hashtable (custom test theme)
     #   $myTheme | Set-Theme       -- pipeline
     [CmdletBinding(DefaultParameterSetName = 'ByName')]
@@ -183,40 +185,87 @@ function Set-Theme {
         [string]$Name,
 
         [Parameter(Position=0, ParameterSetName='ByObject', ValueFromPipeline=$true)]
-        [hashtable]$Theme
+        [hashtable]$Theme,
+
+        # Walk every theme. Forwards to Tour-Themes (which has more knobs than
+        # this switch exposes -- see Tour-Themes -? for -Mode / -Filter /
+        # -RestoreOnExit).
+        [Parameter(ParameterSetName='ByName')]
+        [switch]$Tour
     )
     process {
+        if ($Tour) {
+            Tour-Themes
+            return
+        }
         if ($PSCmdlet.ParameterSetName -eq 'ByObject' -and $Theme) {
             Apply-Theme $Theme
             return
         }
 
-        # No name passed -- show numbered picker.
+        # If $Name parses as an integer, treat it as a 1-based index into the
+        # sorted theme list. Lets the user repeat the picker shortcut on the
+        # command line: 'Set-Theme 6' picks the 6th theme.
+        $sortedThemes = @($script:WtThemes.Keys | Sort-Object)
+        $asInt = 0
+        if ($Name -and [int]::TryParse($Name, [ref]$asInt)) {
+            if ($asInt -ge 1 -and $asInt -le $sortedThemes.Count) {
+                $Name = $sortedThemes[$asInt - 1]
+            } else {
+                Write-Host "theme index '$asInt' out of range (1..$($sortedThemes.Count))" -ForegroundColor Red
+                return
+            }
+        }
+
+        # No name passed -- show arrow-key picker. Falls back to a typed name
+        # if _TuiSelect isn't available (no profile / common-tools.ps1 not
+        # dot-sourced).
         if (-not $Name) {
             $sorted = @($script:WtThemes.Keys | Sort-Object)
-            Write-Host ""
-            Write-Host "choose theme:" -ForegroundColor DarkGray
-            for ($i = 0; $i -lt $sorted.Count; $i++) {
-                Write-Host ("  [{0,2}] {1}" -f ($i + 1), $sorted[$i]) -ForegroundColor Cyan
-            }
-            Write-Host ""
-            $resp = (Read-Host "choice (number or name)").Trim()
-            if (-not $resp) { Write-Host "no selection" -ForegroundColor Yellow; return }
-            $idx = 0
-            if ([int]::TryParse($resp, [ref]$idx) -and $idx -ge 1 -and $idx -le $sorted.Count) {
-                $Name = $sorted[$idx - 1]
+            if (Get-Command _TuiSelect -ErrorAction SilentlyContinue) {
+                $picked = _TuiSelect -Items $sorted -Prompt 'choose theme (Up/Down + Enter, Esc/q to cancel):'
+                if (-not $picked) {
+                    Write-Host "no selection" -ForegroundColor Yellow
+                    return
+                }
+                $Name = $picked
             } else {
-                $Name = $resp
+                Write-Host ""
+                Write-Host "choose theme (type the name; _TuiSelect not loaded):" -ForegroundColor DarkGray
+                foreach ($k in $sorted) { Write-Host "  $k" -ForegroundColor Cyan }
+                Write-Host ""
+                $Name = (Read-Host "theme name").Trim()
+                if (-not $Name) { Write-Host "no selection" -ForegroundColor Yellow; return }
             }
         }
 
         if (-not $script:WtThemes.ContainsKey($Name)) {
-            Write-Host "available themes:" -ForegroundColor DarkGray
-            foreach ($k in ($script:WtThemes.Keys | Sort-Object)) {
-                Write-Host "  - $k" -ForegroundColor DarkGray
+            $needle = $Name.ToLower()
+            # First try: exact prefix match. Then substring. Single match wins.
+            $matchesV = @($sortedThemes | Where-Object { $_.ToLower().StartsWith($needle) })
+            if ($matchesV.Count -eq 0) {
+                $matchesV = @($sortedThemes | Where-Object { $_.ToLower().Contains($needle) })
             }
-            Write-Host "unknown theme: '$Name' -- check your spelling" -ForegroundColor Red
-            return
+            if ($matchesV.Count -eq 1) {
+                $hit = $matchesV[0]
+                $resp = (Read-Host "unknown theme '$Name' -- did you mean '$hit'? [Y/n]").Trim()
+                if (-not $resp -or $resp -match '^[Yy]') {
+                    $Name = $hit
+                } else {
+                    Write-Host "cancelled" -ForegroundColor Yellow
+                    return
+                }
+            } elseif ($matchesV.Count -gt 1) {
+                Write-Host "unknown theme: '$Name'. multiple candidates:" -ForegroundColor Red
+                foreach ($k in $matchesV) { Write-Host "  - $k" -ForegroundColor Yellow }
+                Write-Host "be more specific or run 'Set-Theme' with no args for the picker." -ForegroundColor DarkGray
+                return
+            } else {
+                Write-Host "available themes:" -ForegroundColor DarkGray
+                foreach ($k in $sortedThemes) { Write-Host "  - $k" -ForegroundColor DarkGray }
+                Write-Host "unknown theme: '$Name' -- no near match" -ForegroundColor Red
+                return
+            }
         }
         $script:_PendingThemeName = $Name
         Apply-Theme $script:WtThemes[$Name]

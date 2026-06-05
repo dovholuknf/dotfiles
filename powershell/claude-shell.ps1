@@ -53,34 +53,28 @@ function Select-ClaudePrompt {
     param([string]$Repo, [string]$Branch)
     $presets = _GetClaudePromptPresets -Repo $Repo -Branch $Branch
 
-    Write-Host ""
-    Write-Color "choose prompt:" DarkGray
-    for ($i = 0; $i -lt $presets.Count; $i++) {
-        $c       = $presets[$i]
-        $preview = if ($null -eq $c.Text) { '(open claude with no initial prompt)' } else { $c.Text }
-        $marker  = if ($i -eq 0) { '*' } else { ' ' }
-        Write-Host ("  [{0}]{1} " -f ($i + 1), $marker) -NoNewline -ForegroundColor Cyan
-        Write-Host ("{0,-9}" -f $c.Name) -NoNewline -ForegroundColor White
-        Write-Host ("  {0}" -f $preview) -ForegroundColor DarkGray
-    }
-    $customIdx = $presets.Count + 1
-    Write-Host ("  [{0}]  " -f $customIdx) -NoNewline -ForegroundColor Cyan
-    Write-Host ("{0,-9}" -f 'custom')      -NoNewline -ForegroundColor White
-    Write-Host "  (type your own)"                     -ForegroundColor DarkGray
-    Write-Host ""
+    # Synthetic last entry "custom" -- on pick, Read-Host the actual text.
+    $rows = @()
+    foreach ($p in $presets) { $rows += $p }
+    $rows += [PSCustomObject]@{ Name = 'custom'; Text = '__CUSTOM__' }
 
-    $resp = (Read-Host "choice [1]").Trim()
-    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = '1' }
-
-    if ($resp -eq "$customIdx") {
-        return (Read-Host "prompt")
-    }
-    $idx = 0
-    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $presets.Count) {
-        Write-Color "invalid choice, using default" Yellow
+    $picked = _TuiSelect -Items $rows `
+        -Prompt 'choose prompt (Up/Down + Enter, digits to jump, Esc/q to cancel):' `
+        -DisplayScript {
+            param($r)
+            $preview = if ($null -eq $r.Text) { '(open claude with no initial prompt)' }
+                       elseif ($r.Text -eq '__CUSTOM__') { '(type your own)' }
+                       else { $r.Text }
+            '{0,-9}  {1}' -f $r.Name, $preview
+        }
+    if (-not $picked) {
+        Write-Color "no selection, using default" Yellow
         return $presets[0].Text
     }
-    return $presets[$idx - 1].Text
+    if ($picked.Text -eq '__CUSTOM__') {
+        return (Read-Host "prompt")
+    }
+    return $picked.Text
 }
 
 # ---------------------------------------------------------------------------
@@ -88,7 +82,7 @@ function Select-ClaudePrompt {
 # ---------------------------------------------------------------------------
 
 function _SelectWtWindow {
-    param([string]$Default)   # if set + matches a preset, that row becomes the [N]* default
+    param([string]$Default)   # if set + matches a preset, that row becomes the highlighted default
     $presets = @(
         [PSCustomObject]@{ Name = 'active-work';   Desc = 'attach to "active-work" window' }
         [PSCustomObject]@{ Name = 'pull-requests'; Desc = 'attach to "pull-requests" window' }
@@ -97,43 +91,30 @@ function _SelectWtWindow {
         [PSCustomObject]@{ Name = '__new__';       Desc = 'open in a brand-new wt window (no attach)' }
         [PSCustomObject]@{ Name = '__custom__';    Desc = 'type your own window name' }
     )
-    # Resolve default index: match $Default against preset names; fallback to row 1.
     $defaultIdx = 0
     if ($Default) {
         for ($i = 0; $i -lt $presets.Count; $i++) {
             if ($presets[$i].Name -ieq $Default) { $defaultIdx = $i; break }
         }
     }
-    Write-Host ""
-    Write-Color "choose wt window:" DarkGray
-    for ($i = 0; $i -lt $presets.Count; $i++) {
-        $marker = if ($i -eq $defaultIdx) { '*' } else { ' ' }
-        Write-Host ("  [{0}]{1} " -f ($i + 1), $marker) -NoNewline -ForegroundColor Cyan
-        $label = switch ($presets[$i].Name) {
-            '__new__'    { 'new' }
-            '__custom__' { 'custom' }
-            default      { $presets[$i].Name }
+    $picked = _TuiSelect -Items $presets -DefaultIndex $defaultIdx `
+        -Prompt 'choose wt window (Up/Down + Enter, digits to jump, Esc/q to cancel):' `
+        -DisplayScript {
+            param($p)
+            $label = switch ($p.Name) {
+                '__new__'    { 'new' }
+                '__custom__' { 'custom' }
+                default      { $p.Name }
+            }
+            '{0,-14}  {1}' -f $label, $p.Desc
         }
-        Write-Host ("{0,-14}" -f $label) -NoNewline -ForegroundColor White
-        Write-Host ("  {0}" -f $presets[$i].Desc) -ForegroundColor DarkGray
-    }
-    Write-Host ""
-
-    $resp = (Read-Host ("choice [{0}]" -f ($defaultIdx + 1))).Trim()
-    if ([string]::IsNullOrWhiteSpace($resp)) { $resp = ($defaultIdx + 1).ToString() }
-
-    $idx = 0
-    if (-not [int]::TryParse($resp, [ref]$idx) -or $idx -lt 1 -or $idx -gt $presets.Count) {
-        Write-Color "invalid choice, using default" Yellow
-        return $presets[$defaultIdx].Name
-    }
-    $choice = $presets[$idx - 1].Name
-    if ($choice -eq '__custom__') {
+    if (-not $picked) { return $presets[$defaultIdx].Name }
+    if ($picked.Name -eq '__custom__') {
         $name = (Read-Host "window name").Trim()
         if ([string]::IsNullOrWhiteSpace($name)) { return '__new__' }
         return $name
     }
-    return $choice
+    return $picked.Name
 }
 
 # ---------------------------------------------------------------------------
