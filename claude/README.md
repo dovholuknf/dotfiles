@@ -39,8 +39,8 @@ After that, edits to either side resolve through the link. `git status` in the d
 | `Notification` (permission_prompt) | sound + `set-session-state.ps1 -State needs-input` |
 | `Notification` (elicitation_dialog) | sound + `set-session-state.ps1 -State needs-input` |
 | `PermissionRequest` | sound |
-| `SessionStart` | `session-bootstrap.ps1 -Phase start` -> `_RegisterOrClaimClaudeSession` (from `powershell/claude-shell.ps1`) |
-| `SessionEnd` | `session-bootstrap.ps1 -Phase end` -> `_UnregisterClaudeSession` (from `powershell/claude-shell.ps1`) |
+| `SessionStart` | (1) `session-bootstrap.ps1 -Phase start` -> `_RegisterOrClaimClaudeSession` registers / claims the entry, stamps `ClaudeSessionId`. (2) `set-session-state.ps1 -FromPayloadSource` reads claude's `source` field (`startup` / `resume` / `clear` / `compact`) and writes a matching `state.log` line plus patches `State` on the JSON. |
+| `SessionEnd` | (1) `set-session-state.ps1 -State ended` writes the `ended` line to `state.log` and patches `State='ended'`. (2) `session-bootstrap.ps1 -Phase end` -> `_UnregisterClaudeSession` zeros the Pid. |
 
 ## What `pre-tool-use-hook.ps1` blocks
 
@@ -58,17 +58,29 @@ On `Bash` tool calls, the hook emits `{decision: "block", reason: "..."}` for:
 
 ## Session-state tracking
 
-The state model exists so a single pane of glass (`gwt sessions`) can show what every claude-code instance is doing
-across many wt tabs.
+The state model exists so a single pane of glass (`gwt sessions` + `gwt watch`) can show what every claude-code
+instance is doing across many wt tabs.
 
-1. On `SessionStart`, `_RegisterOrClaimClaudeSession` reads the hook payload from stdin, extracts `session_id`, and
-   stashes it as `ClaudeSessionId` on the matching ledger entry in `<WORKTREE_ROOT>\sessions\<guid>.json`.
-2. On `UserPromptSubmit`, `Stop`, and the two `Notification` matchers, `set-session-state.ps1` reads `session_id`
-   from stdin, finds the ledger entry with that `ClaudeSessionId`, and patches `State` + `LastStateChange`.
-3. `gwt sessions` reads `State` and renders a sub-tag (`[THINK]`, `[ idle]`, `[INPUT]` in magenta) next to the
-   lifecycle tag (`[ACTIVE]` / `[PAUSED]` / `[STALE]` / `[SAVED]`).
+1. On `SessionStart`:
+   - `session-bootstrap.ps1` runs `_RegisterOrClaimClaudeSession`, which reads the hook payload from stdin,
+     extracts `session_id`, and stashes it as `ClaudeSessionId` on the matching ledger entry in
+     `<WORKTREE_ROOT>\sessions\<guid>.json`.
+   - `set-session-state.ps1 -FromPayloadSource` reads the same payload's `source` field (one of `startup`,
+     `resume`, `clear`, `compact`) and writes a matching line to `<WORKTREE_ROOT>\watch\state.log`. Also patches
+     `State` on the JSON to that source value (gets overwritten by the next `UserPromptSubmit`).
+2. On `UserPromptSubmit`, `Stop`, and the two `Notification` matchers, `set-session-state.ps1` reads
+   `session_id` from stdin, finds the ledger entry with that `ClaudeSessionId`, patches `State` +
+   `LastStateChange`, and appends a line to `state.log`.
+3. On `SessionEnd`:
+   - `set-session-state.ps1 -State ended` writes an `ended` line to `state.log` and patches `State='ended'`.
+   - `session-bootstrap.ps1 -Phase end` runs `_UnregisterClaudeSession` which zeroes the Pid (the entry stays
+     so `gwt sessions` can still see it tagged `[ENDED]`).
+4. `gwt sessions` reads `State` + `Pid` + path-on-disk and renders the lifecycle tag (`[ACTIVE]`, `[ENDED]`,
+   `[PAUSED]`, `[STALE]`, `[SAVED]`) plus a sub-tag (`[THINK]`, `[ idle]`, `[INPUT]` in magenta) for ALIVE
+   entries. See `powershell/docs/gwt-states.md` for the full state machine.
 
-`State` only updates for ALIVE entries. Paused or stale entries show no state tag.
+`State` only updates the JSON for ALIVE entries (plus the one-shot `ended` write on SessionEnd). PAUSED / STALE
+entries show no state sub-tag.
 
 ## Adding a new hook
 

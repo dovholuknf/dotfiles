@@ -30,8 +30,8 @@ param(
     [string]$Repo,
     [string]$RemoteHost,    # explicit host (e.g. 'github.com', 'bitbucket.org') -- for callers that don't have a git remote to detect from
     [string]$Prompt,
-    [string]$SourceRoot    = $(if ($env:GIT_ROOT)      { $env:GIT_ROOT.TrimEnd('\') }      else { 'D:\git' }),
-    [string]$WorktreeRoot  = $(if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }),
+    [string]$SourceRoot    = $( $r = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' };      ($r -replace '\\+','\').TrimEnd('\') ),
+    [string]$WorktreeRoot  = $( $r = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }; ($r -replace '\\+','\').TrimEnd('\') ),
     [switch]$y,
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
@@ -43,6 +43,7 @@ param(
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
     [switch]$DryRun,        # 'sessions clean': preview targets without removing
+    [int]$Tail = 20,        # 'watch': how many lines of state.log to show before waiting
     [switch]$WithSize,      # 'summary': also walk each worktree for byte totals (slow)
     [switch]$Help
 )
@@ -1700,19 +1701,24 @@ switch ($Command) {
             }
 
             'clean' {
-                # Classify each entry: ACTIVE / PAUSED / STALE
+                # Classify each entry: ACTIVE / PAUSED / STALE / ENDED
                 #   ACTIVE -- PID running
+                #   ENDED  -- human explicitly ended the session (SessionEnd hook fired,
+                #             State='ended' on the JSON). Distinct from PAUSED so default
+                #             clean can drop these without dropping crash-paused ones.
                 #   PAUSED -- PID dead, worktree dir still on disk (restorable)
                 #   STALE  -- PID dead AND worktree dir is gone (cruft)
-                # Default: drop STALE only. With -All, also drop PAUSED (and ACTIVE --
-                # removes the registry entry, leaves the running shell alone).
-                # STALE is restricted to $env:WORKTREE_ROOT entries -- main-clone
-                # entries (under $env:GIT_ROOT) with a missing path stay PAUSED so a
-                # temporary unmount or path move never auto-nukes them.
+                # Default: drop STALE + ENDED. With -Paused, also drop PAUSED. With -All,
+                # also drop ACTIVE (removes the registry entry; running shell unaffected).
+                # STALE is restricted to $env:WORKTREE_ROOT entries -- main-clone entries
+                # (under $env:GIT_ROOT) with a missing path stay PAUSED so a temporary
+                # unmount or path move never auto-nukes them.
                 $wtRootRegex = "^$([regex]::Escape($script:WtRoot))\\"
                 $classified = $entries | ForEach-Object {
                     $tag = if ($_.Alive) {
                         'ACTIVE'
+                    } elseif ($_.State -eq 'ended') {
+                        'ENDED'
                     } elseif ($_.WorktreePath -and (Test-Path $_.WorktreePath)) {
                         'PAUSED'
                     } elseif ($_.WorktreePath -and $_.WorktreePath -match $wtRootRegex) {
@@ -1723,10 +1729,10 @@ switch ($Command) {
                     $_ | Add-Member -NotePropertyName Tag -NotePropertyValue $tag -PassThru
                 }
                 # Escalating drop tiers:
-                #   (default)  -> STALE only
-                #   -Paused    -> STALE + PAUSED
-                #   -All       -> STALE + PAUSED + ACTIVE
-                $dropTags = @('STALE')
+                #   (default)  -> STALE + ENDED
+                #   -Paused    -> + PAUSED
+                #   -All       -> + ACTIVE
+                $dropTags = @('STALE','ENDED')
                 if ($Paused -or $All) { $dropTags += 'PAUSED' }
                 if ($All)             { $dropTags += 'ACTIVE' }
                 $toDrop = @($classified | Where-Object { $_.Tag -in $dropTags })
@@ -1812,12 +1818,18 @@ switch ($Command) {
                 $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
                 $pausedCount = 0
                 $staleCount  = 0
+                $endedCount  = 0
                 foreach ($g in $byWindow) {
                     Write-Host ""
                     Write-Color "[$($g.Name)]" Cyan
                     foreach ($s in $g.Group) {
                         if ($s.Alive) {
                             $tag = 'ACTIVE'; $col = 'Green'
+                        } elseif ($s.State -eq 'ended') {
+                            # Human explicitly ended the session (SessionEnd hook fired).
+                            # Distinct from PAUSED (crashed / closed without cleanup) and
+                            # STALE (worktree dir is gone).
+                            $tag = 'ENDED';  $col = 'DarkGray'; $endedCount++
                         } elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath)) {
                             $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
                         } elseif ($s.WorktreePath -and $s.WorktreePath -match $wtRootRegex) {
@@ -1846,9 +1858,9 @@ switch ($Command) {
                     }
                 }
                 Write-Host ""
-                $noShellCount = $pausedCount + $staleCount
+                $noShellCount = $pausedCount + $staleCount + $endedCount
                 $totalRows    = @($deduped).Count
-                Write-Color ("  - $totalRows entries: $($totalRows - $noShellCount) live, $noShellCount with no live shell ($pausedCount paused, $staleCount stale)") DarkGray
+                Write-Color ("  - $totalRows entries: $($totalRows - $noShellCount) live, $noShellCount with no live shell ($pausedCount paused, $endedCount ended, $staleCount stale)") DarkGray
                 if ($noShellCount -gt 10) {
                     Write-Color "  - $noShellCount abandoned sessions: 'gwt sessions clean -Paused' to drop (preview with -DryRun)" Yellow
                 }
@@ -2053,6 +2065,23 @@ switch ($Command) {
         }
     }
 
+    'watch' {
+        # Tail the per-session state log written by the claude-code hooks.
+        # Each line: <iso-ts>  <state>  <branch>  @ <path>
+        # Blocks; Ctrl-C to exit. -Tail <n> controls how many existing lines
+        # to print before following (default 20).
+        $watchDir = "$script:WtRoot\watch"
+        $logFile  = Join-Path $watchDir 'state.log'
+        if (-not (Test-Path $logFile)) {
+            [System.IO.Directory]::CreateDirectory($watchDir) | Out-Null
+            Write-Color "no state log yet at $logFile -- waiting for first transition" DarkGray
+            New-Item -Path $logFile -ItemType File -Force | Out-Null
+        } else {
+            Write-Color "tailing $logFile (Ctrl-C to exit)" DarkGray
+        }
+        Get-Content -Path $logFile -Tail $Tail -Wait
+        return
+    }
     { $_ -in 'ls','list' } {
         # Lists git worktrees for the current repo (MAIN + ACTIVE + PRUNE etc).
         # Sessions are shown via 'gwt sessions' -- they're a different lens.

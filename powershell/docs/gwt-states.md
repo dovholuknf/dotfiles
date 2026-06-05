@@ -1,8 +1,20 @@
-# gwt worktree states
+# gwt states
 
-Reference for what `gwt list`, `gwt status`/`gwt changes`, and `gwt prune` see. Source
-of truth is `powershell/onpath/git-worktree.ps1` (`Get-WorktreeStatuses`). This doc
-is for humans; update it when the code changes.
+Reference for what `gwt list`, `gwt status`/`gwt changes`, `gwt prune`, and `gwt sessions`
+see. Source of truth is `powershell/onpath/git-worktree.ps1`. This doc is for humans;
+update it when the code changes.
+
+Two state machines live in gwt and they're independent:
+
+1. **Worktree state** -- what `gwt list` / `gwt prune` care about. Driven by git: branch
+   has commits, has upstream, working tree dirty, etc. See "worktree states" below.
+2. **Session state** -- what `gwt sessions` cares about. Driven by claude-code hooks
+   writing to the session ledger (`$env:WORKTREE_ROOT\sessions\<id>.json`) and the
+   transition log (`$env:WORKTREE_ROOT\watch\state.log`). See "session states" below.
+
+## worktree states
+
+Source: `Get-WorktreeStatuses` in `git-worktree.ps1`.
 
 ## the state set
 
@@ -93,3 +105,76 @@ visible across DIRTY / UNTRACKED-ONLY / PRUNE / ACTIVE-REMOTE-GONE rows.
 | cwd-inside-target hop | `Remove-Worktree` | If the parent shell's cwd is inside the worktree about to be deleted, auto-cd's to MAIN and sets the gwt hint file so the wrapper follows |
 | Saved-protection | `Test-WorktreeIsSaved` | Reads session-registry entries; if any has Saved=true for this path, prune refuses (even with -Force). Ad-hoc claude launches in non-git dirs auto-set Saved. |
 | Canonical-path guard in clean | `gwt sessions clean` | Refuses to drop session entries whose WorktreePath isn't under `$env:WORKTREE_ROOT\<host>\<org>\<repo>\<branch>` or `$env:GIT_ROOT\<host>\<org>\<repo>` |
+
+---
+
+## session states
+
+Driven by claude-code lifecycle hooks (see `claude/README.md` for the hook wiring).
+Each session has a JSON entry at `$env:WORKTREE_ROOT\sessions\<id>.json`; every transition
+also appends one line to `$env:WORKTREE_ROOT\watch\state.log` so `gwt watch` and any other
+log tail can observe it.
+
+### lifecycle buckets (what `gwt sessions` displays)
+
+These are the row-level tags in the `gwt sessions` listing. Picked by the combination of
+process-liveness, the `State` field on the JSON, and whether the worktree path still exists.
+
+| Tag | Color | Meaning | Detection |
+|---|---|---|---|
+| `ACTIVE` | Green | PID is running, the session is live | `Pid != 0` AND that pid actually exists on the box |
+| `ENDED` | DarkGray | Human explicitly ended the session (SessionEnd hook fired with State='ended') | not alive AND `State == 'ended'` |
+| `PAUSED` | Yellow | Process is gone but the worktree path still exists -- restorable | not alive AND path exists (and not ENDED) |
+| `STALE` | Red | Process is gone AND the worktree dir is missing | not alive AND path missing AND path was under `$env:WORKTREE_ROOT` |
+| `SAVED` | (tag-only override) | Marked saved by the user; protected from every `clean` tier | `Saved == true` on the JSON (overrides the lifecycle tag) |
+
+A missing path under `$env:GIT_ROOT` (a main-clone path, not a worktree path) stays
+`PAUSED` rather than `STALE` so a temporary unmount or path move never causes a main-clone
+session entry to be auto-classified as cruft.
+
+### sub-state tag (alive sessions only)
+
+For an ALIVE row, the listing shows a second bracket after the lifecycle tag with the
+current `State` field:
+
+| State | Sub-tag | Set by |
+|---|---|---|
+| `idle` | `[ idle]` | `Stop` hook (claude finished its turn) |
+| `thinking` | `[THINK]` | `UserPromptSubmit` hook (claude received a prompt and is working) |
+| `needs-input` | `[INPUT]` (row colored Magenta) | `Notification` hook with matcher `permission_prompt` or `elicitation_dialog` |
+| `startup` / `resume` / `clear` / `compact` | `[<value>]` | `SessionStart` hook, taken from the payload's `source` field |
+| `ended` | (no sub-tag; ENDED becomes the lifecycle tag instead) | `SessionEnd` hook |
+
+The startup-family states (`startup`, `resume`, `clear`, `compact`) appear briefly after
+SessionStart fires, then get overwritten to `thinking` on the first user prompt.
+
+### state.log format
+
+Each line in `$env:WORKTREE_ROOT\watch\state.log` is:
+
+```
+<iso-ts>  <state>  <branch>  @ <path>
+```
+
+`<state>` is one of: `startup`, `resume`, `clear`, `compact`, `thinking`, `idle`,
+`needs-input`, `ended`. A full session's worth of events looks like:
+
+```
+2026-06-05T09:00:01-04:00  startup      fix-algolia  @ D:\worktrees\github\netfoundry\docusaurus-shared\fix-algolia
+2026-06-05T09:00:08-04:00  thinking     fix-algolia  @ D:\worktrees\...
+2026-06-05T09:00:23-04:00  idle         fix-algolia  @ D:\worktrees\...
+2026-06-05T09:01:55-04:00  needs-input  fix-algolia  @ D:\worktrees\...
+2026-06-05T09:02:04-04:00  thinking     fix-algolia  @ D:\worktrees\...
+2026-06-05T09:02:30-04:00  idle         fix-algolia  @ D:\worktrees\...
+2026-06-05T09:05:00-04:00  ended        fix-algolia  @ D:\worktrees\...
+```
+
+### `gwt sessions clean` drop tiers
+
+| Flag | Drops |
+|---|---|
+| (default) | `STALE` + `ENDED` |
+| `-Paused` | adds `PAUSED` |
+| `-All` | adds `ACTIVE` (the registry entry only; the running shell is unaffected) |
+
+`SAVED` entries are protected from every tier. `-DryRun` previews without acting.

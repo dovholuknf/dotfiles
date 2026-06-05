@@ -559,7 +559,9 @@ function _RegisterOrClaimClaudeSession {
     # existing entry that matches WT_SESSION or cwd, or creates a fresh entry
     # for ad-hoc claude launches that didn't go through gwt/claudeshell.
     [System.IO.Directory]::CreateDirectory($script:GwtSessionDir) | Out-Null
-    $cwd      = (Get-Location).Path.TrimEnd('\')
+    # Get-Location keeps whatever slash style was used to cd in. Normalize to
+    # backslashes so dedupe / display / state.log lines are consistent.
+    $cwd      = ((Get-Location).Path -replace '/', '\').TrimEnd('\')
     $wtSess   = $env:WT_SESSION
     $tabProc  = _Find-AncestorPwsh
     $tabPid   = if ($tabProc) { [int]$tabProc.ProcessId } else { 0 }
@@ -611,8 +613,10 @@ function _RegisterOrClaimClaudeSession {
         $e | Add-Member -NotePropertyName State           -NotePropertyValue 'idle' -Force
         $e | Add-Member -NotePropertyName LastStateChange -NotePropertyValue (Get-Date).ToString('o') -Force
         ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $existing.File -Encoding UTF8
+        try { Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    CLAIM  file={0}  cwd={1}  claudeSessionId={2}" -f $existing.File, $cwd, $claudeSessionId) } catch {}
         return
     }
+    try { Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    NEW    cwd={0}  claudeSessionId={1}" -f $cwd, $claudeSessionId) } catch {}
 
     # Create a new entry from scratch. Best-guess branch/repo via git.
     $branch = ''
@@ -663,7 +667,9 @@ function _RegisterOrClaimClaudeSession {
         LastStateChange   = $now
         Saved             = $savedForEntry
     }
-    ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path (Join-Path $script:GwtSessionDir "$sessionId.json") -Encoding UTF8
+    $newFile = Join-Path $script:GwtSessionDir "$sessionId.json"
+    ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path $newFile -Encoding UTF8
+    try { Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    WROTE  file={0}" -f $newFile) } catch {}
 }
 
 function _UnregisterClaudeSession {
