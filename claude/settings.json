@@ -31,6 +31,7 @@
       "Bash(gh repo list:*)",
       "Bash(gh run list:*)",
       "Bash(gh run view:*)",
+      "Bash(gh run watch:*)",
       "Bash(gh release list:*)",
       "Bash(gh release view:*)",
       "Bash(gh auth status:*)",
