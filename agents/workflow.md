@@ -15,6 +15,10 @@ How to engage with me on a piece of work. This is the highest-leverage module; m
   - Bypassing safety checks (`--no-verify`, `--no-gpg-sign`, `git reset --hard` on unpushed work).
 - A user approving an action once does NOT mean they approve it forever. Authorization stands for the
   scope I specified, nothing more. Don't generalize.
+- Before an irreversible or outward-facing action, READ the actual trigger and input defaults instead of
+  assuming (e.g. a publish flag that defaults to on, a workflow that fires on every push to main). And flag a
+  footgun (wrong version, wrong target, junk artifact) even when I said "go" - "go" authorizes the action,
+  not the mistake. One sentence of warning beats an un-deletable publish.
 
 ## Presenting options
 

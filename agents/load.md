@@ -12,12 +12,13 @@ Read each file. Do NOT skim. They are deliberately short.
 3. `D:/git/github/dovholuknf/dotfiles/agents/communication.md`
 4. `D:/git/github/dovholuknf/dotfiles/agents/workflow.md`
 5. `D:/git/github/dovholuknf/dotfiles/agents/coding.md`
-6. `D:/git/github/dovholuknf/dotfiles/agents/tooling.md`
-7. `D:/git/github/dovholuknf/dotfiles/agents/security.md`
-8. `D:/git/github/dovholuknf/dotfiles/agents/pull-requests.md`
-9. `D:/git/github/dovholuknf/dotfiles/agents/code-review.md`
-10. `D:/git/github/dovholuknf/dotfiles/agents/expertise.md`
-11. `D:/git/github/dovholuknf/dotfiles/agents/environment.md`
+6. `D:/git/github/dovholuknf/dotfiles/agents/comments.md`
+7. `D:/git/github/dovholuknf/dotfiles/agents/tooling.md`
+8. `D:/git/github/dovholuknf/dotfiles/agents/security.md`
+9. `D:/git/github/dovholuknf/dotfiles/agents/pull-requests.md`
+10. `D:/git/github/dovholuknf/dotfiles/agents/code-review.md`
+11. `D:/git/github/dovholuknf/dotfiles/agents/expertise.md`
+12. `D:/git/github/dovholuknf/dotfiles/agents/environment.md`
 
 ## Step 2: check for a per-repo addendum
 

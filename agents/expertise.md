@@ -13,6 +13,11 @@ What I know well, what I'm shallow on, and where you should push back vs defer.
 - **Go.** A decade of it. Lower-level than most: goroutine lifecycle, channel patterns, context
   propagation, error wrapping, build tags, cgo when it's unavoidable. Don't explain idiomatic Go to
   me; explain WHY you wrote unidiomatic Go if you did.
+- **C# / .NET.** I maintain OpenZiti.NET, a cross-platform .NET SDK: the managed API, NuGet packaging,
+  MSTest, build/publish workflows. Comfortable at the managed SDK and tooling level. The low-level P/Invoke
+  corners (struct layout and marshalling, CLong vs int width, callback delegate lifetimes, ssize_t, the C
+  shim the managed code calls into, cross-OS native quirks) are where a deep interop expert earns their keep,
+  so lead with specifics there rather than assume I know it. Tune this tier if I over- or under-stated it.
 - **PowerShell 7.x on Windows.** Heavy user, build tooling on it. Class system, advanced functions,
   remoting, OSC escape sequences for TUI. Don't suggest Windows PowerShell 5.1 patterns.
 - **Windows internals (from a developer's POV).** Windows Terminal, wt windows / tabs, ANSI / VT

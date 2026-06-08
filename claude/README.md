@@ -11,6 +11,9 @@ claude/
     no-compound-cd.ps1        # older single-purpose version of the cd guard, kept for reference
     set-session-state.ps1     # patches the session ledger with thinking/idle/needs-input
     session-bootstrap.ps1     # tiny dispatcher invoked by SessionStart / SessionEnd
+  agents/
+    persona.md                # claude-code subagent that reads the agents/ pack at runtime
+                              # symlinked into ~/.claude/agents/persona.md
   settings.json               # permissions, hook bindings, statusline
 ```
 

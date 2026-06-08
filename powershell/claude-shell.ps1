@@ -16,6 +16,17 @@ if (-not (Get-Command Write-Color -ErrorAction SilentlyContinue)) {
     }
 }
 
+# Always re-source common-tools.ps1 from this script so gwt invocations pick up
+# the current `_TuiSelect` definition even when the parent shell loaded an
+# older one at profile-time. Cheap (small file, function redefinition is fast)
+# and prevents "parameter cannot be found" errors after we extend the picker.
+$_commonTools = if ($env:DOTFILES_PWSH) {
+    Join-Path $env:DOTFILES_PWSH.TrimEnd('\') 'shared\common-tools.ps1'
+} else {
+    Join-Path $PSScriptRoot 'shared\common-tools.ps1'
+}
+if (Test-Path -LiteralPath $_commonTools) { . $_commonTools }
+
 $script:WtRoot        = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
 $script:GitRoot       = if ($env:GIT_ROOT)      { $env:GIT_ROOT.TrimEnd('\') }      else { 'D:\git' }
 $script:DotfilesPwsh  = if ($env:DOTFILES_PWSH) { $env:DOTFILES_PWSH.TrimEnd('\') } else { "$script:GitRoot\github\dovholuknf\dotfiles\powershell" }
