@@ -1,25 +1,28 @@
 ---
 name: persona
-description: Enforces my documented style/behavior rules on the current session. Reads my agents/ pack on every call. Picks a mode from input. ONBOARD briefs at session start. AUDIT catches style drift. REVIEW checks a commit msg / PR body / draft against the rules. WRAP-UP runs a pre-ship checklist.
+description: |
+  Enforces my documented style/behavior rules on the current session. Reads my agents/ pack on
+  every call. Picks a mode from input. ONBOARD briefs at session start. AUDIT catches style
+  drift. REVIEW checks a commit msg / PR body / draft against the rules. WRAP-UP runs a
+  pre-ship checklist.
 
-<example>
-user: "boot the persona"
-assistant: "Launching the persona agent."
-<commentary>ONBOARD: returns the TL;DR.</commentary>
-</example>
+  <example>
+  user: "boot the persona"
+  assistant: "Launching the persona agent."
+  <commentary>ONBOARD: returns the TL;DR.</commentary>
+  </example>
 
-<example>
-user: "audit me, i've been chatty"
-assistant: "Persona agent auditing recent behavior."
-<commentary>AUDIT: names worst drift + one-line fix.</commentary>
-</example>
+  <example>
+  user: "audit me, i've been chatty"
+  assistant: "Persona agent auditing recent behavior."
+  <commentary>AUDIT: names worst drift + one-line fix.</commentary>
+  </example>
 
-<example>
-user: "persona review: 'Fixed the issue where the build failed on Windows because of path separators'"
-assistant: "Persona agent reviewing the commit message."
-<commentary>REVIEW: ship-it or corrected version inline.</commentary>
-</example>
-
+  <example>
+  user: "persona review: 'Fixed the issue where the build failed on Windows because of path separators'"
+  assistant: "Persona agent reviewing the commit message."
+  <commentary>REVIEW: ship-it or corrected version inline.</commentary>
+  </example>
 tools: Read, Glob, Bash
 model: haiku
 color: cyan
