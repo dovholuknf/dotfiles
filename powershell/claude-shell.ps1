@@ -139,6 +139,7 @@ function _GetThemeFnForWindow {
         'pull-requests' { 'PullRequests' }
         'tangent'       { 'Tangent' }
         'worktrees'     { 'Worktrees' }
+        'ad-hoc'        { 'AdHoc' }
         default         { $null }
     }
 }
@@ -625,14 +626,23 @@ function _RegisterOrClaimClaudeSession {
     } catch {}
     if (-not $repo) { $repo = Split-Path $cwd -Leaf }
 
-    # Ad-hoc claude launches outside a git checkout (no branch detectable):
-    # bucket them under [ad-hoc] in the listing and use the leaf dir as the
-    # "branch" so they show up identifiable rather than blank. Mark them Saved
-    # so 'gwt sessions clean' (any tier) and 'gwt prune -Force' refuse to touch
-    # them -- the cwd might be something dangerous like D:\worktrees itself.
+    # Ad-hoc claude launches: bucket under [ad-hoc], mark Saved (clean tiers
+    # refuse to touch them). Three triggers for ad-hoc:
+    #   1. No branch detectable (claude launched outside any git checkout).
+    #   2. cwd is NOT under $script:WtRoot. Main-clone launches (under
+    #      $script:GitRoot) and random scratch dirs end up here. Only proper
+    #      worktrees under $script:WtRoot get "normal" treatment.
+    # In all cases the cwd might be something dangerous like the worktree root
+    # itself, so Saved=true is a safety guard.
     $windowForEntry = $null
     $savedForEntry  = $false
-    if (-not $branch) {
+    $cwdNorm        = $cwd.TrimEnd('\').ToLower()
+    $wtRootNorm     = $script:WtRoot.TrimEnd('\').ToLower()
+    $inWorktree     = $cwdNorm -eq $wtRootNorm -or $cwdNorm.StartsWith("$wtRootNorm\")
+    # cwd == wtRoot itself counts as ad-hoc (dangerous root), not a worktree.
+    if ($cwdNorm -eq $wtRootNorm) { $inWorktree = $false }
+
+    if (-not $branch -or -not $inWorktree) {
         $branch         = "(adhoc:$(Split-Path $cwd -Leaf))"
         $windowForEntry = 'ad-hoc'
         $savedForEntry  = $true

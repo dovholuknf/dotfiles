@@ -123,14 +123,17 @@ process-liveness, the `State` field on the JSON, and whether the worktree path s
 | Tag | Color | Meaning | Detection |
 |---|---|---|---|
 | `ACTIVE` | Green | PID is running, the session is live | `Pid != 0` AND that pid actually exists on the box |
-| `ENDED` | DarkGray | Human explicitly ended the session (SessionEnd hook fired with State='ended') | not alive AND `State == 'ended'` |
-| `PAUSED` | Yellow | Process is gone but the worktree path still exists -- restorable | not alive AND path exists (and not ENDED) |
+| `ENDED` | DarkGray | Human closed the session cleanly (SessionEnd hook fired with State='ended'). Low priority for restore. | not alive AND `State == 'ended'` |
+| `ABORTED` | Yellow | Process is gone but SessionEnd never fired. Cause: Windows restart, claude crash, hard kill, OOM. **The priority for restore.** Worktree dir still exists. | not alive AND `State != 'ended'` AND path exists |
 | `STALE` | Red | Process is gone AND the worktree dir is missing | not alive AND path missing AND path was under `$env:WORKTREE_ROOT` |
 | `SAVED` | (tag-only override) | Marked saved by the user; protected from every `clean` tier | `Saved == true` on the JSON (overrides the lifecycle tag) |
 
 A missing path under `$env:GIT_ROOT` (a main-clone path, not a worktree path) stays
-`PAUSED` rather than `STALE` so a temporary unmount or path move never causes a main-clone
+`ABORTED` rather than `STALE` so a temporary unmount or path move never causes a main-clone
 session entry to be auto-classified as cruft.
+
+Historical note: `ABORTED` was previously labeled `PAUSED`. The flag for cleaning it is now
+`-Aborted`, with `-Paused` kept as a backward-compat alias.
 
 ### sub-state tag (alive sessions only)
 
@@ -169,12 +172,31 @@ Each line in `$env:WORKTREE_ROOT\watch\state.log` is:
 2026-06-05T09:05:00-04:00  ended        fix-algolia  @ D:\worktrees\...
 ```
 
+### `gwt sessions` scope
+
+Every `sessions` subcommand defaults to "this repo" when the cwd is inside one (main clone OR any
+worktree of that repo). Pass `-All` to drop the scope and act across every repo's sessions. When
+the cwd is NOT inside any known repo, scope is implicitly global.
+
+Detection is pure path arithmetic:
+- `$env:WORKTREE_ROOT\<host>\<org>\<repo>\<branch>\...` -> repo = `<host>/<org>/<repo>`.
+- `$env:GIT_ROOT\<host>\<org>\<repo>\...` -> same.
+
 ### `gwt sessions clean` drop tiers
 
 | Flag | Drops |
 |---|---|
 | (default) | `STALE` + `ENDED` |
-| `-Paused` | adds `PAUSED` |
-| `-All` | adds `ACTIVE` (the registry entry only; the running shell is unaffected) |
+| `-Aborted` (alias `-Paused`) | adds `ABORTED` |
+| `-IncludeActive` | adds `ACTIVE` (the registry entry only; the running shell is unaffected) |
+
+Tiers compose. `-All` is now a SCOPE flag, not a tier multiplier; to nuke every tier across every
+repo run `gwt sessions clean -Aborted -IncludeActive -All`.
+
+### `gwt sessions restore` defaults
+
+By default `restore` brings back `ABORTED` sessions and skips `ENDED` ones (the user closed those
+deliberately). Pass `-IncludeEnded` to restore everything not-alive. Pass `-All` to restore across
+every repo (default is this-repo-only when cwd is in a repo).
 
 `SAVED` entries are protected from every tier. `-DryRun` previews without acting.

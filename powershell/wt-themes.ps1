@@ -526,6 +526,7 @@ function ActiveWork   { $script:_PendingThemeName = 'active-work';   Apply-Theme
 function PullRequests { $script:_PendingThemeName = 'pull-requests'; Apply-Theme $theme_pull_requests }
 function Tangent      { $script:_PendingThemeName = 'tangent';       Apply-Theme $theme_tangent }
 function Worktrees    { $script:_PendingThemeName = 'worktrees';     Apply-Theme $theme_worktrees }
+function AdHoc        { $script:_PendingThemeName = 'nord';          Apply-Theme $theme_nord }
 
 # Registry for Set-Theme '<name>' lookups.
 # Bonus themes -- registered for `Set-Theme '<name>'` lookup but no convenience

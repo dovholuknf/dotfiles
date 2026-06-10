@@ -36,13 +36,23 @@ param(
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
     [switch]$NoAgentSetup,  # skip the post-create dotagents CLAUDE.md symlink step
-    [switch]$All,           # 'sessions clean -All' = drop STALE + PAUSED + ACTIVE entries
-    [switch]$Paused,        # 'sessions clean -Paused' = also drop PAUSED entries (still keeps ACTIVE)
+    # SCOPE: when cwd is inside a repo (main clone or a worktree), session
+    # subcommands default to "this repo only." Pass -All to see / act on every
+    # repo's sessions. Outside any repo, scope is implicitly global.
+    [switch]$All,
+    # 'sessions clean -Aborted' = also drop ABORTED entries (still keeps ACTIVE).
+    # -Paused kept as a legacy alias since ABORTED was previously labeled PAUSED.
+    [Alias('Paused')]
+    [switch]$Aborted,
+    # 'sessions clean -IncludeActive' = also drop ACTIVE entries (registry only;
+    # running shells unaffected). Replaces the old meaning of -All on clean.
+    [switch]$IncludeActive,
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
     [switch]$DryRun,        # 'sessions clean': preview targets without removing
+    [switch]$IncludeEnded,  # 'sessions restore': also restore ENDED entries (default: skip them)
     [int]$Tail = 20,        # 'watch': how many lines of state.log to show before waiting
     [switch]$WithSize,      # 'summary': also walk each worktree for byte totals (slow)
     [switch]$Help
@@ -60,6 +70,67 @@ $ErrorActionPreference = 'Stop'
 $script:WtRoot     = $WorktreeRoot.TrimEnd('\')
 $script:GitRoot    = $SourceRoot.TrimEnd('\')
 $script:SessionDir = "$script:WtRoot\sessions"
+
+function _DetectCurrentRepoFromCwd {
+    # Pure path arithmetic: figure out which repo (host/org/repo) the cwd
+    # belongs to. Recognizes two layouts:
+    #   $script:WtRoot\<host>\<org>\<repo>\<branch>\...   (worktree)
+    #   $script:GitRoot\<host>\<org>\<repo>\...           (main clone)
+    # Returns @{Host;Org;Repo;MainPath;WtBase} or $null when cwd is anywhere
+    # else (D:\tmp, the worktree root itself, etc).
+    $cwd = (Get-Location).Path.TrimEnd('\').Replace('/','\').ToLower()
+    # Both layouts need at least 3 segments under the base (<host>/<org>/<repo>)
+    # to pin down a repo. WtRoot's worktree dirs are nested deeper but you can
+    # still resolve the repo from just 3 segments -- sitting at the repo's
+    # worktrees-root (no branch picked yet) should still count as "this repo."
+    foreach ($pair in @(
+        @{ Base = $script:WtRoot.ToLower();  MinSegments = 3 },
+        @{ Base = $script:GitRoot.ToLower(); MinSegments = 3 }
+    )) {
+        $b = $pair.Base.TrimEnd('\')
+        if ($cwd -eq $b) { continue }
+        if (-not $cwd.StartsWith("$b\")) { continue }
+        $rel = $cwd.Substring($b.Length + 1)
+        $parts = $rel -split '\\'
+        if ($parts.Count -lt $pair.MinSegments) { continue }
+        $h = $parts[0]; $o = $parts[1]; $r = $parts[2]
+        return @{
+            Host     = $h
+            Org      = $o
+            Repo     = $r
+            MainPath = (Join-Path (Join-Path (Join-Path $script:GitRoot $h) $o) $r)
+            WtBase   = (Join-Path (Join-Path (Join-Path $script:WtRoot $h) $o) $r)
+        }
+    }
+    return $null
+}
+
+function _ApplyRepoScope {
+    # Filter a session-entries pool down to "this repo" unless -All is set.
+    # Returns @{Entries; Scoped; ScopeName; Hidden}. When Scoped=$true, the
+    # caller should print a short notice so the human knows what was excluded.
+    param([array]$Entries, [switch]$All)
+    if ($All) {
+        return @{ Entries = $Entries; Scoped = $false; ScopeName = ''; Hidden = 0 }
+    }
+    $scope = _DetectCurrentRepoFromCwd
+    if (-not $scope) {
+        return @{ Entries = $Entries; Scoped = $false; ScopeName = ''; Hidden = 0 }
+    }
+    $mainNorm = $scope.MainPath.ToLower()
+    $wtBase   = ($scope.WtBase + '\').ToLower()
+    $kept = @($Entries | Where-Object {
+        if (-not $_.WorktreePath) { return $false }
+        $p = $_.WorktreePath.Replace('/','\').TrimEnd('\').ToLower()
+        ($p -eq $mainNorm) -or $p.StartsWith($wtBase)
+    })
+    return @{
+        Entries   = $kept
+        Scoped    = $true
+        ScopeName = "$($scope.Host)/$($scope.Org)/$($scope.Repo)"
+        Hidden    = $Entries.Count - $kept.Count
+    }
+}
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -309,6 +380,24 @@ function _AssertUnderWorktreeRoot {
     }
 }
 
+function _ForceRemoveWorktreeDir {
+    # Robust dir removal. Returns $true if gone after; $false if it persists.
+    # Steps: best-effort Remove-Item, then a second pass that clears readonly
+    # attributes on every child first (common cause of "still on disk"). Never
+    # throws -- caller decides how to surface a lingering directory.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path $Path)) { return $true }
+    _AssertUnderWorktreeRoot $Path
+    try { Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+    if (-not (Test-Path $Path)) { return $true }
+    try {
+        Get-ChildItem $Path -Recurse -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+        Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {}
+    return -not (Test-Path $Path)
+}
+
 function Remove-Worktree {
     param([string]$Src, [string]$WtPath, [switch]$AutoConfirm)
 
@@ -356,7 +445,13 @@ function Remove-Worktree {
     $ok = $AutoConfirm -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "remove worktree at '$WtPath'? (Y/n)")) -or $r -match '^[Yy]$')
     if ($ok) {
         Invoke-Git $Src @('worktree','remove','--force',$WtPath)
-        Write-Color "removed: $WtPath" Green
+        $gone = _ForceRemoveWorktreeDir $WtPath
+        if ($gone) {
+            Write-Color "removed: $WtPath" Green
+        } else {
+            Write-Color "WARNING: '$WtPath' still on disk after remove attempt" Red
+            Write-Color "  close any program with files open under that path, then 'gwt prune $WtPath -Force' again" DarkGray
+        }
         # If 'current' was pointing at this worktree, repoint it to MAIN
         # ($Src is the main clone dir) instead of leaving a dangling symlink.
         _DropCurrentSymlinkIfPointsAt -WtRoot (Split-Path $WtPath -Parent) -WorktreePath $WtPath -MainPath $Src
@@ -394,8 +489,14 @@ function Get-AliveSessionForPath {
 }
 
 function _SetCurrentSymlink {
-    # Maintain a stable "current" symlink at <WtRoot>\current -> $WorktreePath.
-    # Lets the IDE pin one project per repo and follow whichever branch is hot.
+    # Maintain a stable "current" link at <WtRoot>\current -> $WorktreePath.
+    # Uses a directory JUNCTION (reparse point) rather than a symlink: JetBrains
+    # IDEs (GoLand, IntelliJ) resolve symlinks to the real path which causes
+    # "project pollution" -- the IDE sees each new symlink target as a fresh
+    # project. Junctions are reported by most tools (including JetBrains) as
+    # the junction path itself, so the IDE keeps treating <WtRoot>\current as
+    # one stable project. Junctions also don't require Developer Mode / admin.
+    # Name kept as _SetCurrentSymlink for backward compatibility with callers.
     param([Parameter(Mandatory)][string]$WtRoot, [Parameter(Mandatory)][string]$WorktreePath)
     if (-not (Test-Path $WtRoot)) {
         [System.IO.Directory]::CreateDirectory($WtRoot) | Out-Null
@@ -408,10 +509,10 @@ function _SetCurrentSymlink {
         }
     }
     try {
-        New-Item -ItemType SymbolicLink -Path $link -Target $WorktreePath -ErrorAction Stop | Out-Null
+        New-Item -ItemType Junction -Path $link -Target $WorktreePath -ErrorAction Stop | Out-Null
         Write-Color "  $link -> $WorktreePath" DarkGray
     } catch {
-        Write-Color "  symlink failed (need Developer Mode or admin): $($_.Exception.Message)" Yellow
+        Write-Color "  junction failed: $($_.Exception.Message)" Yellow
     }
 }
 
@@ -428,7 +529,9 @@ function _DropCurrentSymlinkIfPointsAt {
     if (-not (Test-Path $link)) { return }
     try {
         $item = Get-Item $link -Force
-        if ($item.LinkType -ne 'SymbolicLink') { return }
+        # Accept both legacy SymbolicLink and current Junction. Anything else
+        # (real directory, file) is not ours to touch.
+        if ($item.LinkType -notin 'SymbolicLink','Junction') { return }
         $target = ($item.Target | Select-Object -First 1)
         if (-not $target) { return }
         $norm = (Resolve-Path $target -ErrorAction SilentlyContinue).Path
@@ -439,13 +542,13 @@ function _DropCurrentSymlinkIfPointsAt {
         Remove-Item $link -Force -ErrorAction SilentlyContinue
         if ($MainPath -and (Test-Path $MainPath)) {
             try {
-                New-Item -ItemType SymbolicLink -Path $link -Target $MainPath -ErrorAction Stop | Out-Null
+                New-Item -ItemType Junction -Path $link -Target $MainPath -ErrorAction Stop | Out-Null
                 Write-Color "  'current' repointed to MAIN ($MainPath)" DarkGray
             } catch {
                 Write-Color "  dropped 'current' (couldn't repoint to MAIN: $($_.Exception.Message))" DarkGray
             }
         } else {
-            Write-Color "  dropped 'current' symlink (was pointing at the removed worktree)" DarkGray
+            Write-Color "  dropped 'current' link (was pointing at the removed worktree)" DarkGray
         }
     } catch {}
 }
@@ -934,7 +1037,7 @@ switch ($Command) {
     }
 
     'current' {
-        # Manage <WtRoot>\current -- the IDE-pinned symlink.
+        # Manage <WtRoot>\current -- the IDE-pinned link (directory junction).
         #   gwt current           -- print what 'current' points at
         #   gwt current .         -- set to cwd's worktree (validated as a real worktree)
         #   gwt current <branch>  -- set to that branch's worktree
@@ -943,22 +1046,22 @@ switch ($Command) {
 
         if (-not $Target) {
             if (-not (Test-Path $link)) {
-                Write-Color "no 'current' symlink in $($ctx.WtRoot)" DarkGray
+                Write-Color "no 'current' link in $($ctx.WtRoot)" DarkGray
                 return
             }
             try {
                 $li = Get-Item $link -Force
-                if ($li.LinkType -ne 'SymbolicLink') {
-                    Write-Color "$link exists but is NOT a symlink" Yellow
+                if ($li.LinkType -notin 'SymbolicLink','Junction') {
+                    Write-Color "$link exists but is NOT a link (LinkType=$($li.LinkType))" Yellow
                     return
                 }
                 $tgt = ($li.Target | Select-Object -First 1)
-                Write-Color "$link -> $tgt" Cyan
+                Write-Color "$link -> $tgt  ($($li.LinkType))" Cyan
                 if (-not (Test-Path $tgt)) {
                     Write-Color "  (target is missing!)" Red
                 }
             } catch {
-                Write-Color "could not read symlink: $($_.Exception.Message)" Red
+                Write-Color "could not read link: $($_.Exception.Message)" Red
             }
             return
         }
@@ -1344,6 +1447,32 @@ switch ($Command) {
         }
     }
 
+    { $_ -in 'save','unsave' } {
+        # Top-level convenience aliases for 'gwt sessions save|unsave'. Mark a
+        # session entry as Saved (a "favorite") so every clean tier skips it:
+        # default clean keeps it, -Aborted keeps it, -All keeps it. Saved
+        # entries show as [SAVED] in the listing.
+        #
+        # Usage:
+        #   gwt save                -- save the session for the current cwd
+        #   gwt save <substring>    -- save sessions whose branch / path / window
+        #                              match the substring (picker on multi-match)
+        #   gwt save -Name <branch> -- exact branch match
+        #   gwt unsave ...          -- same shapes, removes the Saved flag instead
+        $matchArg = $Target
+        if (-not $matchArg -and -not $Name -and -not $Window) {
+            # Default to the current worktree: use the cwd path as the match.
+            $matchArg = (Get-Location).Path.TrimEnd('\')
+        }
+        $fwd = @{ Command = 'sessions'; Target = $Command }
+        if ($matchArg) { $fwd.Match  = $matchArg }
+        if ($Name)     { $fwd.Name   = $Name }
+        if ($Window)   { $fwd.Window = $Window }
+        if ($All)      { $fwd.All    = $true }
+        & $PSCommandPath @fwd
+        return
+    }
+
     'sessions' {
         # Shared location so both clint and the spawned claude user shells can read/write.
         $sessionDir = $script:SessionDir
@@ -1396,12 +1525,32 @@ switch ($Command) {
         if ($parseFails -gt 0) { Write-Color "  $parseFails file(s) failed to parse (skipped)" Yellow }
         Write-Color "  parsed $(@($entries).Count) entry/entries" DarkGray
 
+        # Default scope: this repo only (when cwd is inside one). Pass -All for
+        # the global cross-repo view.
+        $scopeResult = _ApplyRepoScope -Entries $entries -All:$All
+        $entries = $scopeResult.Entries
+        if ($scopeResult.Scoped) {
+            Write-Color ("  scoped to {0}  ({1} entries from other repos hidden; pass -All to see all)" -f $scopeResult.ScopeName, $scopeResult.Hidden) DarkGray
+        }
+
         # Resolve a candidate set against the (positional) $Match substring plus the
         # exact-match $Name / $Window filters. If multiple match, prompt with a
         # numbered picker (or 'a' for all). Returns an array of entries, or $null
         # on quit. $Verb is shown in messages ("save", "clean", etc).
         function script:_ResolveSessionTargets {
             param([array]$Pool, [string]$Verb)
+            # Dedupe by WorktreePath BEFORE filtering -- otherwise the picker
+            # shows triplicates when the ledger has accumulated duplicate
+            # entries for the same path (alive wins; among non-alive, newest
+            # by LastSpawnedAt wins). Mirrors the dedupe used by the default
+            # sessions list view.
+            $Pool = @($Pool |
+                Group-Object WorktreePath |
+                ForEach-Object {
+                    $alive = $_.Group | Where-Object Alive | Select-Object -First 1
+                    if ($alive) { $alive }
+                    else        { $_.Group | Sort-Object @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} -Descending | Select-Object -First 1 }
+                })
             $filtered = $Pool
             if ($Name)   { $filtered = @($filtered | Where-Object { $_.Branch     -ieq $Name   }) }
             if ($Window) { $filtered = @($filtered | Where-Object { $_.WindowName -ieq $Window }) }
@@ -1443,6 +1592,18 @@ switch ($Command) {
                 # Idempotency: only consider STALE entries -- alive ones are already up.
                 $allStale = @($entries | Where-Object { -not $_.Alive })
                 if (-not $allStale.Count) { Write-Color "no paused sessions to restore (everything is ACTIVE)" DarkGray; return }
+
+                # By default skip ENDED entries. The user closed those deliberately;
+                # restoring them is annoying. Pass -IncludeEnded to opt back in.
+                if (-not $IncludeEnded) {
+                    $beforeEnded = $allStale.Count
+                    $allStale    = @($allStale | Where-Object { $_.State -ne 'ended' })
+                    $droppedEnded = $beforeEnded - $allStale.Count
+                    if ($droppedEnded -gt 0) {
+                        Write-Color "skipping $droppedEnded ENDED session(s) -- pass -IncludeEnded to restore them" DarkGray
+                    }
+                    if (-not $allStale.Count) { Write-Color "no paused sessions to restore (all not-alive were ENDED)" DarkGray; return }
+                }
 
                 # dedupe by WorktreePath (keeps newest by LastSpawnedAt) -- protects against
                 # accumulated leftover entries from failed prior launches blowing up the count.
@@ -1701,18 +1862,20 @@ switch ($Command) {
             }
 
             'clean' {
-                # Classify each entry: ACTIVE / PAUSED / STALE / ENDED
-                #   ACTIVE -- PID running
-                #   ENDED  -- human explicitly ended the session (SessionEnd hook fired,
-                #             State='ended' on the JSON). Distinct from PAUSED so default
-                #             clean can drop these without dropping crash-paused ones.
-                #   PAUSED -- PID dead, worktree dir still on disk (restorable)
-                #   STALE  -- PID dead AND worktree dir is gone (cruft)
-                # Default: drop STALE + ENDED. With -Paused, also drop PAUSED. With -All,
-                # also drop ACTIVE (removes the registry entry; running shell unaffected).
-                # STALE is restricted to $env:WORKTREE_ROOT entries -- main-clone entries
-                # (under $env:GIT_ROOT) with a missing path stay PAUSED so a temporary
-                # unmount or path move never auto-nukes them.
+                # Classify each entry: ACTIVE / ABORTED / STALE / ENDED
+                #   ACTIVE  -- PID running
+                #   ENDED   -- human closed the session cleanly (SessionEnd hook fired
+                #              with State='ended'). Low priority for restore.
+                #   ABORTED -- PID dead but SessionEnd never fired. Cause: Windows
+                #              restart, claude crash, hard kill, OOM, etc. THESE are
+                #              the priority for restore -- they died with work in flight.
+                #   STALE   -- PID dead AND worktree dir is gone (cruft).
+                # Default: drop STALE + ENDED. With -Aborted (aka -Paused), also drop
+                # ABORTED. With -All, also drop ACTIVE (removes the registry entry;
+                # running shell unaffected). STALE is restricted to $env:WORKTREE_ROOT
+                # entries -- main-clone entries (under $env:GIT_ROOT) with a missing
+                # path stay ABORTED so a temporary unmount or path move never
+                # auto-nukes them.
                 $wtRootRegex = "^$([regex]::Escape($script:WtRoot))\\"
                 $classified = $entries | ForEach-Object {
                     $tag = if ($_.Alive) {
@@ -1720,21 +1883,24 @@ switch ($Command) {
                     } elseif ($_.State -eq 'ended') {
                         'ENDED'
                     } elseif ($_.WorktreePath -and (Test-Path $_.WorktreePath)) {
-                        'PAUSED'
+                        'ABORTED'
                     } elseif ($_.WorktreePath -and $_.WorktreePath -match $wtRootRegex) {
                         'STALE'
                     } else {
-                        'PAUSED'
+                        'ABORTED'
                     }
                     $_ | Add-Member -NotePropertyName Tag -NotePropertyValue $tag -PassThru
                 }
                 # Escalating drop tiers:
-                #   (default)  -> STALE + ENDED
-                #   -Paused    -> + PAUSED
-                #   -All       -> + ACTIVE
+                #   (default)                  -> STALE + ENDED
+                #   -Aborted (alias -Paused)   -> + ABORTED
+                #   -IncludeActive             -> + ACTIVE (registry-only; running shells unaffected)
+                # -All is now a SCOPE flag (this-repo vs all-repos), not a tier
+                # multiplier. To replicate the OLD "clean everything" behavior:
+                #   gwt sessions clean -All -Aborted -IncludeActive
                 $dropTags = @('STALE','ENDED')
-                if ($Paused -or $All) { $dropTags += 'PAUSED' }
-                if ($All)             { $dropTags += 'ACTIVE' }
+                if ($Aborted)       { $dropTags += 'ABORTED' }
+                if ($IncludeActive) { $dropTags += 'ACTIVE' }
                 $toDrop = @($classified | Where-Object { $_.Tag -in $dropTags })
 
                 # Canonical-path guard: only clean entries whose WorktreePath sits at
@@ -1779,9 +1945,10 @@ switch ($Command) {
                 if (-not $toDrop.Count) { Write-Color "  nothing to clean" DarkGray; return }
                 foreach ($s in $toDrop) {
                     $note = switch ($s.Tag) {
-                        'ACTIVE' { '(was active -- entry removed; running shell unaffected)' }
-                        'PAUSED' { '(paused -- worktree still on disk)' }
-                        default  { '(stale)' }
+                        'ACTIVE'  { '(was active -- entry removed; running shell unaffected)' }
+                        'ABORTED' { '(aborted -- died without clean SessionEnd; worktree still on disk)' }
+                        'ENDED'   { '(ended cleanly)' }
+                        default   { '(stale)' }
                     }
                     if ($DryRun) {
                         Write-Color ("  [{0,-6}] {1,-30} @ {2}  {3}" -f $s.Tag, $s.Branch, $s.WorktreePath, $note) DarkGray
@@ -1816,9 +1983,9 @@ switch ($Command) {
                 #            temporary unmount or path move never gets called cruft.
                 $wtRootRegex = "^$([regex]::Escape($script:WtRoot))\\"
                 $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
-                $pausedCount = 0
-                $staleCount  = 0
-                $endedCount  = 0
+                $abortedCount = 0
+                $staleCount   = 0
+                $endedCount   = 0
                 foreach ($g in $byWindow) {
                     Write-Host ""
                     Write-Color "[$($g.Name)]" Cyan
@@ -1826,16 +1993,18 @@ switch ($Command) {
                         if ($s.Alive) {
                             $tag = 'ACTIVE'; $col = 'Green'
                         } elseif ($s.State -eq 'ended') {
-                            # Human explicitly ended the session (SessionEnd hook fired).
-                            # Distinct from PAUSED (crashed / closed without cleanup) and
-                            # STALE (worktree dir is gone).
-                            $tag = 'ENDED';  $col = 'DarkGray'; $endedCount++
+                            # Human closed the session cleanly (SessionEnd hook fired).
+                            # Distinct from ABORTED (died without clean shutdown) and STALE
+                            # (worktree dir is gone).
+                            $tag = 'ENDED';   $col = 'DarkGray'; $endedCount++
                         } elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath)) {
-                            $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
+                            # Process gone but SessionEnd never fired: Windows restart,
+                            # crash, hard kill. THESE are the priority for restore.
+                            $tag = 'ABORTED'; $col = 'Yellow';   $abortedCount++
                         } elseif ($s.WorktreePath -and $s.WorktreePath -match $wtRootRegex) {
-                            $tag = 'STALE';  $col = 'Red';    $staleCount++
+                            $tag = 'STALE';   $col = 'Red';      $staleCount++
                         } else {
-                            $tag = 'PAUSED'; $col = 'Yellow'; $pausedCount++
+                            $tag = 'ABORTED'; $col = 'Yellow';   $abortedCount++
                         }
                         # Saved entries get a distinct SAVED tag (overrides the lifecycle
                         # label so they pop visually). Color still reflects underlying state.
@@ -1855,19 +2024,46 @@ switch ($Command) {
                             if ($s.State -eq 'needs-input') { $col = 'Magenta' }
                         }
                         Write-Color ("  [{0,-7}] {1,-7} {2,-30} @ {3}" -f $tag, $stateTag, $displayName, $s.WorktreePath) $col
+                        # -Verbose: print the session's start time on a sub-line. Uses
+                        # LastSpawnedAt (when the current incarnation began) and falls back
+                        # to FirstSpawnedAt or SpawnedAt for older entries.
+                        if ($VerbosePreference -eq 'Continue') {
+                            $when = $s.LastSpawnedAt
+                            if (-not $when) { $when = $s.FirstSpawnedAt }
+                            if (-not $when) { $when = $s.SpawnedAt }
+                            if ($when) {
+                                try {
+                                    $whenDT  = [datetime]::Parse($when)
+                                    $whenStr = $whenDT.ToString('yyyy-MM-dd HH:mm')
+                                    $age     = [datetime]::Now - $whenDT
+                                    $ageStr  = if ($age.TotalDays   -ge 1) { '{0:N0}d ago' -f $age.TotalDays }
+                                               elseif ($age.TotalHours -ge 1) { '{0:N0}h ago' -f $age.TotalHours }
+                                               else                          { '{0:N0}m ago' -f $age.TotalMinutes }
+                                    Write-Color ("              started: $whenStr  ($ageStr)") DarkGray
+                                } catch {
+                                    Write-Color ("              started: $when") DarkGray
+                                }
+                            }
+                        }
                     }
                 }
                 Write-Host ""
-                $noShellCount = $pausedCount + $staleCount + $endedCount
+                $noShellCount = $abortedCount + $staleCount + $endedCount
                 $totalRows    = @($deduped).Count
-                Write-Color ("  - $totalRows entries: $($totalRows - $noShellCount) live, $noShellCount with no live shell ($pausedCount paused, $endedCount ended, $staleCount stale)") DarkGray
+                Write-Color ("  - $totalRows entries: $($totalRows - $noShellCount) live, $noShellCount with no live shell ($abortedCount aborted, $endedCount ended, $staleCount stale)") DarkGray
+                if ($abortedCount -gt 0) {
+                    Write-Color "  - ABORTED = died without clean SessionEnd (crash / restart / kill). 'gwt sessions restore' brings them back; skips ENDED by default." Yellow
+                }
                 if ($noShellCount -gt 10) {
-                    Write-Color "  - $noShellCount abandoned sessions: 'gwt sessions clean -Paused' to drop (preview with -DryRun)" Yellow
+                    Write-Color "  - $noShellCount sessions with no live shell: 'gwt sessions clean -Aborted' to drop (preview with -DryRun)" DarkGray
                 }
                 if ($dupes -gt 0) {
-                    Write-Color "  - $dupes duplicate entrie(s) hidden: 'gwt sessions clean -All' to drop them too" DarkGray
+                    Write-Color "  - $dupes duplicate entrie(s) hidden: 'gwt sessions clean -IncludeActive' to drop them too" DarkGray
                 }
                 if ($Usage) {
+                    Write-Color "  # all 'sessions' subcommands default to THIS REPO when cwd is inside one." DarkGray
+                    Write-Color "  # pass -All to act across every repo's sessions." DarkGray
+                    Write-Host ""
                     Write-Color "  # mark a session as Saved (protected from every clean) -- shown as [SAVED]" DarkGray
                     Write-Color "  gwt sessions save   <substring> [-Name <branch>] [-Window <name>]" DarkGray
                     Write-Color "  gwt sessions unsave <substring> [-Name <branch>] [-Window <name>]" DarkGray
@@ -1876,17 +2072,14 @@ switch ($Command) {
                     Write-Color "  # relabel a session's display name (does not rename the git branch)" DarkGray
                     Write-Color "  gwt rename <match> <new-label> [-Name <branch>] [-Window <name>]" DarkGray
                     Write-Host ""
-                    Write-Color "  # relaunch PAUSED sessions" DarkGray
+                    Write-Color "  # relaunch ABORTED sessions (skips ENDED; pass -IncludeEnded to include)" DarkGray
                     Write-Color "  gwt sessions restore" DarkGray
                     Write-Host ""
-                    Write-Color "  # clean STALE entries (worktree gone)" DarkGray
-                    Write-Color "  gwt sessions clean" DarkGray
-                    Write-Host ""
-                    Write-Color "  # also clean PAUSED entries (add a name to clean just one)" DarkGray
-                    Write-Color "  gwt sessions clean -Paused [<name-substring>]" DarkGray
-                    Write-Host ""
-                    Write-Color "  # clean EVERYTHING (STALE + PAUSED + ACTIVE; running shells unaffected)" DarkGray
-                    Write-Color "  gwt sessions clean -All" DarkGray
+                    Write-Color "  # clean tiers (this-repo by default; add -All for cross-repo):" DarkGray
+                    Write-Color "  gwt sessions clean                              # STALE + ENDED" DarkGray
+                    Write-Color "  gwt sessions clean -Aborted [<name-substring>]  # + ABORTED" DarkGray
+                    Write-Color "  gwt sessions clean -IncludeActive               # + ACTIVE (registry only; running shells unaffected)" DarkGray
+                    Write-Color "  gwt sessions clean -Aborted -IncludeActive -All # nuke everything everywhere" DarkGray
                 } else {
                     Write-Color "  - pass -Usage for command tips" DarkGray
                 }
@@ -1984,11 +2177,11 @@ switch ($Command) {
         if ($Target -ieq 'current') {
             $link = Join-Path $ctx.WtRoot 'current'
             if (-not (Test-Path $link)) {
-                throw "no 'current' symlink at $link -- run 'gwt activate <branch>' first"
+                throw "no 'current' link at $link -- run 'gwt activate <branch>' first"
             }
             try {
                 $li = Get-Item $link -Force
-                if ($li.LinkType -ne 'SymbolicLink') { throw "'current' exists but is not a symlink" }
+                if ($li.LinkType -notin 'SymbolicLink','Junction') { throw "'current' exists but is not a link (LinkType=$($li.LinkType))" }
                 $wtPath = ($li.Target | Select-Object -First 1)
             } catch { throw "could not resolve 'current' symlink: $($_.Exception.Message)" }
             if (-not (Test-Path $wtPath)) { throw "'current' points at '$wtPath' which is missing" }
@@ -2150,14 +2343,14 @@ switch ($Command) {
         }
 
         $printedMain = $false
-        # Look up the 'current' symlink target if any -- print it right under
+        # Look up the 'current' link target if any -- print it right under
         # MAIN as a quick "this is what your IDE follows" hint.
         $currentLink = Join-Path $ctx.WtRoot 'current'
         $currentTgt  = $null
         if (Test-Path $currentLink) {
             try {
                 $cli = Get-Item $currentLink -Force
-                if ($cli.LinkType -eq 'SymbolicLink') {
+                if ($cli.LinkType -in 'SymbolicLink','Junction') {
                     $currentTgt = ($cli.Target | Select-Object -First 1)
                 }
             } catch {}
@@ -2522,11 +2715,13 @@ switch ($Command) {
                         $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                         if ($ok) {
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
-                            if (Test-Path $wt.Path) {
-                                _AssertUnderWorktreeRoot $wt.Path
-                                Remove-Item $wt.Path -Recurse -Force -ErrorAction SilentlyContinue
+                            $gone = _ForceRemoveWorktreeDir $wt.Path
+                            if ($gone) {
+                                Write-Color "                    removed." DarkGray
+                            } else {
+                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
+                                Write-Color "                    close any program holding files under that path, then retry" DarkGray
                             }
-                            Write-Color "                    removed." DarkGray
                             _CleanupWorktreeMetadata $wt.Path
                         }
                     }
@@ -2540,12 +2735,14 @@ switch ($Command) {
                         if ($ok) {
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
                             # `worktree remove --force` can leave the directory if it
-                            # contains ignored/untracked files. Stomp it explicitly.
-                            if (Test-Path $wt.Path) {
-                                _AssertUnderWorktreeRoot $wt.Path
-                                Remove-Item $wt.Path -Recurse -Force -ErrorAction SilentlyContinue
+                            # contains ignored/untracked files. Stomp it explicitly + verify.
+                            $gone = _ForceRemoveWorktreeDir $wt.Path
+                            if ($gone) {
+                                Write-Color "                    removed." DarkGray
+                            } else {
+                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
+                                Write-Color "                    close any program holding files under that path, then retry" DarkGray
                             }
-                            Write-Color "                    removed." DarkGray
                             _CleanupWorktreeMetadata $wt.Path
                         }
                     }
@@ -2592,8 +2789,13 @@ switch ($Command) {
                     Write-Color "  [ORPHAN ] $p" Magenta
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove orphan? (Y/n)")) -or $r -match '^[Yy]$')
                     if ($ok) {
-                        _AssertUnderWorktreeRoot $p
-                        Remove-Item $p -Recurse -Force
+                        $gone = _ForceRemoveWorktreeDir $p
+                        if ($gone) {
+                            Write-Color "                    removed." DarkGray
+                        } else {
+                            Write-Color "                    WARNING: '$p' still on disk" Red
+                            Write-Color "                    close any program holding files there, then retry" DarkGray
+                        }
                         _CleanupWorktreeMetadata $p
                     }
                 } elseif ($dirty -match '^fatal:') {
@@ -2601,9 +2803,13 @@ switch ($Command) {
                     Write-Color "                    no .git linkage -- not a working tree anymore" Red
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                     if ($ok) {
-                        _AssertUnderWorktreeRoot $p
-                        Remove-Item $p -Recurse -Force
-                        Write-Color "                    removed." DarkGray
+                        $gone = _ForceRemoveWorktreeDir $p
+                        if ($gone) {
+                            Write-Color "                    removed." DarkGray
+                        } else {
+                            Write-Color "                    WARNING: '$p' still on disk" Red
+                            Write-Color "                    close any program holding files there, then retry" DarkGray
+                        }
                         _CleanupWorktreeMetadata $p
                     }
                 }

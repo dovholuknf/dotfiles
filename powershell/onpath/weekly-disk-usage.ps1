@@ -32,33 +32,40 @@ $outputs = @(
 
 foreach ($o in $outputs) {
     Write-Host "  snapshotting $($o.Drive) ..." -ForegroundColor DarkGray
-    & $script $o.Drive 2 -All | Out-File $o.File
+    & $script $o.Drive 2 -MinMB 10 | Out-File $o.File
 
-    # Find the largest path in that drive's output and re-run at depth 2
-    # against it. Append the deeper view to the same file so the snapshot
-    # has a "and here's what's hogging the most space" follow-up.
-    $topPath = $null
-    $topGB   = 0.0
+    # Parse the top-level table to find the biggest entries, then drill into
+    # each. Append every drill-down to the same file. Items that turn out to be
+    # files (or empty / unreadable) produce a "no children" note instead of
+    # silently failing.
+    $candidates = New-Object System.Collections.Generic.List[object]
     foreach ($line in (Get-Content $o.File -ErrorAction SilentlyContinue)) {
         # Format-Table lines: "<path>  <GB>  <MB>  <Note>".
-        # Match: capture path (greedy, may contain spaces), then GB + MB decimals.
         if ($line -match '^(?<path>[A-Za-z]:\\.*?)\s+(?<gb>\d+\.\d+)\s+(?<mb>\d+\.\d+)(\s|$)') {
-            $gb = [double]$Matches.gb
-            if ($gb -gt $topGB) {
-                $topGB   = $gb
-                $topPath = $Matches.path.TrimEnd()
-            }
+            $candidates.Add([PSCustomObject]@{
+                Path = $Matches.path.TrimEnd()
+                GB   = [double]$Matches.gb
+            })
         }
     }
-    if ($topPath -and (Test-Path -LiteralPath $topPath)) {
-        Write-Host ("    -> drilling into top dir: $topPath ($topGB GB)") -ForegroundColor DarkGray
+    # Top 5 by size, skipping anything that isn't a directory (files have no
+    # children to drill into) and any synthesized rows like "[+ N other items]".
+    $topN = @($candidates |
+        Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path -PathType Container) } |
+        Sort-Object GB -Descending |
+        Select-Object -First 5)
+
+    if (-not $topN.Count) {
+        Write-Host "    (no drillable directories found for $($o.Drive))" -ForegroundColor DarkYellow
+        continue
+    }
+    foreach ($c in $topN) {
+        Write-Host ("    -> drilling into: {0} ({1} GB)" -f $c.Path, $c.GB) -ForegroundColor DarkGray
         Add-Content -Path $o.File -Value ""
         Add-Content -Path $o.File -Value "============================================================"
-        Add-Content -Path $o.File -Value " depth=2 drill-down into top dir: $topPath ($topGB GB)"
+        Add-Content -Path $o.File -Value (" depth=2 drill-down: {0} ({1} GB)" -f $c.Path, $c.GB)
         Add-Content -Path $o.File -Value "============================================================"
-        & $script $topPath 2 -All | Out-File $o.File -Append
-    } else {
-        Write-Host "    (couldn't determine top dir for $($o.Drive) -- skipping drill-down)" -ForegroundColor DarkYellow
+        & $script $c.Path 2 -MinMB 10 | Out-File $o.File -Append
     }
 }
 
