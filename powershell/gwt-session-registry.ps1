@@ -31,14 +31,12 @@ function _InvokeGwtSpawn {
     $file  = Join-Path $script:GwtSessionDir "$Id.json"
     $entry = Get-Content $file -Raw | ConvertFrom-Json
 
-    # Apply theme based on the saved WindowName.
-    $themeFn = switch ($entry.WindowName) {
-        'active-work'   { 'ActiveWork' }
-        'pull-requests' { 'PullRequests' }
-        'tangent'       { 'Tangent' }
-        'worktrees'     { 'Worktrees' }
-        default         { $null }
-    }
+    # Apply theme based on the saved WindowName. The window->theme mapping
+    # lives in claude-shell.ps1's _GetThemeFnForWindow as the single source of
+    # truth -- delegate to it rather than duplicating the switch here.
+    $themeFn = if (Get-Command _GetThemeFnForWindow -ErrorAction SilentlyContinue) {
+        _GetThemeFnForWindow $entry.WindowName
+    } else { $null }
     if ($themeFn -and (Get-Command $themeFn -ErrorAction SilentlyContinue)) {
         & $themeFn
     }

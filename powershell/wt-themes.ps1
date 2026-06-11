@@ -188,14 +188,23 @@ function Set-Theme {
         [hashtable]$Theme,
 
         # Walk every theme. Forwards to Tour-Themes (which has more knobs than
-        # this switch exposes -- see Tour-Themes -? for -Mode / -Filter /
-        # -RestoreOnExit).
+        # these switches expose -- see Tour-Themes -? for -Filter /
+        # -RestoreOnExit). -Demo/-Palette/-Sample/-All pick the preview mode.
         [Parameter(ParameterSetName='ByName')]
-        [switch]$Tour
+        [switch]$Tour,
+
+        [Parameter(ParameterSetName='ByName')] [switch]$Demo,
+        [Parameter(ParameterSetName='ByName')] [switch]$Palette,
+        [Parameter(ParameterSetName='ByName')] [switch]$Sample,
+        [Parameter(ParameterSetName='ByName')] [switch]$All
     )
     process {
         if ($Tour) {
-            Tour-Themes
+            $mode = if     ($All)     { 'All' }
+                    elseif ($Palette) { 'Palette' }
+                    elseif ($Sample)  { 'Sample' }
+                    else              { 'Demo' }
+            Tour-Themes -Mode $mode
             return
         }
         if ($PSCmdlet.ParameterSetName -eq 'ByObject' -and $Theme) {
@@ -223,7 +232,9 @@ function Set-Theme {
         if (-not $Name) {
             $sorted = @($script:WtThemes.Keys | Sort-Object)
             if (Get-Command _TuiSelect -ErrorAction SilentlyContinue) {
-                $picked = _TuiSelect -Items $sorted -Prompt 'choose theme (Up/Down + Enter, Esc/q to cancel):'
+                $prompt = "choose theme (Up/Down + Enter, Esc/q to cancel)`n" +
+                          "  tip: 'Set-Theme -Tour' walks every theme; add -Demo / -Palette / -Sample / -All to pick the preview style"
+                $picked = _TuiSelect -Items $sorted -Prompt $prompt
                 if (-not $picked) {
                     Write-Host "no selection" -ForegroundColor Yellow
                     return
@@ -526,7 +537,9 @@ function ActiveWork   { $script:_PendingThemeName = 'active-work';   Apply-Theme
 function PullRequests { $script:_PendingThemeName = 'pull-requests'; Apply-Theme $theme_pull_requests }
 function Tangent      { $script:_PendingThemeName = 'tangent';       Apply-Theme $theme_tangent }
 function Worktrees    { $script:_PendingThemeName = 'worktrees';     Apply-Theme $theme_worktrees }
-function AdHoc        { $script:_PendingThemeName = 'nord';          Apply-Theme $theme_nord }
+function AdHoc        { $script:_PendingThemeName = 'ad-hoc';        Apply-Theme $theme_nord }
+function Main         { $script:_PendingThemeName = 'dracula';       Apply-Theme $theme_dracula }
+function Discourse    { $script:_PendingThemeName = 'discourse';     Apply-Theme $theme_terracotta }
 
 # Registry for Set-Theme '<name>' lookups.
 # Bonus themes -- registered for `Set-Theme '<name>'` lookup but no convenience
@@ -686,6 +699,9 @@ $script:WtThemes = @{
     # additional orange-family backgrounds (less aggressive than admin-*)
     'pumpkin'        = $theme_pumpkin
     'terracotta'     = $theme_terracotta
+    # alias entries -- same palette, different identity in the picker/registry.
+    'ad-hoc'         = $theme_nord
+    'discourse'      = $theme_terracotta
     # cool / oceanic
     'ocean-deep'     = $theme_ocean_deep
     'teal-dusk'      = $theme_teal_dusk

@@ -47,10 +47,15 @@ param(
     # 'sessions clean -IncludeActive' = also drop ACTIVE entries (registry only;
     # running shells unaffected). Replaces the old meaning of -All on clean.
     [switch]$IncludeActive,
+    # 'sessions clean -IncludeDuplicates' = drop entries that lost the dedup
+    # within their WorktreePath group (alive wins; among non-alive, newest by
+    # LastSpawnedAt wins). Targets ledger cruft regardless of lifecycle tag.
+    [switch]$IncludeDuplicates,
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
+    [string]$SortBy,        # 'sessions usage': cost|tokens|recent (default: cost)
     [switch]$DryRun,        # 'sessions clean': preview targets without removing
     [switch]$IncludeEnded,  # 'sessions restore': also restore ENDED entries (default: skip them)
     [int]$Tail = 20,        # 'watch': how many lines of state.log to show before waiting
@@ -380,6 +385,28 @@ function _AssertUnderWorktreeRoot {
     }
 }
 
+function _ChangeToMainFolder {
+    # When the parent shell's cwd is inside (or equal to) $Path, cd it to the
+    # main clone -- same as 'gwt cd main' -- so NTFS releases the directory
+    # being removed. Always announces ("switching to main clone at ..."); never
+    # prompts. Writes the gwt cwd hint so the gwt wrapper follows. No-op when
+    # cwd is already elsewhere.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$MainPath
+    )
+    $cwd = (Get-Location).Path.TrimEnd('\').ToLower()
+    $tgt = $Path.TrimEnd('\').ToLower()
+    if ($cwd -ne $tgt -and -not $cwd.StartsWith("$tgt\")) { return }
+    if (-not (Test-Path $MainPath)) {
+        Write-Color "  cwd is inside the dir being removed but main clone '$MainPath' is missing -- staying put (removal will likely fail)" Yellow
+        return
+    }
+    Write-Color "  you are inside the dir being removed -- switching to main clone at $MainPath" DarkGray
+    Set-Location $MainPath
+    _SetGwtCwdHint $MainPath
+}
+
 function _ForceRemoveWorktreeDir {
     # Robust dir removal. Returns $true if gone after; $false if it persists.
     # Steps: best-effort Remove-Item, then a second pass that clears readonly
@@ -432,15 +459,9 @@ function Remove-Worktree {
     }
 
     # Hard guard #2: if the parent shell's cwd is inside (or equal to) the path
-    # we're about to delete, hint the gwt wrapper to cd us to the main clone
-    # first -- otherwise the FS locks the dir and Remove fails partway.
-    $cwd       = (Get-Location).Path.TrimEnd('\').ToLower()
-    $wtNorm    = $WtPath.TrimEnd('\').ToLower()
-    if ($cwd -eq $wtNorm -or $cwd.StartsWith("$wtNorm\")) {
-        Write-Color "  cwd is inside the worktree about to be removed -- hopping to MAIN ($Src)" DarkGray
-        Set-Location $Src
-        _SetGwtCwdHint $Src
-    }
+    # we're about to delete, cd to the main clone first -- otherwise the FS
+    # locks the dir and Remove fails partway.
+    _ChangeToMainFolder -Path $WtPath -MainPath $Src
 
     $ok = $AutoConfirm -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "remove worktree at '$WtPath'? (Y/n)")) -or $r -match '^[Yy]$')
     if ($ok) {
@@ -1460,8 +1481,10 @@ switch ($Command) {
         #   gwt save -Name <branch> -- exact branch match
         #   gwt unsave ...          -- same shapes, removes the Saved flag instead
         $matchArg = $Target
-        if (-not $matchArg -and -not $Name -and -not $Window) {
-            # Default to the current worktree: use the cwd path as the match.
+        # Treat empty arg AND literal "." (or "./" / ".\") as "current worktree".
+        # Match style: pass the cwd path as the substring, so the inner sessions
+        # filter finds the JSON entry whose WorktreePath equals cwd.
+        if ((-not $matchArg -or $matchArg -in @('.', './', '.\')) -and -not $Name -and -not $Window) {
             $matchArg = (Get-Location).Path.TrimEnd('\')
         }
         $fwd = @{ Command = 'sessions'; Target = $Command }
@@ -1903,6 +1926,32 @@ switch ($Command) {
                 if ($IncludeActive) { $dropTags += 'ACTIVE' }
                 $toDrop = @($classified | Where-Object { $_.Tag -in $dropTags })
 
+                # -IncludeDuplicates: also collect dedup losers (entries that
+                # share a WorktreePath with a winner). Winner = alive entry if
+                # any, else newest non-alive by LastSpawnedAt. Adds the losers
+                # to $toDrop regardless of their lifecycle tag. Each loser is
+                # tagged DuplicateLoser=true so the Saved guard knows to drop
+                # them anyway (the winner keeps the Saved protection).
+                if ($IncludeDuplicates) {
+                    $dupeLosers = @()
+                    foreach ($g in ($classified | Group-Object WorktreePath)) {
+                        if ($g.Count -lt 2) { continue }
+                        $alive = $g.Group | Where-Object Alive | Select-Object -First 1
+                        if ($alive) {
+                            $winner = $alive
+                        } else {
+                            $winner = $g.Group | Sort-Object @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} -Descending | Select-Object -First 1
+                        }
+                        foreach ($loser in @($g.Group | Where-Object { $_.File -ne $winner.File })) {
+                            $loser | Add-Member -NotePropertyName DuplicateLoser -NotePropertyValue $true -Force
+                            $dupeLosers += $loser
+                        }
+                    }
+                    $existingFiles = @($toDrop | ForEach-Object { $_.File })
+                    $newDupes = @($dupeLosers | Where-Object { $_.File -notin $existingFiles })
+                    $toDrop += $newDupes
+                }
+
                 # Canonical-path guard: only clean entries whose WorktreePath sits at
                 # the expected 4+-deep layout:
                 #   $env:WORKTREE_ROOT\<provider>\<org>\<repo>\<branch>   (worktree session)
@@ -1920,10 +1969,12 @@ switch ($Command) {
                     $_.WorktreePath -and ($_.WorktreePath -match $canonicalRegex)
                 })
 
-                # Protect Saved entries from ALL clean operations -- even -All.
-                # Use 'gwt sessions unsave <name>' first if you really mean to drop one.
-                $savedSkipped = @($toDrop | Where-Object { $_.Saved })
-                $toDrop       = @($toDrop | Where-Object { -not $_.Saved })
+                # Protect Saved entries from ALL clean operations -- with one
+                # exception: when -IncludeDuplicates is set, Saved duplicate
+                # LOSERS get dropped anyway. The winner of each path keeps the
+                # Saved protection, so this is safe: only redundant copies go.
+                $savedSkipped = @($toDrop | Where-Object { $_.Saved -and -not $_.DuplicateLoser })
+                $toDrop       = @($toDrop | Where-Object { (-not $_.Saved) -or $_.DuplicateLoser })
 
                 # Optional filters: substring $Match plus exact $Name/$Window. With
                 # any filter, multi-match prompts to disambiguate (pick / 'a' / 'q').
@@ -1932,32 +1983,193 @@ switch ($Command) {
                     if (-not $resolved) { return }
                     $toDrop = $resolved
                 }
-                foreach ($s in $offLayoutSkipped) {
-                    Write-Color "  protected (off-layout): $($s.Branch) @ $($s.WorktreePath)" Red
-                    Write-Color "    path is not under $script:WtRoot\<host>\<org>\<repo>\<branch> -- refusing to touch" DarkGray
+                # Group protect-skip output by path -- the same path appears multiple
+                # times when the ledger has duplicates. Show one line per unique path
+                # with a count suffix when > 1.
+                foreach ($g in ($offLayoutSkipped | Group-Object WorktreePath)) {
+                    $suffix = if ($g.Count -gt 1) { "  (x$($g.Count) entries)" } else { '' }
+                    Write-Color "  protected (off-layout): $($g.Group[0].Branch) @ $($g.Name)$suffix" Red
                 }
-                foreach ($s in $savedSkipped) {
-                    Write-Color "  protected (Saved): $($s.Branch) -- run 'gwt sessions unsave $($s.Branch)' to clean" DarkGray
+                $savedDupeCount = 0
+                foreach ($g in ($savedSkipped | Group-Object WorktreePath)) {
+                    $suffix = if ($g.Count -gt 1) {
+                        $savedDupeCount += ($g.Count - 1)
+                        "  (x$($g.Count) entries; $($g.Count - 1) duplicate(s))"
+                    } else { '' }
+                    Write-Color "  protected (Saved): $($g.Group[0].Branch) @ $($g.Name)$suffix" DarkGray
+                }
+                if ($savedDupeCount -gt 0) {
+                    Write-Color "  -> $savedDupeCount Saved duplicate(s) above can be dropped with 'gwt sessions clean -IncludeDuplicates'" Yellow
+                    Write-Color "     (the winner of each path keeps its Saved protection; only redundant copies go)" DarkGray
                 }
                 $mode = "$($dropTags -join ' + ')"
                 $verb = if ($DryRun) { 'would clean' } else { 'cleaning' }
                 Write-Color "${verb}: $mode" DarkGray
                 if (-not $toDrop.Count) { Write-Color "  nothing to clean" DarkGray; return }
-                foreach ($s in $toDrop) {
-                    $note = switch ($s.Tag) {
-                        'ACTIVE'  { '(was active -- entry removed; running shell unaffected)' }
-                        'ABORTED' { '(aborted -- died without clean SessionEnd; worktree still on disk)' }
-                        'ENDED'   { '(ended cleanly)' }
-                        default   { '(stale)' }
+                if ($DryRun) {
+                    # Group dry-run output by (Tag, WorktreePath) so 3 ABORTED
+                    # entries at the same path collapse to one line with (x3).
+                    foreach ($g in ($toDrop | Group-Object Tag, WorktreePath)) {
+                        $s    = $g.Group[0]
+                        $note = switch ($s.Tag) {
+                            'ACTIVE'  { '(was active -- entry removed; running shell unaffected)' }
+                            'ABORTED' { '(aborted -- died without clean SessionEnd; worktree still on disk)' }
+                            'ENDED'   { '(ended cleanly)' }
+                            default   { '(stale)' }
+                        }
+                        $suffix = if ($g.Count -gt 1) { "  (x$($g.Count))" } else { '' }
+                        Write-Color ("  [{0,-7}] {1,-30} @ {2}{3}  {4}" -f $s.Tag, $s.Branch, $s.WorktreePath, $suffix, $note) DarkGray
                     }
-                    if ($DryRun) {
-                        Write-Color ("  [{0,-6}] {1,-30} @ {2}  {3}" -f $s.Tag, $s.Branch, $s.WorktreePath, $note) DarkGray
-                    } else {
+                    Write-Color "  -- preview only; re-run without -DryRun to act" Cyan
+                } else {
+                    foreach ($s in $toDrop) {
+                        $note = switch ($s.Tag) {
+                            'ACTIVE'  { '(was active)' }
+                            'ABORTED' { '(aborted)' }
+                            'ENDED'   { '(ended)' }
+                            default   { '(stale)' }
+                        }
                         Remove-Item $s.File -Force -ErrorAction SilentlyContinue
-                        Write-Color "  removed: $($s.Branch) $note" DarkGray
+                        Write-Color "  removed: $($s.Branch) @ $($s.WorktreePath) $note" DarkGray
                     }
                 }
-                if ($DryRun) { Write-Color "  -- preview only; re-run without -DryRun to act" Cyan }
+            }
+            'usage' {
+                # Sum token usage from each session's claude jsonl logs and
+                # estimate cost via a hand-maintained price table. Numbers are
+                # an ESTIMATE -- pricing changes, treat as directional.
+                #
+                # Per WorktreePath, sums ALL jsonls in the matching project dir
+                # (not just the latest ClaudeSessionId), so cost reflects total
+                # spend at that path over time, including superseded sessions.
+
+                # USD per 1M tokens. Most-specific patterns first.
+                $priceTable = @(
+                    @{ match='opus';   in=15.0; out=75.0; cacheW=18.75; cacheR=1.50 }
+                    @{ match='sonnet'; in= 3.0; out=15.0; cacheW= 3.75; cacheR=0.30 }
+                    @{ match='haiku';  in= 1.0; out= 5.0; cacheW= 1.25; cacheR=0.10 }
+                )
+                function script:_PriceFor([string]$model) {
+                    if (-not $model) { return $null }
+                    foreach ($p in $priceTable) {
+                        if ($model -match $p.match) { return $p }
+                    }
+                    return $null
+                }
+                function script:_ScanJsonl([string]$path) {
+                    $t = @{ in=[int64]0; out=[int64]0; cacheW=[int64]0; cacheR=[int64]0; cost=0.0; msgs=0 }
+                    if (-not (Test-Path -LiteralPath $path)) { return $t }
+                    foreach ($line in (Get-Content -LiteralPath $path -ErrorAction SilentlyContinue)) {
+                        if (-not $line) { continue }
+                        try { $j = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                        $u = $j.message.usage
+                        if (-not $u) { continue }
+                        $model = $j.message.model
+                        $in    = if ($u.input_tokens)                { [int64]$u.input_tokens } else { 0 }
+                        $out   = if ($u.output_tokens)               { [int64]$u.output_tokens } else { 0 }
+                        $cw    = if ($u.cache_creation_input_tokens) { [int64]$u.cache_creation_input_tokens } else { 0 }
+                        $cr    = if ($u.cache_read_input_tokens)     { [int64]$u.cache_read_input_tokens } else { 0 }
+                        $t.in     += $in
+                        $t.out    += $out
+                        $t.cacheW += $cw
+                        $t.cacheR += $cr
+                        $t.msgs   += 1
+                        $p = _PriceFor $model
+                        if ($p) {
+                            $t.cost += ($in/1e6)*$p.in + ($out/1e6)*$p.out + ($cw/1e6)*$p.cacheW + ($cr/1e6)*$p.cacheR
+                        }
+                    }
+                    return $t
+                }
+
+                # Dedupe by WorktreePath so each project dir is scanned once.
+                $dedup = @($entries | Group-Object WorktreePath | ForEach-Object {
+                    $alive = $_.Group | Where-Object Alive | Select-Object -First 1
+                    if ($alive) { $alive }
+                    else        { $_.Group | Sort-Object @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} -Descending | Select-Object -First 1 }
+                })
+
+                # Apply Match / Name / Window filters if given (light reuse of resolver intent without the picker).
+                if ($Match)  { $dedup = @($dedup | Where-Object { $_.Branch -like "*$Match*" -or $_.WorktreePath -like "*$Match*" -or $_.WindowName -like "*$Match*" }) }
+                if ($Name)   { $dedup = @($dedup | Where-Object { $_.Branch     -ieq $Name   }) }
+                if ($Window) { $dedup = @($dedup | Where-Object { $_.WindowName -ieq $Window }) }
+                if (-not $dedup.Count) { Write-Color "no sessions match the given filter" Yellow; return }
+
+                $rows = @()
+                foreach ($e in $dedup) {
+                    $slug = $e.WorktreePath -replace '[:\\/]', '-'
+                    $projDir = "C:\Users\claude\.claude\projects\$slug"
+                    $jsonls = if (Test-Path -LiteralPath $projDir) { @(Get-ChildItem -LiteralPath $projDir -Filter '*.jsonl' -ErrorAction SilentlyContinue) } else { @() }
+
+                    $sum = @{ in=[int64]0; out=[int64]0; cacheW=[int64]0; cacheR=[int64]0; cost=0.0; msgs=0; logs=$jsonls.Count }
+                    foreach ($f in $jsonls) {
+                        $t = _ScanJsonl $f.FullName
+                        $sum.in     += $t.in
+                        $sum.out    += $t.out
+                        $sum.cacheW += $t.cacheW
+                        $sum.cacheR += $t.cacheR
+                        $sum.cost   += $t.cost
+                        $sum.msgs   += $t.msgs
+                    }
+                    $rows += [PSCustomObject]@{
+                        Branch = $e.Branch
+                        Window = $e.WindowName
+                        Path   = $e.WorktreePath
+                        Logs   = $sum.logs
+                        Msgs   = $sum.msgs
+                        In     = $sum.in
+                        Out    = $sum.out
+                        CacheR = $sum.cacheR
+                        CacheW = $sum.cacheW
+                        Cost   = [Math]::Round($sum.cost, 2)
+                        Last   = if ($e.LastSpawnedAt) { $e.LastSpawnedAt } else { $e.SpawnedAt }
+                    }
+                }
+
+                $sortKey = if ($SortBy) { $SortBy.ToLower() } else { 'cost' }
+                $sortedRows = switch ($sortKey) {
+                    'tokens' { $rows | Sort-Object @{Expression={ $_.In + $_.Out + $_.CacheW + $_.CacheR }; Descending=$true} }
+                    'recent' { $rows | Sort-Object @{Expression='Last'; Descending=$true} }
+                    'cost'   { $rows | Sort-Object @{Expression='Cost'; Descending=$true} }
+                    default  {
+                        Write-Color "unknown -SortBy '$SortBy' (using 'cost'); valid: cost|tokens|recent" Yellow
+                        $rows | Sort-Object @{Expression='Cost'; Descending=$true}
+                    }
+                }
+
+                Write-Host ""
+                Write-Color "session usage  (estimate -- pricing table is hand-maintained)" Cyan
+                Write-Host ""
+                $fmt = '{0,-30} {1,-12} {2,5} {3,6} {4,12} {5,12} {6,12} {7,12} {8,9}'
+                Write-Color ($fmt -f 'Branch','Window','Logs','Msgs','In','Out','CacheR','CacheW','$est') DarkGray
+                Write-Color ($fmt -f ('-'*30),('-'*12),('-'*5),('-'*6),('-'*12),('-'*12),('-'*12),('-'*12),('-'*9)) DarkGray
+
+                $tIn=[int64]0; $tOut=[int64]0; $tCw=[int64]0; $tCr=[int64]0; $tMsgs=0; $tCost=0.0
+                foreach ($r in $sortedRows) {
+                    $branch = if ($r.Branch.Length -gt 30) { $r.Branch.Substring(0,27) + '...' } else { $r.Branch }
+                    $win    = if ($r.Window.Length -gt 12) { $r.Window.Substring(0,9)  + '...' } else { $r.Window }
+                    if ($r.Logs -eq 0 -or $r.Msgs -eq 0) {
+                        Write-Color ($fmt -f $branch, $win, $r.Logs, '-', '-', '-', '-', '-', '-') DarkGray
+                        continue
+                    }
+                    $tIn += $r.In; $tOut += $r.Out; $tCw += $r.CacheW; $tCr += $r.CacheR
+                    $tMsgs += $r.Msgs; $tCost += $r.Cost
+                    Write-Host ($fmt -f $branch, $win, $r.Logs, $r.Msgs,
+                        ('{0:N0}' -f $r.In), ('{0:N0}' -f $r.Out),
+                        ('{0:N0}' -f $r.CacheR), ('{0:N0}' -f $r.CacheW),
+                        ('${0:N2}' -f $r.Cost))
+                }
+
+                Write-Color ($fmt -f ('-'*30),('-'*12),('-'*5),('-'*6),('-'*12),('-'*12),('-'*12),('-'*12),('-'*9)) DarkGray
+                Write-Color ($fmt -f 'TOTAL','','', $tMsgs,
+                    ('{0:N0}' -f $tIn), ('{0:N0}' -f $tOut),
+                    ('{0:N0}' -f $tCr), ('{0:N0}' -f $tCw),
+                    ('${0:N2}' -f $tCost)) Cyan
+                Write-Host ""
+                Write-Color "  pricing per 1M tokens: opus 15/75/18.75/1.50  sonnet 3/15/3.75/0.30  haiku 1/5/1.25/0.10  (in/out/cacheW/cacheR)" DarkGray
+                Write-Color "  sort: -SortBy cost|tokens|recent  (default: cost)" DarkGray
+                Write-Color "  filter: pass a substring positionally, or -Name <branch> / -Window <name>" DarkGray
+                Write-Host ""
             }
             default {
                 if (-not $entries) { Write-Color "no sessions registered yet" DarkGray; return }
@@ -1988,7 +2200,12 @@ switch ($Command) {
                 $endedCount   = 0
                 foreach ($g in $byWindow) {
                     Write-Host ""
-                    Write-Color "[$($g.Name)]" Cyan
+                    # Empty WindowName means the entry never got assigned a wt
+                    # window (old entries pre-window-detection, or main-clone
+                    # launches before ad-hoc routing). Label them explicitly
+                    # instead of rendering as an empty bracket.
+                    $groupLabel = if ([string]::IsNullOrEmpty($g.Name)) { 'unassociated' } else { $g.Name }
+                    Write-Color "[$groupLabel]" Cyan
                     foreach ($s in $g.Group) {
                         if ($s.Alive) {
                             $tag = 'ACTIVE'; $col = 'Green'
@@ -2058,7 +2275,7 @@ switch ($Command) {
                     Write-Color "  - $noShellCount sessions with no live shell: 'gwt sessions clean -Aborted' to drop (preview with -DryRun)" DarkGray
                 }
                 if ($dupes -gt 0) {
-                    Write-Color "  - $dupes duplicate entrie(s) hidden: 'gwt sessions clean -IncludeActive' to drop them too" DarkGray
+                    Write-Color "  - $dupes duplicate entrie(s) hidden: 'gwt sessions clean -IncludeDuplicates' to drop them" DarkGray
                 }
                 if ($Usage) {
                     Write-Color "  # all 'sessions' subcommands default to THIS REPO when cwd is inside one." DarkGray
@@ -2691,11 +2908,24 @@ switch ($Command) {
                 # the prunable set. If no match was found at all, fall through to
                 # the orphan sweep below -- it'll handle the "not found" case.
                 $actualStatus = if ($statuses.Count -eq 1) { $statuses[0].Status } else { 'unknown' }
-                Write-Color "  '$branchFilter' is $actualStatus -- prune won't touch it" Yellow
+                Write-Color "  '$branchFilter' is $actualStatus -- prune won't touch it by default" Yellow
                 if ($actualStatus -eq 'DIRTY' -and -not $Force) {
-                    Write-Color "    -> gwt prune $branchFilter -Force   (deletes DIRTY)" DarkGray
+                    # Offer -Force inline instead of making the user re-type the command.
+                    # Default is N because we're about to destroy real local content.
+                    $r = if ($y) { 'y' } else { Read-Host "  delete DIRTY worktree '$branchFilter' anyway? (lose local content) (y/N)" }
+                    if ($r -match '^[Yy]$') {
+                        # Synthesize the same path as -Force would have taken: re-run
+                        # the prunable filter with DIRTY allowed.
+                        $prunable = @($statuses | Where-Object { $_.Status -in @('PRUNE','DIRTY') })
+                        $Force    = $true
+                    } else {
+                        Write-Color "    aborted -- nothing changed" DarkGray
+                        Write-Color "    -> gwt prune $branchFilter -Force   (skips this prompt)" DarkGray
+                        Write-Color "    -> gwt rm $branchFilter             (deletes regardless of state)" DarkGray
+                    }
+                } else {
+                    Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
                 }
-                Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
             }
             foreach ($wt in $prunable) {
                 $raw   = if ($wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
@@ -2714,15 +2944,16 @@ switch ($Command) {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Red
                         $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                         if ($ok) {
+                            _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
                             $gone = _ForceRemoveWorktreeDir $wt.Path
-                            if ($gone) {
-                                Write-Color "                    removed." DarkGray
-                            } else {
-                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
-                                Write-Color "                    close any program holding files under that path, then retry" DarkGray
-                            }
+                            if ($gone) { Write-Color "                    removed." DarkGray }
                             _CleanupWorktreeMetadata $wt.Path
+                            if (-not $gone) {
+                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
+                                Write-Color "                    likely cause: a shell, IDE (GoLand / VS Code), or Explorer window has it open" DarkGray
+                                Write-Color "                    'cd' that shell elsewhere, close the IDE project, then 'gwt prune $($wt.Branch) -Force' again" DarkGray
+                            }
                         }
                     }
                     'DIRTY' {
@@ -2733,17 +2964,18 @@ switch ($Command) {
                         $kind = 'DIRTY'
                         $ok = $y -or (($r = Read-Host "  -Force: delete $kind worktree and lose local content? (y/N)") -match '^[Yy]$')
                         if ($ok) {
+                            _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
                             # `worktree remove --force` can leave the directory if it
                             # contains ignored/untracked files. Stomp it explicitly + verify.
                             $gone = _ForceRemoveWorktreeDir $wt.Path
-                            if ($gone) {
-                                Write-Color "                    removed." DarkGray
-                            } else {
-                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
-                                Write-Color "                    close any program holding files under that path, then retry" DarkGray
-                            }
+                            if ($gone) { Write-Color "                    removed." DarkGray }
                             _CleanupWorktreeMetadata $wt.Path
+                            if (-not $gone) {
+                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
+                                Write-Color "                    likely cause: a shell, IDE (GoLand / VS Code), or Explorer window has it open" DarkGray
+                                Write-Color "                    'cd' that shell elsewhere, close the IDE project, then 'gwt prune $($wt.Branch) -Force' again" DarkGray
+                            }
                         }
                     }
                 }
@@ -2789,28 +3021,28 @@ switch ($Command) {
                     Write-Color "  [ORPHAN ] $p" Magenta
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove orphan? (Y/n)")) -or $r -match '^[Yy]$')
                     if ($ok) {
+                        _ChangeToMainFolder -Path $p -MainPath $repoPath
                         $gone = _ForceRemoveWorktreeDir $p
-                        if ($gone) {
-                            Write-Color "                    removed." DarkGray
-                        } else {
-                            Write-Color "                    WARNING: '$p' still on disk" Red
-                            Write-Color "                    close any program holding files there, then retry" DarkGray
-                        }
+                        if ($gone) { Write-Color "                    removed." DarkGray }
                         _CleanupWorktreeMetadata $p
+                        if (-not $gone) {
+                            Write-Color "                    WARNING: '$p' still on disk" Red
+                            Write-Color "                    likely cause: a shell, IDE, or Explorer window has it open" DarkGray
+                        }
                     }
                 } elseif ($dirty -match '^fatal:') {
                     Write-Color "  [ORPHAN-NO-GIT] $p" Red
                     Write-Color "                    no .git linkage -- not a working tree anymore" Red
                     $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                     if ($ok) {
+                        _ChangeToMainFolder -Path $p -MainPath $repoPath
                         $gone = _ForceRemoveWorktreeDir $p
-                        if ($gone) {
-                            Write-Color "                    removed." DarkGray
-                        } else {
-                            Write-Color "                    WARNING: '$p' still on disk" Red
-                            Write-Color "                    close any program holding files there, then retry" DarkGray
-                        }
+                        if ($gone) { Write-Color "                    removed." DarkGray }
                         _CleanupWorktreeMetadata $p
+                        if (-not $gone) {
+                            Write-Color "                    WARNING: '$p' still on disk" Red
+                            Write-Color "                    likely cause: a shell, IDE, or Explorer window has it open" DarkGray
+                        }
                     }
                 }
                 # ORPHAN-DIRTY entries are silently skipped -- 'gwt list' shows them

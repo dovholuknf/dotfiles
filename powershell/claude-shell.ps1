@@ -140,6 +140,7 @@ function _GetThemeFnForWindow {
         'tangent'       { 'Tangent' }
         'worktrees'     { 'Worktrees' }
         'ad-hoc'        { 'AdHoc' }
+        'main'          { 'Main' }
         default         { $null }
     }
 }
@@ -626,23 +627,28 @@ function _RegisterOrClaimClaudeSession {
     } catch {}
     if (-not $repo) { $repo = Split-Path $cwd -Leaf }
 
-    # Ad-hoc claude launches: bucket under [ad-hoc], mark Saved (clean tiers
-    # refuse to touch them). Three triggers for ad-hoc:
-    #   1. No branch detectable (claude launched outside any git checkout).
-    #   2. cwd is NOT under $script:WtRoot. Main-clone launches (under
-    #      $script:GitRoot) and random scratch dirs end up here. Only proper
-    #      worktrees under $script:WtRoot get "normal" treatment.
-    # In all cases the cwd might be something dangerous like the worktree root
-    # itself, so Saved=true is a safety guard.
+    # Three buckets at registration time:
+    #   1. WORKTREE -- cwd is under $script:WtRoot (and not the root itself).
+    #      WindowName left blank; gwt's open flow picks the wt window.
+    #   2. MAIN     -- cwd is under $script:GitRoot AND a branch is detectable.
+    #      Goes into the [main] group with Saved=true (don't let clean nuke
+    #      your main clone's session entry by accident).
+    #   3. AD-HOC   -- everything else (no git, weird dir, $WtRoot itself,
+    #      $C:\Users, random scratch). Goes into [ad-hoc], Saved=true.
     $windowForEntry = $null
     $savedForEntry  = $false
     $cwdNorm        = $cwd.TrimEnd('\').ToLower()
     $wtRootNorm     = $script:WtRoot.TrimEnd('\').ToLower()
-    $inWorktree     = $cwdNorm -eq $wtRootNorm -or $cwdNorm.StartsWith("$wtRootNorm\")
-    # cwd == wtRoot itself counts as ad-hoc (dangerous root), not a worktree.
-    if ($cwdNorm -eq $wtRootNorm) { $inWorktree = $false }
+    $gitRootNorm    = $script:GitRoot.TrimEnd('\').ToLower()
+    $inWorktree     = ($cwdNorm -ne $wtRootNorm) -and $cwdNorm.StartsWith("$wtRootNorm\")
+    $inMain         = ($cwdNorm -ne $gitRootNorm) -and $cwdNorm.StartsWith("$gitRootNorm\")
 
-    if (-not $branch -or -not $inWorktree) {
+    if ($inWorktree) {
+        # leave $branch / window as-is; the normal worktree path picks them.
+    } elseif ($inMain -and $branch) {
+        $windowForEntry = 'main'
+        $savedForEntry  = $true
+    } else {
         $branch         = "(adhoc:$(Split-Path $cwd -Leaf))"
         $windowForEntry = 'ad-hoc'
         $savedForEntry  = $true

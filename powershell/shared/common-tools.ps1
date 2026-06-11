@@ -179,8 +179,8 @@ function _TuiSelect {
             }
 
             switch ($k.Key) {
-                'UpArrow'   { if ($idx -gt 0) { $idx-- }; $numBuf = '' }
-                'DownArrow' { if ($idx -lt $Items.Count - 1) { $idx++ }; $numBuf = '' }
+                'UpArrow'   { $idx = if ($idx -gt 0) { $idx - 1 } else { $Items.Count - 1 }; $numBuf = '' }
+                'DownArrow' { $idx = if ($idx -lt $Items.Count - 1) { $idx + 1 } else { 0 };               $numBuf = '' }
                 'Home'      { $idx = 0; $numBuf = '' }
                 'End'       { $idx = $Items.Count - 1; $numBuf = '' }
                 'Enter'     { $sel = $Items[$idx]; $numBuf = '' }
@@ -197,8 +197,8 @@ function _TuiSelect {
                 }
                 default {
                     switch ($ch) {
-                        'k' { if ($idx -gt 0) { $idx-- }; $numBuf = '' }
-                        'j' { if ($idx -lt $Items.Count - 1) { $idx++ }; $numBuf = '' }
+                        'k' { $idx = if ($idx -gt 0) { $idx - 1 } else { $Items.Count - 1 }; $numBuf = '' }
+                        'j' { $idx = if ($idx -lt $Items.Count - 1) { $idx + 1 } else { 0 };               $numBuf = '' }
                         'q' { $cancel = $true }
                         'a' { if ($AllowAll) { $all = $true } }
                     }
