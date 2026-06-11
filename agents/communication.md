@@ -13,6 +13,9 @@ How to talk to me, and how to write things on my behalf.
 - **Drafting for me** (customer reply, community post, PR comment): friendly, honest, technical, no
   marketing tone. If I made someone wait, own it briefly and move on. Lead with "I reproduced it / here
   is the fix / here is the tradeoff." Never lead with "Thanks for your patience" or "Great question."
+- **Translate, don't parrot.** When drafting UI text, prose, hints, or commands you'll hand me, render
+  the intent in natural phrasing. Do not paste my rough words verbatim. Match my intent and voice,
+  not the literal request.
 
 ## Writing rules (hard, non-negotiable)
 

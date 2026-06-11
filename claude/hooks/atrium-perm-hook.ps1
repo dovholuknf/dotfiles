@@ -1,11 +1,13 @@
 # Atrium permission-gating hook. Fires as a claude-code PreToolUse hook.
 #
-# Activation is automatic: any session that has the atrium-agent MCP wired in
-# (via an .mcp.json at cwd or any ancestor declaring "atrium-agent") gets
-# gated through the atrium hub. Sessions without that wiring are no-ops and
-# claude-code's normal permission flow runs unchanged.
-#
-# Opt-out: set $env:ATRIUM_PERM_GATE = 'off' before launching claude.
+# Activation is tri-state via $env:ATRIUM_PERM_GATE:
+#   - 'on' / 'force' / '1' / 'true' / 'yes': gate EVERY session through the hub,
+#     no .mcp.json required. Use this for permissions-only mode across a fleet of
+#     agents that are not running the atrium submit loop.
+#   - 'off': never gate; claude-code's normal permission flow runs unchanged.
+#   - unset / anything else: auto-detect. Gate only sessions that have the
+#     atrium-agent MCP wired in (an .mcp.json at cwd or any ancestor declaring
+#     "atrium-agent"). This is the original Mode A behavior.
 #
 # What it does when active:
 #   - reads the hook payload from stdin (JSON: tool_name, tool_input, ...)
@@ -18,7 +20,9 @@
 # This script runs first; if it approves, the next hook still gets to refuse
 # (footgun guard wins). If this one blocks, the chain short-circuits.
 
-if ($env:ATRIUM_PERM_GATE -eq 'off') { exit 0 }
+$gate = "$($env:ATRIUM_PERM_GATE)".Trim().ToLower()
+if ($gate -eq 'off') { exit 0 }
+$forceGate = @('on','force','1','true','yes') -contains $gate
 
 # Walk up from cwd looking for an .mcp.json that references atrium-agent.
 # That's the signal this session is an atrium-connected agent and gating is
@@ -40,7 +44,7 @@ function _AtriumWired {
     return $false
 }
 
-if (-not (_AtriumWired)) { exit 0 }
+if (-not $forceGate -and -not (_AtriumWired)) { exit 0 }
 
 $hubUrl = if ($env:ATRIUM_HUB_URL) { $env:ATRIUM_HUB_URL.TrimEnd('/') } else { 'http://localhost:7777' }
 

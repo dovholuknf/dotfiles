@@ -75,7 +75,8 @@ function _TuiSelect {
     #     to returning $Items[0] silently; passes through scripts without hanging)
     #
     # Keystrokes:
-    #   Up / Down / k / j      cursor move
+    #   Up / Down / k / j      cursor move (wraps at top/bottom)
+    #   PageUp / PageDown      move by one viewport
     #   Home / End             jump to first / last
     #   <digit>                jump to that-numbered item (buffered for lists > 9)
     #   Backspace              pop one digit off the buffer
@@ -104,7 +105,10 @@ function _TuiSelect {
         [switch]$AllowAll,
         # 0-based row to highlight on open. Callers wanting a default of "row N"
         # in 1-based reasoning pass N-1. Clamped to a valid range.
-        [int]$DefaultIndex = 0
+        [int]$DefaultIndex = 0,
+        # Max visible rows. Caps the viewport even when the terminal is tall.
+        # Pass -PageSize 0 to mean "as many as fit in the window".
+        [int]$PageSize = 12
     )
     if (-not $Items.Count) { return $null }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
@@ -114,7 +118,9 @@ function _TuiSelect {
     $ESC = [char]27
     $idx = if ($DefaultIndex -ge 0 -and $DefaultIndex -lt $Items.Count) { $DefaultIndex } else { 0 }
     $cursorWasVisible = [Console]::CursorVisible
+    $ctrlCWas = [Console]::TreatControlCAsInput
     [Console]::CursorVisible = $false
+    [Console]::TreatControlCAsInput = $true
     # numBuf accumulates digit keystrokes for items > 9. e.g. type '1' '2' to
     # highlight item 12. Enter confirms; Esc clears the buffer (not the picker).
     $numBuf = ''
@@ -128,27 +134,80 @@ function _TuiSelect {
 
     # Pad index column width to fit Items.Count digits, so two-digit lists line up.
     $idxWidth = ([string]$Items.Count).Length
-    $footerLines = 1 # the digit-buffer / hint line always renders
-    if ($AllowAll) { $footerLines++ }
+
+    # Compute viewport = min(PageSize, terminalFit, itemCount), floor 1.
+    # PageSize is the soft cap so a tall window doesn't render 50 rows.
+    # terminalFit is the hard cap so a tiny window still works.
+    # Reserve = blank line + prompt + footer (+ allow-all row) + 2 lines safety.
+    $winH = try { [Console]::WindowHeight } catch { 24 }
+    $reserved = if ($AllowAll) { 5 } else { 4 }
+    $fit  = $winH - $reserved
+    $cap  = if ($PageSize -gt 0) { $PageSize } else { [int]::MaxValue }
+    $viewport = [Math]::Max(1, [Math]::Min($Items.Count, [Math]::Min($cap, $fit)))
+
+    # Mutable render state. Hashtable so the render scriptblock can update it
+    # without scope gymnastics.
+    $state = @{ top = 0; lastLines = 0; first = $true }
 
     $render = {
-        Write-Host -NoNewline "$ESC[J"
-        for ($i = 0; $i -lt $Items.Count; $i++) {
+        # Scroll the viewport to keep $idx visible.
+        if ($idx -lt $state.top)                   { $state.top = $idx }
+        if ($idx -ge $state.top + $viewport)       { $state.top = $idx - $viewport + 1 }
+        if ($state.top -lt 0)                      { $state.top = 0 }
+        if ($state.top + $viewport -gt $Items.Count) { $state.top = [Math]::Max(0, $Items.Count - $viewport) }
+
+        $sb = [System.Text.StringBuilder]::new()
+        # Synchronized output (DEC private mode 2026): the terminal buffers
+        # every byte between BSU and ESU into one atomic paint. Kills the flash
+        # on cursor-up + redraw. Terminals that don't grok it (older conhost)
+        # just ignore the sequence -- no fallback needed.
+        [void]$sb.Append("$ESC[?2026h")
+        # Move cursor up to the start of the previous frame so we overwrite it
+        # in place. First paint has nothing to overwrite. Uses \e[K per line
+        # (clear-to-eol) instead of \e[J (clear-below) so there's no flash.
+        if (-not $state.first -and $state.lastLines -gt 0) {
+            [void]$sb.Append("$ESC[$($state.lastLines)A")
+        }
+
+        $linesThisFrame = 0
+        $end = [Math]::Min($Items.Count, $state.top + $viewport)
+        for ($i = $state.top; $i -lt $end; $i++) {
             $label = & $labelFor $Items[$i]
             $num   = "[{0,$idxWidth}] " -f ($i + 1)
             $arrow = if ($i -eq $idx) { '> ' } else { '  ' }
             $line  = "$arrow$num$label"
-            $color = if ($i -eq $idx) { 'Cyan' } else { 'DarkGray' }
-            Write-Host $line -ForegroundColor $color
+            if ($i -eq $idx) {
+                [void]$sb.Append("$ESC[36m$line$ESC[0m$ESC[K`r`n")    # cyan
+            } else {
+                [void]$sb.Append("$ESC[90m$line$ESC[0m$ESC[K`r`n")    # darkgray
+            }
+            $linesThisFrame++
         }
+        # Footer: scroll indicator + hint OR digit-buffer prompt.
+        $scroll = if ($Items.Count -gt $viewport) {
+            "  ({0}-{1}/{2})" -f ($state.top + 1), $end, $Items.Count
+        } else { '' }
         if ($numBuf) {
-            Write-Host "  pick: ${numBuf}_  (Enter to confirm, Esc to clear)" -ForegroundColor Yellow
+            [void]$sb.Append("$ESC[33m  pick: ${numBuf}_  (Enter to confirm, Esc to clear)${scroll}$ESC[0m$ESC[K`r`n")
         } else {
-            Write-Host "  (type digits to jump, Enter to pick, Esc/q to cancel)" -ForegroundColor DarkGray
+            [void]$sb.Append("$ESC[90m  (type digits / Up-Down to move, Enter to pick, Esc/q to cancel)${scroll}$ESC[0m$ESC[K`r`n")
         }
+        $linesThisFrame++
         if ($AllowAll) {
-            Write-Host "  (press 'a' to select all)" -ForegroundColor DarkGray
+            [void]$sb.Append("$ESC[90m  (press 'a' to select all)$ESC[0m$ESC[K`r`n")
+            $linesThisFrame++
         }
+        # Pad with cleared lines if this frame drew fewer than the last one, so
+        # leftover rows from a taller previous frame don't linger.
+        while ($linesThisFrame -lt $state.lastLines) {
+            [void]$sb.Append("$ESC[K`r`n")
+            $linesThisFrame++
+        }
+
+        [void]$sb.Append("$ESC[?2026l")   # end synchronized update
+        [Console]::Out.Write($sb.ToString())
+        $state.lastLines = $linesThisFrame
+        $state.first = $false
     }
 
     try {
@@ -173,7 +232,6 @@ function _TuiSelect {
                         $idx = $n - 1
                     }
                 }
-                Write-Host -NoNewline "`r$ESC[$($Items.Count + $footerLines)A"
                 & $render
                 continue
             }
@@ -181,9 +239,14 @@ function _TuiSelect {
             switch ($k.Key) {
                 'UpArrow'   { $idx = if ($idx -gt 0) { $idx - 1 } else { $Items.Count - 1 }; $numBuf = '' }
                 'DownArrow' { $idx = if ($idx -lt $Items.Count - 1) { $idx + 1 } else { 0 };               $numBuf = '' }
+                'PageUp'    { $idx = [Math]::Max(0, $idx - $viewport); $numBuf = '' }
+                'PageDown'  { $idx = [Math]::Min($Items.Count - 1, $idx + $viewport); $numBuf = '' }
                 'Home'      { $idx = 0; $numBuf = '' }
                 'End'       { $idx = $Items.Count - 1; $numBuf = '' }
                 'Enter'     { $sel = $Items[$idx]; $numBuf = '' }
+                'C'         {
+                    if ($k.Modifiers -band [ConsoleModifiers]::Control) { $cancel = $true }
+                }
                 'Escape'    {
                     if ($numBuf) { $numBuf = '' } else { $cancel = $true }
                 }
@@ -207,10 +270,10 @@ function _TuiSelect {
             if ($sel)    { return $sel }
             if ($all)    { return ,@($Items) }
             if ($cancel) { return $null }
-            Write-Host -NoNewline "`r$ESC[$($Items.Count + $footerLines)A"
             & $render
         }
     } finally {
+        [Console]::TreatControlCAsInput = $ctrlCWas
         [Console]::CursorVisible = $cursorWasVisible
         Write-Host ""
     }
@@ -384,15 +447,43 @@ function remove-java {
 # gets pointed at a versioned subdir by add-ziti.
 
 function add-ziti {
-    # Add a versioned ziti binary dir to PATH.
-    # Layout expected: $env:ZITI_HOME\v<ver>\<ziti binaries>
+    # Add a ziti binary dir to PATH.
+    #
+    # Default (no -Path): pick from $env:ZITI_HOME\v<ver>\... layout.
     #   - 0 versions:  fall back to $env:ZITI_HOME itself (legacy / flat layout)
     #   - 1 version:   use it silently
     #   - N versions:  TUI picker; -Version <name> bypasses the prompt
-    param([string]$Version)
+    #
+    # -Path <p> (positional): use an arbitrary location instead. Accepts either
+    #   the ziti.exe itself or the directory containing it. Skips $env:ZITI_HOME
+    #   entirely. Example:
+    #     add-ziti C:\tools\ziti-1.2.3\ziti.exe
+    #     add-ziti C:\tools\ziti-1.2.3
+    param(
+        [Parameter(Position=0)] [string]$Path,
+        [string]$Version
+    )
+
+    if ($Path) {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            Write-Host "path not found: $Path" -ForegroundColor Yellow
+            return
+        }
+        $item = Get-Item -LiteralPath $Path
+        $dir  = if ($item.PSIsContainer) { $item.FullName } else { Split-Path -Parent $item.FullName }
+        if (-not (Test-Path -LiteralPath (Join-Path $dir 'ziti.exe'))) {
+            Write-Host "no ziti.exe in '$dir' -- not adding to PATH" -ForegroundColor Yellow
+            return
+        }
+        $env:ZITI_DEFAULT = $dir
+        update-path -EnvVarName ZITI_DEFAULT -First
+        Write-Host "ziti -> $env:ZITI_DEFAULT" -ForegroundColor Green
+        return
+    }
 
     if (-not (Test-Path $env:ZITI_HOME)) {
         Write-Host "ziti home '$env:ZITI_HOME' not found -- nothing to add" -ForegroundColor Yellow
+        Write-Host "  tip: pass an explicit path: add-ziti <path-to-ziti.exe-or-its-dir>" -ForegroundColor DarkGray
         return
     }
 

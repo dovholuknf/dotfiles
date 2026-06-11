@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ATRIUM_PERM_GATE": "on"
+  },
   "permissions": {
     "allow": [
       "Bash(ls:*)",
@@ -110,6 +113,7 @@
       "Read(/e/**)"
     ]
   },
+  "model": "sonnet",
   "hooks": {
     "PostToolUse": [],
     "PreToolUse": [
@@ -119,7 +123,7 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/atrium-perm-hook.ps1",
-            "timeout": 600
+            "timeout": 86400
           },
           {
             "type": "command",

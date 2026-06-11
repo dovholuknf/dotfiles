@@ -2878,9 +2878,15 @@ switch ($Command) {
                     if ($byDir.Count -eq 1) {
                         $b = $byDir[0]
                         Write-Color "  no branch named '$branchFilter' -- found a worktree dir with that name holding branch '$($b.Branch)'" Yellow
-                        $r = Read-Host "  use that worktree? (Y/n)"
-                        if ([string]::IsNullOrWhiteSpace($r) -or $r -match '^[Yy]') {
+                        # -y (and -Force, which already commits to acting) auto-accepts this name-ambiguity prompt.
+                        if ($y -or $Force) {
+                            Write-Color "  using that worktree (auto-accepted via -y/-Force)" DarkGray
                             $filtered = $byDir
+                        } else {
+                            $r = Read-Host "  use that worktree? (Y/n)"
+                            if ([string]::IsNullOrWhiteSpace($r) -or $r -match '^[Yy]') {
+                                $filtered = $byDir
+                            }
                         }
                     } elseif ($byDir.Count -gt 1) {
                         Write-Color "  no branch named '$branchFilter' -- multiple worktree dirs share that leaf name; type the full branch name to disambiguate" Yellow
@@ -2899,9 +2905,9 @@ switch ($Command) {
             # ACTIVE/DIRTY -- they're not getting touched, no need to
             # narrate them. If a branch filter was passed and yields only a
             # non-prunable hit, say so explicitly.
-            # -Force opens the door to DIRTY too. For safety, -Force without
-            # -y still requires the per-row Y/n prompt.
-            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY') } else { @('PRUNE') }
+            # -Force opens the door to DIRTY and (with confirmation) ACTIVE too.
+            # For safety, -Force without -y still requires the per-row Y/n prompt.
+            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','ACTIVE') } else { @('PRUNE') }
             $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses })
             if ($branchFilter -and -not $prunable -and $filterMatchedWorktree) {
                 # Only fire when we DID find a worktree, but its status isn't in
@@ -2914,8 +2920,6 @@ switch ($Command) {
                     # Default is N because we're about to destroy real local content.
                     $r = if ($y) { 'y' } else { Read-Host "  delete DIRTY worktree '$branchFilter' anyway? (lose local content) (y/N)" }
                     if ($r -match '^[Yy]$') {
-                        # Synthesize the same path as -Force would have taken: re-run
-                        # the prunable filter with DIRTY allowed.
                         $prunable = @($statuses | Where-Object { $_.Status -in @('PRUNE','DIRTY') })
                         $Force    = $true
                     } else {
@@ -2943,6 +2947,25 @@ switch ($Command) {
                     'PRUNE'            {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Red
                         $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
+                        if ($ok) {
+                            _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
+                            & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
+                            $gone = _ForceRemoveWorktreeDir $wt.Path
+                            if ($gone) { Write-Color "                    removed." DarkGray }
+                            _CleanupWorktreeMetadata $wt.Path
+                            if (-not $gone) {
+                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
+                                Write-Color "                    likely cause: a shell, IDE (GoLand / VS Code), or Explorer window has it open" DarkGray
+                                Write-Color "                    'cd' that shell elsewhere, close the IDE project, then 'gwt prune $($wt.Branch) -Force' again" DarkGray
+                            }
+                        }
+                    }
+                    'ACTIVE' {
+                        # Reached only when -Force is set. The branch has an upstream
+                        # and is otherwise healthy; default prompt to N because the user
+                        # may have just typo'd the branch name.
+                        Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Yellow
+                        $ok = $y -or (($r = Read-Host "  -Force: delete ACTIVE worktree '$($wt.Branch)' (branch keeps its upstream; worktree dir is removed)? (y/N)") -match '^[Yy]$')
                         if ($ok) {
                             _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
