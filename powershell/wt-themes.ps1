@@ -31,6 +31,16 @@
 
 $script:OriginalPSReadLineColors = $null
 
+# Map repo name (last segment of origin URL, no .git) -> theme name.
+# use-repotheme reads this to snap to the right palette for the current repo.
+$script:RepoThemes = @{
+    'ziti-doc' = 'ocean-deep'
+    'ziti-sdk-c' = 'neon-grape'
+    'ziti'              = 'teal-dusk'
+    'ziti-tunnel-sdk-c'  = 'gruvbox-dark'
+    'desktop-edge-win'  = 'dracula'
+}
+
 function script:_IsHex([string]$Hex) {
     $Hex -match '^#[0-9a-fA-F]{6}$'
 }
@@ -177,6 +187,7 @@ function Set-Theme {
     #   Set-Theme tangent          -- by name (substring / prefix tolerant)
     #   Set-Theme 6                -- by 1-based index into the sorted list
     #   Set-Theme -Tour            -- walk through every theme, Enter between each
+    #   Set-Theme -UseRepoTheme    -- apply the configured default for the current repo
     #   Set-Theme @{ ... }         -- by inline hashtable (custom test theme)
     #   $myTheme | Set-Theme       -- pipeline
     [CmdletBinding(DefaultParameterSetName = 'ByName')]
@@ -196,9 +207,73 @@ function Set-Theme {
         [Parameter(ParameterSetName='ByName')] [switch]$Demo,
         [Parameter(ParameterSetName='ByName')] [switch]$Palette,
         [Parameter(ParameterSetName='ByName')] [switch]$Sample,
-        [Parameter(ParameterSetName='ByName')] [switch]$All
+        [Parameter(ParameterSetName='ByName')] [switch]$All,
+        [Parameter(ParameterSetName='ByName')] [switch]$UseRepoTheme,
+        # When set, suppresses the picker fallback and all output on no-match.
+        # Used by the Prompt hook so auto-apply is silent when not in a mapped repo.
+        [Parameter(ParameterSetName='ByName')] [switch]$Quiet
     )
     process {
+        if ($UseRepoTheme) {
+            $remote = git remote get-url origin 2>$null
+            $repo   = $null
+            if ($remote) {
+                $repo = [System.IO.Path]::GetFileNameWithoutExtension(($remote -split '[/\\]')[-1])
+            } else {
+                # fallback: parse repo name from worktree path  <wtRoot>\<host>\<org>\<repo>\<branch>
+                $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
+                $here   = $pwd.ProviderPath
+                if ($here.StartsWith($wtRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $rel   = $here.Substring($wtRoot.Length).TrimStart('\/')
+                    $parts = $rel -split '[/\\]'
+                    if ($parts.Count -ge 3) { $repo = $parts[2] }
+                }
+            }
+            if (-not $repo) {
+                $global:WtThemeCanMap   = $false
+                $global:WtCurrentRepo   = $null
+                if ($Quiet) {
+                    # Write-Host "repo: (no git remote)  theme: (none -- resetting)" -ForegroundColor DarkGray
+                    if ($global:WtThemeName) { Reset-Theme }
+                } else {
+                    Write-Host "not in a git repo (or no origin remote) -- opening picker" -ForegroundColor DarkGray
+                    Set-Theme
+                }
+                return
+            }
+            $global:WtCurrentRepo = $repo
+            if ($script:RepoThemes.ContainsKey($repo)) {
+                $global:WtThemeCanMap = $false
+                $mapped = $script:RepoThemes[$repo]
+                # Write-Host "repo: $repo  theme: $mapped" -ForegroundColor DarkGray
+                if ($global:WtThemeName -ne $mapped) {
+                    Set-Theme $mapped
+                }
+            } elseif ($Quiet) {
+                $global:WtThemeCanMap = $true
+                # Write-Host "repo: $repo  theme: (none -- resetting)" -ForegroundColor DarkGray
+                if ($global:WtThemeName) { Reset-Theme }
+            } else {
+                Write-Host "no default theme for '$repo' -- opening picker" -ForegroundColor DarkGray
+                Set-Theme
+                $picked = $global:WtThemeName
+                if ($picked) {
+                    $r = (Read-Host "  save '$picked' as default theme for '$repo'? (y/N)").Trim()
+                    if ($r -match '^[Yy]$') {
+                        $script:RepoThemes[$repo] = $picked
+                        $wtFile = Join-Path $PSScriptRoot 'wt-themes.ps1'
+                        $content = Get-Content $wtFile -Raw
+                        $entry   = "    '$repo' = '$picked'"
+                        $content = $content -replace `
+                            '(\$script:RepoThemes\s*=\s*@\{)', `
+                            "`$1`n$entry"
+                        Set-Content $wtFile -Value $content -Encoding UTF8 -NoNewline
+                        Write-Host "  saved to wt-themes.ps1" -ForegroundColor Green
+                    }
+                }
+            }
+            return
+        }
         if ($Tour) {
             $mode = if     ($All)     { 'All' }
                     elseif ($Palette) { 'Palette' }
@@ -232,9 +307,23 @@ function Set-Theme {
         if (-not $Name) {
             $sorted = @($script:WtThemes.Keys | Sort-Object)
             if (Get-Command _TuiSelect -ErrorAction SilentlyContinue) {
-                $prompt = "choose theme (Up/Down + Enter, Esc/q to cancel)`n" +
+                # Build reverse map theme -> repos so the picker can annotate each row.
+                $maxLen = ($sorted | Measure-Object -Property Length -Maximum).Maximum
+                $themeToRepos = @{}
+                foreach ($kv in $script:RepoThemes.GetEnumerator()) {
+                    if (-not $themeToRepos.ContainsKey($kv.Value)) { $themeToRepos[$kv.Value] = @() }
+                    $themeToRepos[$kv.Value] += $kv.Key
+                }
+                $themeLabel = {
+                    param($n)
+                    if ($themeToRepos.ContainsKey($n)) {
+                        $n.PadRight($maxLen) + '    [' + ($themeToRepos[$n] -join ', ') + ']'
+                    } else { $n }
+                }
+                $active = if ($global:WtThemeName) { "  [active: $($global:WtThemeName)]" } else { '' }
+                $prompt = "choose theme (Up/Down + Enter, Esc/q to cancel)${active}`n" +
                           "  tip: 'Set-Theme -Tour' walks every theme; add -Demo / -Palette / -Sample / -All to pick the preview style"
-                $picked = _TuiSelect -Items $sorted -Prompt $prompt
+                $picked = _TuiSelect -Items $sorted -Prompt $prompt -DisplayScript $themeLabel
                 if (-not $picked) {
                     Write-Host "no selection" -ForegroundColor Yellow
                     return
@@ -272,10 +361,20 @@ function Set-Theme {
                 Write-Host "be more specific or run 'Set-Theme' with no args for the picker." -ForegroundColor DarkGray
                 return
             } else {
-                Write-Host "available themes:" -ForegroundColor DarkGray
-                foreach ($k in $sortedThemes) { Write-Host "  - $k" -ForegroundColor DarkGray }
-                Write-Host "unknown theme: '$Name' -- no near match" -ForegroundColor Red
-                return
+                Write-Host "unknown theme: '$Name' -- no near match. opening picker." -ForegroundColor Red
+                $maxLen2 = ($sortedThemes | Measure-Object -Property Length -Maximum).Maximum
+                $t2r = @{}
+                foreach ($kv in $script:RepoThemes.GetEnumerator()) {
+                    if (-not $t2r.ContainsKey($kv.Value)) { $t2r[$kv.Value] = @() }
+                    $t2r[$kv.Value] += $kv.Key
+                }
+                $label2 = { param($n); if ($t2r.ContainsKey($n)) { $n.PadRight($maxLen2) + '    [' + ($t2r[$n] -join ', ') + ']' } else { $n } }
+                $active = if ($global:WtThemeName) { "  [active: $($global:WtThemeName)]" } else { '' }
+                $prompt = "choose theme (Up/Down + Enter, Esc/q to cancel)${active}`n" +
+                          "  tip: 'Set-Theme -Tour' walks every theme; add -Demo / -Palette / -Sample / -All to pick the preview style"
+                $picked = _TuiSelect -Items $sortedThemes -Prompt $prompt -DisplayScript $label2
+                if (-not $picked) { Write-Host "no selection" -ForegroundColor Yellow; return }
+                $Name = $picked
             }
         }
         $script:_PendingThemeName = $Name
@@ -366,6 +465,7 @@ function Get-Theme {
     return $name
 }
 
+
 function Reset-Theme {
     for ($i = 0; $i -lt 16; $i++)    { _ResetOsc 104 $i }
     for ($i = 232; $i -lt 256; $i++) { _ResetOsc 104 $i }
@@ -382,6 +482,7 @@ function Reset-Theme {
 
     $global:WtLabel      = $null
     $global:CurrentTheme = $null
+    $global:WtThemeName  = $null
 }
 
 # ── palettes ──────────────────────────────────────────────────────────────────
@@ -555,7 +656,7 @@ $theme_solarized_dark = @{
 $theme_gruvbox_dark = @{
     label='gruvbox-dark'; bg='#282828'; fg='#ebdbb2'; cursor='#fe8019'
     sel_bg='#504945'; sel_fg='#ebdbb2'
-    ansi=@('#1d2021','#cc241d','#98971a','#d79921','#458588','#b16286','#689d6a','#a89984',
+    ansi=@('#1d2021','#e05c4f','#98971a','#d79921','#458588','#b16286','#689d6a','#a89984',
            $null,    '#fb4934','#b8bb26','#fabd2f','#83a598','#d3869b','#8ec07c',$null)
 }
 

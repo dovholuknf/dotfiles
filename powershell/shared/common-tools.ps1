@@ -494,20 +494,35 @@ function add-ziti {
                       $parts | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { $_ } }
                   }} -Descending)
 
-    if (-not $versions.Count) {
+    # Prepend any build* dirs under $PWD that contain ziti.exe so a local build
+    # floats to the top of the picker pre-highlighted.
+    $localBuilds = @(Get-ChildItem $PWD -Directory -Filter 'build*' -ErrorAction SilentlyContinue |
+                     Where-Object { Test-Path (Join-Path $_.FullName 'ziti.exe') })
+    $allVersions = @($localBuilds) + @($versions)
+
+    if (-not $allVersions.Count) {
         $env:ZITI_DEFAULT = $env:ZITI_HOME
     } elseif ($Version) {
-        $hit = $versions | Where-Object Name -ieq $Version | Select-Object -First 1
+        $hit = $allVersions | Where-Object Name -ieq $Version | Select-Object -First 1
         if (-not $hit) {
-            Write-Host "version '$Version' not found in $env:ZITI_HOME -- available:" -ForegroundColor Yellow
-            $versions | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor DarkGray }
+            Write-Host "version '$Version' not found -- available:" -ForegroundColor Yellow
+            $allVersions | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor DarkGray }
             return
         }
         $env:ZITI_DEFAULT = $hit.FullName
-    } elseif ($versions.Count -eq 1) {
-        $env:ZITI_DEFAULT = $versions[0].FullName
+    } elseif ($allVersions.Count -eq 1) {
+        $env:ZITI_DEFAULT = $allVersions[0].FullName
     } else {
-        $pick = _TuiSelect -Items $versions -Prompt "choose ziti version (Up/Down + Enter, Esc to cancel):" -DisplayProperty 'Name'
+        $cwdNorm = $PWD.Path.TrimEnd('\').ToLower()
+        $label = {
+            param($d)
+            $isLocal = $d.FullName.ToLower().StartsWith($cwdNorm)
+            if ($isLocal) { "$($d.Name)  (local)" } else { $d.Name }
+        }
+        $pick = _TuiSelect -Items $allVersions `
+                    -Prompt "choose ziti version (Up/Down + Enter, Esc to cancel):" `
+                    -DisplayScript $label `
+                    -DefaultIndex 0
         if (-not $pick) { Write-Host "cancelled" -ForegroundColor Yellow; return }
         $env:ZITI_DEFAULT = $pick.FullName
     }

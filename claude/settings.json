@@ -1,9 +1,10 @@
 {
   "env": {
-    "ATRIUM_PERM_GATE": "on"
+    "_ATRIUM_PERM_GATE": "on"
   },
   "permissions": {
     "allow": [
+      "Bash(ziti:*)",
       "Bash(ls:*)",
       "Bash(ls *)",
       "Bash(/usr/bin/ls:*)",
@@ -44,10 +45,14 @@
       "Bash(git ls-remote *)",
       "Bash(mkdir:*)",
       "Bash(cp:*)",
+      "Bash(curl:*)",
       "Bash(mv:*)",
       "Bash(timeout:*)",
       "Bash(sleep:*)",
       "Bash(go mod:*)",
+      "Bash(go build:*)",
+      "Bash(go *)",
+      "Bash(gofmt *)",
       "Bash(cmake -S*)",
       "Bash(cmake -B*)",
       "Bash(cmake --preset*)",
@@ -65,7 +70,6 @@
       "Bash(xargs grep :*)",
       "Bash(ziti:*)",
       "Bash(ssh.exe *)",
-      "Bash(go build:*)",
       "Bash(/v/work/tools/go/current/bin/go build:*)",
       "Read(//c/temp/**)",
       "Read(//c/users/claude/**)",
@@ -113,7 +117,6 @@
       "Read(/e/**)"
     ]
   },
-  "model": "sonnet",
   "hooks": {
     "PostToolUse": [],
     "PreToolUse": [

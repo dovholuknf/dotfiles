@@ -581,7 +581,8 @@ function _SetGwtCwdHint {
     param([string]$Path)
     if (-not $Path) { return }
     try {
-        $hintFile = Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt"
+        $hintFile = if ($env:GWT_HINT_FILE) { $env:GWT_HINT_FILE } `
+                    else { Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt" }
         Set-Content -Path $hintFile -Value $Path -Encoding UTF8 -NoNewline
     } catch {}
 }
@@ -2907,7 +2908,7 @@ switch ($Command) {
             # non-prunable hit, say so explicitly.
             # -Force opens the door to DIRTY and (with confirmation) ACTIVE too.
             # For safety, -Force without -y still requires the per-row Y/n prompt.
-            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','ACTIVE') } else { @('PRUNE') }
+            $eligibleStatuses = if ($Force) { @('PRUNE','DIRTY','ACTIVE','ACTIVE-REMOTE-GONE') } else { @('PRUNE') }
             $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses })
             if ($branchFilter -and -not $prunable -and $filterMatchedWorktree) {
                 # Only fire when we DID find a worktree, but its status isn't in
@@ -2927,6 +2928,10 @@ switch ($Command) {
                         Write-Color "    -> gwt prune $branchFilter -Force   (skips this prompt)" DarkGray
                         Write-Color "    -> gwt rm $branchFilter             (deletes regardless of state)" DarkGray
                     }
+                } elseif ($actualStatus -eq 'ACTIVE-REMOTE-GONE' -and -not $Force) {
+                    Write-Color "    remote ref deleted but branch has commits not in main -- add -Force to delete anyway" DarkGray
+                    Write-Color "    -> gwt prune $branchFilter -Force   (prompts before removing)" DarkGray
+                    Write-Color "    -> gwt rm $branchFilter             (deletes regardless of state)" DarkGray
                 } else {
                     Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
                 }
@@ -2954,9 +2959,8 @@ switch ($Command) {
                             if ($gone) { Write-Color "                    removed." DarkGray }
                             _CleanupWorktreeMetadata $wt.Path
                             if (-not $gone) {
-                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
-                                Write-Color "                    likely cause: a shell, IDE (GoLand / VS Code), or Explorer window has it open" DarkGray
-                                Write-Color "                    'cd' that shell elsewhere, close the IDE project, then 'gwt prune $($wt.Branch) -Force' again" DarkGray
+                                Write-Color "                    still on disk -- this shell will cd to the main clone now" Yellow
+                                Write-Color "                    close any IDE or Explorer windows open there, then re-run the same command" DarkGray
                             }
                         }
                     }
@@ -2973,9 +2977,26 @@ switch ($Command) {
                             if ($gone) { Write-Color "                    removed." DarkGray }
                             _CleanupWorktreeMetadata $wt.Path
                             if (-not $gone) {
-                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
-                                Write-Color "                    likely cause: a shell, IDE (GoLand / VS Code), or Explorer window has it open" DarkGray
-                                Write-Color "                    'cd' that shell elsewhere, close the IDE project, then 'gwt prune $($wt.Branch) -Force' again" DarkGray
+                                Write-Color "                    still on disk -- this shell will cd to the main clone now" Yellow
+                                Write-Color "                    close any IDE or Explorer windows open there, then re-run the same command" DarkGray
+                            }
+                        }
+                    }
+                    'ACTIVE-REMOTE-GONE' {
+                        # Reached only when -Force is set. Remote ref is gone and the branch
+                        # has commits not in main -- those commits will be lost.
+                        Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" DarkYellow
+                        Write-Color "                    $($wt.Reason)" DarkYellow
+                        $ok = $y -or (($r = Read-Host "  -Force: delete '$($wt.Branch)' and lose its unmerged commits? (y/N)") -match '^[Yy]$')
+                        if ($ok) {
+                            _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
+                            & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
+                            $gone = _ForceRemoveWorktreeDir $wt.Path
+                            if ($gone) { Write-Color "                    removed." DarkGray }
+                            _CleanupWorktreeMetadata $wt.Path
+                            if (-not $gone) {
+                                Write-Color "                    still on disk -- this shell will cd to the main clone now" Yellow
+                                Write-Color "                    close any IDE or Explorer windows open there, then re-run the same command" DarkGray
                             }
                         }
                     }
@@ -2995,9 +3016,8 @@ switch ($Command) {
                             if ($gone) { Write-Color "                    removed." DarkGray }
                             _CleanupWorktreeMetadata $wt.Path
                             if (-not $gone) {
-                                Write-Color "                    WARNING: '$($wt.Path)' still on disk" Red
-                                Write-Color "                    likely cause: a shell, IDE (GoLand / VS Code), or Explorer window has it open" DarkGray
-                                Write-Color "                    'cd' that shell elsewhere, close the IDE project, then 'gwt prune $($wt.Branch) -Force' again" DarkGray
+                                Write-Color "                    still on disk -- this shell will cd to the main clone now" Yellow
+                                Write-Color "                    close any IDE or Explorer windows open there, then re-run the same command" DarkGray
                             }
                         }
                     }
