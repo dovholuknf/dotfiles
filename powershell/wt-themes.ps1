@@ -34,6 +34,7 @@ $script:OriginalPSReadLineColors = $null
 # Map repo name (last segment of origin URL, no .git) -> theme name.
 # use-repotheme reads this to snap to the right palette for the current repo.
 $script:RepoThemes = @{
+    'dotfiles' = 'tangent'
     'ziti-doc' = 'ocean-deep'
     'ziti-sdk-c' = 'neon-grape'
     'ziti'              = 'teal-dusk'
