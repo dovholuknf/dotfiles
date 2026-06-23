@@ -34,8 +34,10 @@ $script:OriginalPSReadLineColors = $null
 # Map repo name (last segment of origin URL, no .git) -> theme name.
 # use-repotheme reads this to snap to the right palette for the current repo.
 $script:RepoThemes = @{
+    'ziti-sdk-py' = 'deep-ocean'
+    'ziti-sdk-csharp' = 'nord'
     'dotfiles' = 'tangent'
-    'ziti-doc' = 'ocean-deep'
+    'ziti-doc' = 'imperial-purple'
     'ziti-sdk-c' = 'neon-grape'
     'ziti'              = 'teal-dusk'
     'ziti-tunnel-sdk-c'  = 'gruvbox-dark'
@@ -182,6 +184,26 @@ function script:_ValidateTheme([hashtable]$t) {
     }
 }
 
+function script:_SaveRepoThemeMapping {
+    # Persist a repo -> theme mapping into the $script:RepoThemes block of this
+    # file. Replaces an existing line for the repo if present, else inserts a new
+    # one right after the opening brace. Updates the in-memory map too.
+    param([string]$Repo, [string]$Theme)
+    $script:RepoThemes[$Repo] = $Theme
+    $wtFile  = Join-Path $PSScriptRoot 'wt-themes.ps1'
+    $content = Get-Content $wtFile -Raw
+    $esc     = [regex]::Escape($Repo)
+    $newLine = "    '$Repo' = '$Theme'"
+    $existing = "(?m)^\s*'$esc'\s*=\s*'[^']*'\s*$"
+    if ($content -match $existing) {
+        $content = [regex]::Replace($content, $existing, $newLine)
+    } else {
+        $content = $content -replace '(\$script:RepoThemes\s*=\s*@\{)', "`$1`n$newLine"
+    }
+    Set-Content $wtFile -Value $content -Encoding UTF8 -NoNewline
+    Write-Host "  saved '$Repo' = '$Theme' to wt-themes.ps1" -ForegroundColor Green
+}
+
 function Set-Theme {
     # Apply a theme.
     #   Set-Theme                  -- no args, interactive arrow-key / digit picker
@@ -204,6 +226,7 @@ function Set-Theme {
         # -RestoreOnExit). -Demo/-Palette/-Sample/-All pick the preview mode.
         [Parameter(ParameterSetName='ByName')]
         [switch]$Tour,
+        [Parameter(ParameterSetName='ByName')] [string]$Filter,
 
         [Parameter(ParameterSetName='ByName')] [switch]$Demo,
         [Parameter(ParameterSetName='ByName')] [switch]$Palette,
@@ -243,34 +266,40 @@ function Set-Theme {
                 return
             }
             $global:WtCurrentRepo = $repo
-            if ($script:RepoThemes.ContainsKey($repo)) {
-                $global:WtThemeCanMap = $false
-                $mapped = $script:RepoThemes[$repo]
-                # Write-Host "repo: $repo  theme: $mapped" -ForegroundColor DarkGray
-                if ($global:WtThemeName -ne $mapped) {
-                    Set-Theme $mapped
+            $mapped = if ($script:RepoThemes.ContainsKey($repo)) { $script:RepoThemes[$repo] } else { $null }
+            if ($Quiet) {
+                # Auto-apply path (prompt hook). Apply the mapping or reset; never prompt.
+                if ($mapped) {
+                    $global:WtThemeCanMap = $false
+                    if ($global:WtThemeName -ne $mapped) { Set-Theme $mapped }
+                } else {
+                    $global:WtThemeCanMap = $true
+                    if ($global:WtThemeName) { Reset-Theme }
                 }
-            } elseif ($Quiet) {
-                $global:WtThemeCanMap = $true
-                # Write-Host "repo: $repo  theme: (none -- resetting)" -ForegroundColor DarkGray
-                if ($global:WtThemeName) { Reset-Theme }
+                return
+            }
+            # Manual path: always open the picker so the user can set OR change the
+            # mapping, even when one already exists. Loop on 'pick again' so the
+            # user can audition themes without re-running the command.
+            $global:WtThemeCanMap = $false
+            if ($mapped) {
+                Write-Host "  '$repo' currently maps to '$mapped' -- pick a new theme (Esc to keep)" -ForegroundColor DarkGray
             } else {
-                Write-Host "no default theme for '$repo' -- opening picker" -ForegroundColor DarkGray
+                Write-Host "  no default theme for '$repo' -- pick one (Esc to skip)" -ForegroundColor DarkGray
+            }
+            while ($true) {
                 Set-Theme
                 $picked = $global:WtThemeName
-                if ($picked) {
-                    $r = (Read-Host "  save '$picked' as default theme for '$repo'? (y/N)").Trim()
-                    if ($r -match '^[Yy]$') {
-                        $script:RepoThemes[$repo] = $picked
-                        $wtFile = Join-Path $PSScriptRoot 'wt-themes.ps1'
-                        $content = Get-Content $wtFile -Raw
-                        $entry   = "    '$repo' = '$picked'"
-                        $content = $content -replace `
-                            '(\$script:RepoThemes\s*=\s*@\{)', `
-                            "`$1`n$entry"
-                        Set-Content $wtFile -Value $content -Encoding UTF8 -NoNewline
-                        Write-Host "  saved to wt-themes.ps1" -ForegroundColor Green
-                    }
+                if (-not $picked -or $picked -eq $mapped) { break }
+                $verb = if ($mapped) { "change '$repo' from '$mapped' to" } else { "save" }
+                $r = (Read-Host "  $verb '$picked' for '$repo'? (y)es / (a)gain / (N)o").Trim()
+                if ($r -match '^[Yy]') {
+                    _SaveRepoThemeMapping -Repo $repo -Theme $picked
+                    break
+                } elseif ($r -match '^[Aa]') {
+                    continue   # reopen the picker
+                } else {
+                    break
                 }
             }
             return
@@ -280,7 +309,9 @@ function Set-Theme {
                     elseif ($Palette) { 'Palette' }
                     elseif ($Sample)  { 'Sample' }
                     else              { 'Demo' }
-            Tour-Themes -Mode $mode
+            $tourArgs = @{ Mode = $mode }
+            if ($Filter) { $tourArgs['Filter'] = $Filter }
+            Tour-Themes @tourArgs
             return
         }
         if ($PSCmdlet.ParameterSetName -eq 'ByObject' -and $Theme) {
@@ -1078,19 +1109,18 @@ function Tour-Themes {
 
     for ($i = 0; $i -lt $names.Count; $i++) {
         $n = $names[$i]
-        Write-Host ""
-        Write-Host ("===== [{0}/{1}] {2} =====" -f ($i+1), $names.Count, $n) -ForegroundColor Cyan
         Set-Theme $n
+        Clear-Host
+        Write-Host ("===== [{0}/{1}] {2} =====" -f ($i+1), $names.Count, $n) -ForegroundColor Cyan
         switch ($Mode) {
             'Demo'    { Show-Theme -Demo }
             'Palette' { Show-Theme -Palette }
             'Sample'  { Show-Theme -Sample }
             'All'     { Show-Theme -All }
         }
-        if ($i -lt ($names.Count - 1)) {
-            $r = Read-Host "Enter for next, q to quit"
-            if ($r -ieq 'q') { break }
-        }
+        $last = $i -eq ($names.Count - 1)
+        $r = Read-Host $(if ($last) { "Enter to finish" } else { "Enter for next, q to quit" })
+        if ($r -ieq 'q') { break }
     }
 
     if ($RestoreOnExit -and $original) {

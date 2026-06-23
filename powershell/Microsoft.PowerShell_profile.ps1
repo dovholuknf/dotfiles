@@ -176,6 +176,7 @@ if (Test-Path($ChocolateyProfile)) {
 }
 
 $script:_LastThemeCwd = $null
+$script:_LastHintRepo = $null
 Function Prompt () {
     $cwd = $pwd.ProviderPath
     if ($cwd -ne $script:_LastThemeCwd) {
@@ -221,7 +222,9 @@ Function Prompt () {
     Write-Host $env:COMPUTERNAME -NoNewLine -ForegroundColor "White"
     Write-Host ": " -NoNewLine
     Write-Host $pwd.ProviderPath -ForegroundColor "Green"
-    if (-not $global:WtThemeName -and $global:WtThemeCanMap) {
+    $repoChanged = $global:WtCurrentRepo -ne $script:_LastHintRepo
+    $script:_LastHintRepo = $global:WtCurrentRepo
+    if (-not $global:WtThemeName -and $global:WtThemeCanMap -and $repoChanged) {
         Write-Host "  hint: Set-Theme -UseRepoTheme" -ForegroundColor DarkGray
     }
     Write-Host "PS>" -NoNewLine -ForegroundColor "DarkGray"
@@ -284,6 +287,7 @@ dedupe-path
 
 
 . $env:DOTFILES\powershell\wt-themes.ps1
+. $env:DOTFILES\powershell\wt-themes-rainbow.ps1
 . $env:DOTFILES\powershell\gwt-session-registry.ps1
 . $env:DOTFILES\powershell\claude-shell.ps1
 

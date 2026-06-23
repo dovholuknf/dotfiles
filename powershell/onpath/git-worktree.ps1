@@ -286,13 +286,23 @@ function Ensure-RepoClonedAndUpdated {
     param([string]$Org, [string]$Repo, [string]$Src, [string]$RemoteHost = 'github.com')
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Src)) | Out-Null
     if (-not (Test-Path $Src)) {
+        # No local clone: we cannot proceed offline, so this stays fatal.
         $url = "git@${RemoteHost}:$Org/$Repo.git"
         & git clone $url $Src 2>&1
         if ($LASTEXITCODE -ne 0) { throw "clone failed: $url" }
     }
-    Invoke-Git $Src @('fetch','origin','--prune')
-    Invoke-Git $Src @('checkout','main')
-    Invoke-Git $Src @('pull','--ff-only','origin','main')
+    # Repo already on disk -- updating is best-effort. A fetch/pull failure
+    # (offline, VPN down, auth) shouldn't block working on what's local. Ask.
+    try {
+        Invoke-Git $Src @('fetch','origin','--prune')
+        Invoke-Git $Src @('checkout','main')
+        Invoke-Git $Src @('pull','--ff-only','origin','main')
+    } catch {
+        Write-Color "  could not update from origin: $($_.Exception.Message)" Yellow
+        $r = if ($script:y) { 'y' } else { Read-Host "  continue with the local copy as-is? (Y/n)" }
+        if ($r -match '^[Nn]') { throw "aborted -- repo not updated" }
+        Write-Color "  continuing with local copy (may be stale)" DarkGray
+    }
 }
 
 function Test-LocalBranchExists {
@@ -844,7 +854,7 @@ if ($Command -match '^https?://') {
     #   2. <host>/<org>/<repo>             -> 'clone' (parse host/org/repo,
     #                                                 clone if missing, open)
     if ($Command -match '^https?://[^/]+/[^/]+/[^/]+/pull/\d+') {
-        $Target  = $Command
+        $Target  = $Command -replace '(?<=pull/\d+)(/.*)?$',''  # strip /changes, /files, etc.
         $Command = 'pr'
     } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)/issues/(?<num>\d+)') {
         $script:RemoteHost = $Matches.host
@@ -957,7 +967,22 @@ try {
 switch ($Command) {
 
     'new' {
-        if (-not $Target)      { throw "'new' requires a branch name" }
+        if (-not $Target) { throw "'new' requires a branch name" }
+        if ($Target -match '^https?://[^/]+/[^/]+/[^/]+/pull/\d+') {
+            $prUrl = $Target -replace '(?<=pull/\d+)(/.*)?$',''
+            $rest  = if ($y) { @('-y') } else { @() }
+            & $PSCommandPath $prUrl @rest
+            break
+        }
+        if ($Target -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)/issues/(?<num>\d+)') {
+            $script:RemoteHost = $Matches.host
+            $script:Org        = $Matches.org
+            $script:Repo       = $Matches.repo
+            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
+            if ($y) { $passArgs.y = $true }
+            & $PSCommandPath issue $Matches.num @passArgs
+            break
+        }
         if ($Target -eq '.')   { throw "'new' needs an explicit branch name (the '.' shortcut is only for 'gwt claude .')" }
         if ($Target -match '^\s|\s$|[\\\/:\?\*\[\]~^]') { throw "branch name '$Target' contains an illegal character" }
         $ctx = Resolve-RepoContext
@@ -2916,22 +2941,19 @@ switch ($Command) {
                 # the orphan sweep below -- it'll handle the "not found" case.
                 $actualStatus = if ($statuses.Count -eq 1) { $statuses[0].Status } else { 'unknown' }
                 Write-Color "  '$branchFilter' is $actualStatus -- prune won't touch it by default" Yellow
-                if ($actualStatus -eq 'DIRTY' -and -not $Force) {
-                    # Offer -Force inline instead of making the user re-type the command.
-                    # Default is N because we're about to destroy real local content.
-                    $r = if ($y) { 'y' } else { Read-Host "  delete DIRTY worktree '$branchFilter' anyway? (lose local content) (y/N)" }
+                if ($actualStatus -in @('ACTIVE','ACTIVE-REMOTE-GONE','DIRTY') -and -not $Force) {
+                    $warn = switch ($actualStatus) {
+                        'DIRTY'              { 'has uncommitted changes (local content will be lost)' }
+                        'ACTIVE-REMOTE-GONE' { 'has commits not in main and its remote ref is gone' }
+                        default              { 'is still active' }
+                    }
+                    $r = if ($y) { 'y' } else { Read-Host "  $warn -- force remove anyway? (y/N)" }
                     if ($r -match '^[Yy]$') {
-                        $prunable = @($statuses | Where-Object { $_.Status -in @('PRUNE','DIRTY') })
+                        $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses + $actualStatus })
                         $Force    = $true
                     } else {
                         Write-Color "    aborted -- nothing changed" DarkGray
-                        Write-Color "    -> gwt prune $branchFilter -Force   (skips this prompt)" DarkGray
-                        Write-Color "    -> gwt rm $branchFilter             (deletes regardless of state)" DarkGray
                     }
-                } elseif ($actualStatus -eq 'ACTIVE-REMOTE-GONE' -and -not $Force) {
-                    Write-Color "    remote ref deleted but branch has commits not in main -- add -Force to delete anyway" DarkGray
-                    Write-Color "    -> gwt prune $branchFilter -Force   (prompts before removing)" DarkGray
-                    Write-Color "    -> gwt rm $branchFilter             (deletes regardless of state)" DarkGray
                 } else {
                     Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
                 }
