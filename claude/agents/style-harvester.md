@@ -107,3 +107,6 @@ ones the user emphasized hardest, or that recur).
 - Do not invent quotes. Only cite the user's actual words.
 - Do not include attribution / Co-Authored-By in drafts.
 - Do not hardcode pack paths. Resolve via env var at boot.
+- Scope every Glob and search to `$DOTFILES` (or `<base>`). Never glob a parent dir like
+  `$GH_ROOT` or `**/foo.md` from above the repo. The pack lives under `$DOTFILES/agents`, so
+  there is nothing to find higher up, and searching there triggers permission prompts.
