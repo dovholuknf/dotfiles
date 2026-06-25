@@ -148,6 +148,11 @@
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-tab-title.ps1 -Title \"‼️ needs input\"",
+            "timeout": 5
           }
         ]
       },
@@ -161,6 +166,11 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-tab-title.ps1 -Title \"‼️ needs input\"",
             "timeout": 5
           }
         ]

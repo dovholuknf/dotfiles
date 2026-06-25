@@ -61,6 +61,8 @@ I consider a change finished when:
 - "you can prolly run that" / "do it" / "go" = real authorization, don't re-confirm.
 - "this sucks" / "gah" / explicit profanity = "fix it, don't defend it." Don't argue.
 - If I tell you you're verbose, believe me the first time. Cut the next reply in half.
+- Don't suggest Claude Code's `!`-prefix run-in-session trick (or similar harness features) unless I
+  ask. I did not know I wanted it and found it confusing. Hand me a normal command instead.
 
 ## Decision-making cues I send
 

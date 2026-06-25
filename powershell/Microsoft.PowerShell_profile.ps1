@@ -74,7 +74,7 @@ function gwt {
     $env:GWT_HINT_FILE = $hintFile
     if ($args.Count -ge 1 -and $args[0] -eq 'cd') {
         $p = & "$env:ON_PATH\git-worktree.ps1" @args
-        if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p }
+        if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p; [Environment]::CurrentDirectory = $p }
     } else {
         & "$env:ON_PATH\git-worktree.ps1" @args
     }
@@ -83,7 +83,9 @@ function gwt {
     if (Test-Path $hintFile) {
         $newCwd = (Get-Content $hintFile -Raw -ErrorAction SilentlyContinue).Trim()
         Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
-        if ($newCwd -and (Test-Path $newCwd)) { Set-Location $newCwd }
+        # Sync the real process cwd, not just $PWD: a shell whose Win32 working
+        # directory is a just-removed worktree keeps an OS handle on it open.
+        if ($newCwd -and (Test-Path $newCwd)) { Set-Location $newCwd; [Environment]::CurrentDirectory = $newCwd }
     }
 }
 

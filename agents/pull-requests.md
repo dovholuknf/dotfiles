@@ -47,9 +47,9 @@ Rules:
 
 ## Commit messages
 
-- Subject line: short, imperative, lowercase, no trailing period. Same rules as PR title.
-- Body (optional but encouraged for non-trivial commits): explain WHY, not WHAT. The diff shows what.
-  Wrap at ~72 chars. Reference issues if relevant. Don't reference the PR number (the PR didn't exist
+- ONE LINE only. Subject line, no body, no bullets, ever. Even a commit that touches several things
+  gets a single imperative line. Short, lowercase, no trailing period. Same rules as PR title.
+- Reference the issue in that one line if relevant. Don't reference the PR number (the PR didn't exist
   when the commit landed).
 - No `Co-Authored-By:` trailers. None.
 - One logical change per commit. If you find yourself writing "and also..." in the subject, split.

@@ -52,6 +52,7 @@ param(
     # LastSpawnedAt wins). Targets ledger cruft regardless of lifecycle tag.
     [switch]$IncludeDuplicates,
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
+    [switch]$Fetch,         # 'prune': force a fresh fetch, ignoring the recent-fetch cache
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
@@ -414,25 +415,102 @@ function _ChangeToMainFolder {
     }
     Write-Color "  you are inside the dir being removed -- switching to main clone at $MainPath" DarkGray
     Set-Location $MainPath
+    # Set-Location moves $PWD but NOT the process's real Win32 working directory,
+    # which is what holds an OS handle on the dir. If this shell was launched in
+    # the worktree, that handle keeps the dir locked and removal fails. Move the
+    # actual process cwd too so this shell stops locking its own target.
+    [Environment]::CurrentDirectory = $MainPath
     _SetGwtCwdHint $MainPath
 }
 
 function _ForceRemoveWorktreeDir {
     # Robust dir removal. Returns $true if gone after; $false if it persists.
-    # Steps: best-effort Remove-Item, then a second pass that clears readonly
-    # attributes on every child first (common cause of "still on disk"). Never
-    # throws -- caller decides how to surface a lingering directory.
+    # Steps: best-effort Remove-Item, then a pass that clears readonly attributes
+    # on every child first (common cause of "still on disk"), then a short retry
+    # loop for handles a just-exited process is slow to release. Never throws --
+    # caller decides how to surface a lingering directory.
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path $Path)) { return $true }
     _AssertUnderWorktreeRoot $Path
+    # If THIS process's real working directory is at/under the target, it holds an
+    # OS handle on the dir and removal will fail. $PWD is not the lock -- the Win32
+    # cwd ([Environment]::CurrentDirectory) is, and Set-Location never moves it.
+    # Drop it to the drive root so this shell stops locking its own target. gwt
+    # runs in-process with the interactive shell, so this releases that shell too.
+    $envCwd = [Environment]::CurrentDirectory
+    if ($envCwd) {
+        $e = $envCwd.Replace('/','\').TrimEnd('\').ToLower()
+        $t = $Path.Replace('/','\').TrimEnd('\').ToLower()
+        if ($e -eq $t -or $e.StartsWith("$t\")) {
+            [Environment]::CurrentDirectory = (Split-Path $Path -Qualifier) + '\'
+        }
+    }
     try { Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue } catch {}
     if (-not (Test-Path $Path)) { return $true }
-    try {
-        Get-ChildItem $Path -Recurse -Force -ErrorAction SilentlyContinue |
-            ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
-        Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {}
+    # Second pass: strip readonly attrs, then retry a few times with a short wait.
+    for ($attempt = 0; $attempt -lt 3 -and (Test-Path $Path); $attempt++) {
+        try {
+            Get-ChildItem $Path -Recurse -Force -ErrorAction SilentlyContinue |
+                ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+            Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+        } catch {}
+        if (Test-Path $Path) { Start-Sleep -Milliseconds 300 }
+    }
     return -not (Test-Path $Path)
+}
+
+function _FindFileLocksmithCli {
+    # Locate PowerToys' FileLocksmithCLI.exe. Returns $null if PowerToys isn't
+    # installed. This is the same engine the File Locksmith right-click uses.
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA\PowerToys")) {
+        if (-not $base) { continue }
+        $exe = Join-Path $base 'PowerToys\FileLocksmithCLI.exe'
+        if (Test-Path $exe) { return $exe }
+    }
+    return $null
+}
+
+function _ReportDirHolders {
+    # Name what is keeping $Path locked, using PowerToys' File Locksmith engine
+    # (Restart Manager) when present. Note: run non-elevated it only sees holders
+    # in the same user session -- a lock held by another user (or elevated) shows
+    # nothing here even though it's real.
+    param([Parameter(Mandatory)][string]$Path)
+    $winPath = $Path.Replace('/','\').TrimEnd('\')
+
+    $alive = Get-AliveSessionForPath $Path
+    if ($alive) {
+        Write-Color "    held by claude session: branch=$($alive.Branch) window=$($alive.WindowName) pid=$($alive.Pid)" Yellow
+        Write-Color "    close that tab (or 'gwt focus $($alive.Branch)' then exit), then retry" DarkGray
+    }
+
+    # File Locksmith naming is the slow part (Restart Manager scan), so ask before
+    # running it. $y auto-accepts.
+    $cli = _FindFileLocksmithCli
+    if (-not $cli) {
+        if (-not $alive) {
+            Write-Color "    install PowerToys to auto-name the locking process (File Locksmith), or" DarkGray
+            Write-Color "    check for a shell/editor/Explorer window whose folder is that worktree" DarkGray
+        }
+        return
+    }
+    $run = $script:y -or (($r = Read-Host "    run File Locksmith to name the holding process? (slow) (y/N)") -match '^[Yy]')
+    if (-not $run) { return }
+
+    $reported = $false
+    try {
+        $out  = & $cli --json $winPath 2>$null | Out-String
+        $data = $out | ConvertFrom-Json
+        foreach ($p in @($data.processes)) {
+            $reported = $true
+            Write-Color "    locked by: $($p.name) (pid $($p.pid), user $($p.user))" Yellow
+            Write-Color "    if it's safe to kill: & '$cli' --kill '$winPath'" DarkGray
+        }
+    } catch {}
+    if (-not $reported) {
+        Write-Color "    File Locksmith found no holder in this user session -- a process in" DarkGray
+        Write-Color "    another user's session or an elevated one may hold it (re-run elevated to see it)" DarkGray
+    }
 }
 
 function Remove-Worktree {
@@ -489,6 +567,45 @@ function Remove-Worktree {
     }
 }
 
+function _FetchOriginCached {
+    # Fetch origin (prune, no tags) unless it was already fetched within the TTL.
+    # The merged / remote-gone classification needs origin reasonably fresh, but
+    # not re-fetched on every gwt call. Stamp lives in .git (per-repo). -Force
+    # bypasses the cache; -NoFetch skips entirely.
+    param(
+        [Parameter(Mandatory)][string]$RepoPath,
+        [switch]$NoFetch,
+        [switch]$Force,
+        [int]$TtlSeconds = 300
+    )
+    if ($NoFetch) { Write-Color "  skipping fetch (-NoFetch)" DarkGray; return }
+    $stamp = Join-Path $RepoPath '.git\gwt-last-fetch'
+    if (-not $Force -and (Test-Path $stamp)) {
+        $age = ((Get-Date) - (Get-Item $stamp).LastWriteTime).TotalSeconds
+        if ($age -lt $TtlSeconds) {
+            Write-Color ("  origin fetched {0:N0}s ago, skipping (-Fetch to force)" -f $age) DarkGray
+            return
+        }
+    }
+    Write-Color "  fetching origin..." DarkGray
+    & git -C $RepoPath fetch --prune --no-tags origin 2>&1 | Out-Null
+    try { Set-Content -Path $stamp -Value (Get-Date).ToString('o') -ErrorAction SilentlyContinue } catch {}
+}
+
+function _GetProcMapCached {
+    # Win32_Process enumeration is ~1.9s warm. Callers in a prune loop hit this
+    # repeatedly, so cache the map for the lifetime of this gwt invocation (a
+    # fresh process per call -- liveness can't meaningfully change mid-run).
+    if ($null -eq $script:_ProcMapCache) {
+        Write-Color "  checking running processes..." DarkGray
+        $script:_ProcMapCache = @{}
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
+            $script:_ProcMapCache[[int]$_.ProcessId] = $_
+        }
+    }
+    return $script:_ProcMapCache
+}
+
 function Get-AliveSessionForPath {
     # Return the alive session-registry entry whose WorktreePath matches the given
     # path (case-insensitive, normalized). Returns $null if none. Used by destructive
@@ -497,10 +614,7 @@ function Get-AliveSessionForPath {
     $sessionDir = $script:SessionDir
     if (-not $WorktreePath -or -not (Test-Path $sessionDir)) { return $null }
     $norm = ($WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
-    $procMap = @{}
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object {
-        $procMap[[int]$_.ProcessId] = $_
-    }
+    $procMap = _GetProcMapCached
     foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
         try {
             $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
@@ -981,6 +1095,18 @@ switch ($Command) {
             $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
             if ($y) { $passArgs.y = $true }
             & $PSCommandPath issue $Matches.num @passArgs
+            break
+        }
+        # Any other URL we can pull host/org/repo from (an actions run, a blob/tree
+        # link, a settings page, whatever): we can't infer the branch, so ask for
+        # one and proceed with the detected repo context. Saves a cd to the repo.
+        if ($Target -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)(?:/.*)?$') {
+            Write-Color "  detected $($Matches.host)/$($Matches.org)/$($Matches.repo) -- but no branch in that URL" Yellow
+            $name = (Read-Host "  enter a worktree/branch name").Trim()
+            if (-not $name) { throw "no name given -- aborted" }
+            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
+            if ($y) { $passArgs.y = $true }
+            & $PSCommandPath new $name @passArgs
             break
         }
         if ($Target -eq '.')   { throw "'new' needs an explicit branch name (the '.' shortcut is only for 'gwt claude .')" }
@@ -2534,12 +2660,7 @@ switch ($Command) {
         }
         # Fetch + prune so origin/main is fresh before status detection -- otherwise
         # branches that were merged remotely show ACTIVE instead of PRUNE merged.
-        if ($NoFetch) {
-            Write-Color "skipping fetch (-NoFetch)" DarkGray
-        } else {
-            Write-Color "fetching origin @ $($ctx.Src)..." DarkGray
-            & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
-        }
+        _FetchOriginCached -RepoPath $ctx.Src -NoFetch:$NoFetch -Force:$Fetch
 
         $allStatuses = Get-WorktreeStatuses $ctx.Src | Sort-Object -Property LastCommit -Descending
         # Pin MAIN to the top, everything else in time-sorted order below.
@@ -2714,12 +2835,7 @@ switch ($Command) {
 
     'update' {
         $ctx = Resolve-RepoContext
-        if ($NoFetch) {
-            Write-Color "skipping fetch (-NoFetch)" DarkGray
-        } else {
-            Write-Color "fetching origin @ $($ctx.Src)..." DarkGray
-            & git -C $ctx.Src fetch origin --prune 2>&1 | Out-Null
-        }
+        _FetchOriginCached -RepoPath $ctx.Src -NoFetch:$NoFetch -Force:$Fetch
 
         $statuses = Get-WorktreeStatuses $ctx.Src
 
@@ -2881,15 +2997,14 @@ switch ($Command) {
             if ($reposToProcess.Count -gt 1) {
                 Write-Color "`nrepo: $repoPath" Cyan
             }
-            if (-not $NoFetch) {
-                & git -C $repoPath fetch origin --prune 2>&1 | Out-Null
-            }
+            _FetchOriginCached -RepoPath $repoPath -NoFetch:$NoFetch -Force:$Fetch
             # Clean any stale entries inside .git/worktrees/ first -- e.g. if a
             # previous prune deleted the working dir but the internal record
             # survived (or the user 'gwt new'd then twigged the branch and
             # garbage was left behind). Makes downstream detection consistent.
             & git -C $repoPath worktree prune 2>&1 | Out-Null
 
+            Write-Color "  scanning worktrees..." DarkGray
             $statuses   = Get-WorktreeStatuses $repoPath
             $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
 
@@ -2949,8 +3064,13 @@ switch ($Command) {
                     }
                     $r = if ($y) { 'y' } else { Read-Host "  $warn -- force remove anyway? (y/N)" }
                     if ($r -match '^[Yy]$') {
-                        $prunable = @($statuses | Where-Object { $_.Status -in $eligibleStatuses + $actualStatus })
+                        # $statuses is already the single filtered worktree the user
+                        # named, so prune it directly -- no need to re-filter by status.
+                        $prunable = @($statuses)
                         $Force    = $true
+                        # We just got explicit destructive consent for this one filtered
+                        # worktree. Don't make the per-row loop ask the same question again.
+                        $y        = $true
                     } else {
                         Write-Color "    aborted -- nothing changed" DarkGray
                     }
@@ -3092,7 +3212,7 @@ switch ($Command) {
                         _CleanupWorktreeMetadata $p
                         if (-not $gone) {
                             Write-Color "                    WARNING: '$p' still on disk" Red
-                            Write-Color "                    likely cause: a shell, IDE, or Explorer window has it open" DarkGray
+                            _ReportDirHolders $p
                         }
                     }
                 } elseif ($dirty -match '^fatal:') {
@@ -3106,7 +3226,7 @@ switch ($Command) {
                         _CleanupWorktreeMetadata $p
                         if (-not $gone) {
                             Write-Color "                    WARNING: '$p' still on disk" Red
-                            Write-Color "                    likely cause: a shell, IDE, or Explorer window has it open" DarkGray
+                            _ReportDirHolders $p
                         }
                     }
                 }
@@ -3116,6 +3236,23 @@ switch ($Command) {
 
             if ($branchFilter -and -not $filterMatchedWorktree -and -not $orphanMatchFound) {
                 Write-Color "  no worktree or orphan named '$branchFilter' in this repo" Yellow
+            }
+
+            # Verify: if we matched a worktree and tried to prune it, confirm the
+            # directory is actually gone. A silent survivor (file lock, open IDE)
+            # otherwise looks like success when nothing changed.
+            # Only verify when we actually attempted a removal. If the user
+            # declined the force prompt, $prunable is empty and the dir surviving
+            # is expected, not an error.
+            if ($branchFilter -and $filterMatchedWorktree -and $prunable.Count -gt 0) {
+                $survivors = @($statuses | Where-Object { $_.Path -and (Test-Path $_.Path) })
+                if ($survivors.Count) {
+                    foreach ($s in $survivors) {
+                        Write-Color "  ERROR: '$($s.Path)' still exists -- prune did not remove it" Red
+                        _ReportDirHolders $s.Path
+                    }
+                    $global:LASTEXITCODE = 1
+                }
             }
         }
     }

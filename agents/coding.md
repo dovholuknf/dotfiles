@@ -26,6 +26,8 @@ How I want code to read. Most of this is "less is more" applied to source.
 - Three similar lines is better than a premature abstraction. The pattern hasn't fully revealed itself
   yet at N=3.
 - Don't write a helper for a single caller. Inline it. When the second caller appears, then extract.
+- Same for a const used once: inline the literal, don't extract a name for a single use site. A named
+  const earns its name at the second use.
 - Don't write configuration knobs for hypotheticals. Add the knob when the second use case actually
   shows up.
 

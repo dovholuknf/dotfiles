@@ -24,6 +24,8 @@ delete the comment.
 - Narrating the line. If it says `set(ZITI_VCPKG_CACHE_PREFIX tsdk)`, do not write "set the prefix to tsdk".
 - Changelog prose. Never explain why the CHANGE was made ("we added this so builds are faster"). A file
   describes the current state, not its history. That sentence is a commit message, not a comment.
+- Narrating the development journey. No abandoned approaches, no "we used to do X", no "this is better /
+  stronger than Y" comparing to a path you didn't take. Comment what the code IS, not how you arrived at it.
 - Restating a well-named thing. If the name carries it, drop the comment, or rename the identifier.
 - Narrating the call flow or the test that exercises a function. A function comment is about the function,
   not its callers or what some test proves with it.
