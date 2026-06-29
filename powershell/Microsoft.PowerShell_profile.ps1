@@ -36,58 +36,15 @@ function remove-dotfiles_onpath { update-path -EnvVarName DOVHOLUK_ONPATH -Remov
 function add-dotagents    { update-path -EnvVarName DOTAGENTS_SCRIPTS -First }
 function remove-dotagents { update-path -EnvVarName DOTAGENTS_SCRIPTS -Remove }
 
-#aliases - get rid of overlapping ones with bash
-Remove-Item alias:curl -ErrorAction Ignore
-Remove-Item alias:mv -ErrorAction Ignore
-Remove-Item alias:cp -ErrorAction Ignore
-Remove-Item alias:rm -ErrorAction Ignore
-Remove-Item alias:ls -ErrorAction Ignore
-Remove-Item alias:diff -ErrorAction Ignore
-Remove-Item alias:find -ErrorAction Ignore
-Set-Alias -name vi -value "vim.exe"
+# alias hygiene (curl/mv/cp/rm/ls/diff/find + vi) lives in common-tools.ps1
 
-
-function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
+# shared: gwt + the common cd* shortcuts (cddev/cdgh/cdnf/cdz/cdo/cdzd/cdew/cdzet)
+# live in common-tools.ps1. clint-only navigation shortcuts:
 function cdghdov () { cd $env:GH_DOVH }
 function cdda () { cd $env:DOTAGENTS }
 function cddf () { cd $env:DOTFILES }
 function cdop () { cd $env:ON_PATH }
-function cdgh () { cd $env:GH_ROOT }
-function cdnf () { cd $env:NF_ROOT }
-function cdz () { cd $env:NF_ROOT\ziti }
-function cdo () { cd $env:OZ_ROOT }
-function cdzd () { cd $env:OZ_ROOT\ziti-doc }
-function cdew () { cd $env:OZ_ROOT\desktop-edge-win }
-function cdzet() { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 function cdds() { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
-
-function gwt {
-    # Two ways the script communicates "cd the parent shell" to us:
-    #   1. 'cd' subcommand: script prints the worktree path on stdout, we cd to it.
-    #   2. Hint file: any other subcommand (new/pr/twig/discourse) that creates or
-    #      lands in a worktree writes the path to %TEMP%\gwt-cwd-hint-<PID>.txt;
-    #      we read it after the script returns and Set-Location.
-    # A child .ps1 can't mutate the parent shell's cwd directly, hence the dance.
-    $hintFile = Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt"
-    Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
-
-    $env:GWT_HINT_FILE = $hintFile
-    if ($args.Count -ge 1 -and $args[0] -eq 'cd') {
-        $p = & "$env:ON_PATH\git-worktree.ps1" @args
-        if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p; [Environment]::CurrentDirectory = $p }
-    } else {
-        & "$env:ON_PATH\git-worktree.ps1" @args
-    }
-    Remove-Item Env:GWT_HINT_FILE -ErrorAction SilentlyContinue
-
-    if (Test-Path $hintFile) {
-        $newCwd = (Get-Content $hintFile -Raw -ErrorAction SilentlyContinue).Trim()
-        Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
-        # Sync the real process cwd, not just $PWD: a shell whose Win32 working
-        # directory is a just-removed worktree keeps an OS handle on it open.
-        if ($newCwd -and (Test-Path $newCwd)) { Set-Location $newCwd; [Environment]::CurrentDirectory = $newCwd }
-    }
-}
 
 function StartMcpGateway {
     & "$env:OZ_ROOT\mcp-gateway\build\mcp-gateway.exe" run "$env:USERPROFILE\.mcp-gateway\config.yml" @args
@@ -276,7 +233,7 @@ function ltail {
     }
 }
 
-Set-PSReadLineKeyHandler -Key Ctrl+d -Function DeleteCharOrExit
+# Ctrl+d keyhandler lives in common-tools.ps1
 
 # ziti completion powershell | Out-String | Invoke-Expression
 add-go_current

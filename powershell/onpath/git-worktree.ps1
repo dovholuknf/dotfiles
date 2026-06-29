@@ -3,7 +3,10 @@
 # profile alias: function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
 #
 # usage:
-#   gwt new  <branch> [-From <source>] [-Prompt <str>] [-y]
+#   gwt new  <branch> [-From <source>] [-Prompt <str>] [-y] [--by-project]
+#                                                # --by-project: group the tab into a
+#                                                # window named after the repo, themed
+#                                                # from the per-repo theme map
 #   gwt twig <branch>                 [-Prompt <str>] [-y]  # branch off current worktree's HEAD
 #   gwt pr  <url-or-number>           [-Prompt <str>] [-y]
 #   gwt rm  <branch>                  [-y]
@@ -36,6 +39,11 @@ param(
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
     [switch]$NoAgentSetup,  # skip the post-create dotagents CLAUDE.md symlink step
+    # 'new': group the spawned wt tab into a window named after the project (repo)
+    # instead of a work-type window (active-work / tangent / ...). The spawned
+    # shell themes itself from the per-repo theme map (e.g. ziti -> teal-dusk).
+    [Alias('by-project')]
+    [switch]$ByProject,
     # SCOPE: when cwd is inside a repo (main clone or a worktree), session
     # subcommands default to "this repo only." Pass -All to see / act on every
     # repo's sessions. Outside any repo, scope is implicitly global.
@@ -375,13 +383,13 @@ function Get-PrHeadBranch {
 }
 
 function Sync-PrBranch {
-    param([string]$Src, [string]$Branch)
-    Invoke-Git $Src @('fetch','origin',$Branch)
-    if (Test-LocalBranchExists $Src $Branch) {
-        Invoke-Git $Src @('branch','-f',$Branch,"origin/$Branch")
-    } else {
-        Invoke-Git $Src @('branch','--track',$Branch,"origin/$Branch")
-    }
+    param([string]$Src, [string]$Branch, [string]$PrNumber)
+    # Fetch the PR head by its pull ref. 'fetch origin <branch>' fails with
+    # "couldn't find remote ref" whenever origin lacks that branch: a merged PR
+    # whose branch was deleted, or a PR from a fork. GitHub keeps refs/pull/<n>/head
+    # in both cases, so this always resolves. Forced (+) so an existing local
+    # branch updates to the current PR head.
+    Invoke-Git $Src @('fetch','origin',"+refs/pull/$PrNumber/head:refs/heads/$Branch")
 }
 
 function _AssertUnderWorktreeRoot {
@@ -502,6 +510,9 @@ function _ReportDirHolders {
         $out  = & $cli --json $winPath 2>$null | Out-String
         $data = $out | ConvertFrom-Json
         foreach ($p in @($data.processes)) {
+            # The probe itself opens a handle on the path while scanning -- don't
+            # finger File Locksmith (or this gwt process) as the culprit.
+            if ($p.name -eq 'FileLocksmithCLI.exe' -or [int]$p.pid -eq $PID) { continue }
             $reported = $true
             Write-Color "    locked by: $($p.name) (pid $($p.pid), user $($p.user))" Yellow
             Write-Color "    if it's safe to kill: & '$cli' --kill '$winPath'" DarkGray
@@ -1097,10 +1108,11 @@ switch ($Command) {
             & $PSCommandPath issue $Matches.num @passArgs
             break
         }
-        # Any other URL we can pull host/org/repo from (an actions run, a blob/tree
-        # link, a settings page, whatever): we can't infer the branch, so ask for
-        # one and proceed with the detected repo context. Saves a cd to the repo.
-        if ($Target -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)(?:/.*)?$') {
+        # Any other URL from a KNOWN GIT HOST that we can pull host/org/repo from
+        # (an actions run, a blob/tree link, a settings page): we can't infer the
+        # branch, so ask for one and proceed with that repo context. Restricted to
+        # git hosts so non-repo URLs (e.g. a discourse thread) don't get cloned.
+        if ($Target -match '^https?://(?<host>github\.com|bitbucket\.org|gitlab\.com)/(?<org>[^/]+)/(?<repo>[^/]+?)(?:\.git)?(?:/.*)?$') {
             Write-Color "  detected $($Matches.host)/$($Matches.org)/$($Matches.repo) -- but no branch in that URL" Yellow
             $name = (Read-Host "  enter a worktree/branch name").Trim()
             if (-not $name) { throw "no name given -- aborted" }
@@ -1108,6 +1120,13 @@ switch ($Command) {
             if ($y) { $passArgs.y = $true }
             & $PSCommandPath new $name @passArgs
             break
+        }
+        # Discourse thread URLs are <host>/t/<slug>[/<id>] -- point at the right command.
+        if ($Target -match '^https?://[^/]+/t/[^/]+') {
+            throw "that looks like a discourse thread, not a git repo. did you mean:  gwt discourse $Target"
+        }
+        if ($Target -match '^https?://') {
+            throw "'$Target' is a URL but not a recognized git repo URL -- for a discourse thread use 'gwt discourse <url>'"
         }
         if ($Target -eq '.')   { throw "'new' needs an explicit branch name (the '.' shortcut is only for 'gwt claude .')" }
         if ($Target -match '^\s|\s$|[\\\/:\?\*\[\]~^]') { throw "branch name '$Target' contains an illegal character" }
@@ -1131,7 +1150,7 @@ switch ($Command) {
                 Remove-Worktree -Src $ctx.Src -WtPath $existingWt -AutoConfirm
             } else {
                 Write-Color "ready: $existingWt" Green
-                _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+                _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject
                 _SetGwtCwdHint $existingWt
                 return
             }
@@ -1205,7 +1224,7 @@ switch ($Command) {
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
         $r = Read-Host "activate this worktree (point '$($ctx.WtRoot)\current' here)? (y/N)"
         if ($r -match '^[Yy]$') { _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath }
-        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject
         _SetGwtCwdHint $wtPath
     }
 
@@ -1423,7 +1442,7 @@ switch ($Command) {
             }
         }
 
-        Sync-PrBranch $ctx.Src $branch
+        Sync-PrBranch $ctx.Src $branch $prNum
         Ensure-Worktree $ctx.Src $wtPath $branch
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
@@ -3008,6 +3027,27 @@ switch ($Command) {
             $statuses   = Get-WorktreeStatuses $repoPath
             $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
 
+            # Sweep adjacent EMPTY leftover worktree dirs first. When a prune can't
+            # delete a dir because the OS handle releases late (a just-closed tab,
+            # AV), the contents go but the top dir lingers. Those are truly empty
+            # and safe to remove with no prompt. Runs every prune, ignores the
+            # branch filter -- the whole point is to clean siblings you didn't name.
+            $orgPart   = if ($Org) { $Org } else { Split-Path (Split-Path $repoPath -Parent) -Leaf }
+            $repoPart  = Split-Path $repoPath -Leaf
+            $wtRootRepo = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $orgPart) $repoPart
+            if (Test-Path $wtRootRepo) {
+                foreach ($d in (Get-ChildItem $wtRootRepo -Directory -ErrorAction SilentlyContinue)) {
+                    if ($d.LinkType -eq 'SymbolicLink') { continue }                 # skip the 'current' link
+                    if ($registered -contains $d.FullName.Replace('\','/').ToLower()) { continue }  # real worktree
+                    if (@(Get-ChildItem $d.FullName -Recurse -File -Force -ErrorAction SilentlyContinue).Count -gt 0) { continue }  # has files
+                    if (Get-AliveSessionForPath $d.FullName) { continue }            # paranoia: live session
+                    try {
+                        [System.IO.Directory]::Delete($d.FullName, $true)
+                        Write-Color "  FYI: cleaned up leftover empty worktree dir from an earlier prune: $($d.Name)" DarkGray
+                    } catch {}
+                }
+            }
+
             $filterMatchedWorktree = $false
             if ($branchFilter) {
                 $filtered = @($statuses | Where-Object { $_.Branch -eq $branchFilter })
@@ -3541,11 +3581,14 @@ switch ($Command) {
         Write-Host "  COMMANDS" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt new " -NoNewline -ForegroundColor Cyan
-        Write-Host "<branch> [-From <src>] [-Prompt <str>] [-y]"
+        Write-Host "<branch> [-From <src>] [-Prompt <str>] [-y] [--by-project]"
         Write-Host "        create (or reopen) a worktree for a branch" -ForegroundColor DarkGray
-        Write-Host "        -From   fork from this branch instead of origin/main" -ForegroundColor DarkGray
-        Write-Host "        -Prompt override the default claude prompt" -ForegroundColor DarkGray
-        Write-Host "        -y      skip confirmation prompts" -ForegroundColor DarkGray
+        Write-Host "        -From         fork from this branch instead of origin/main" -ForegroundColor DarkGray
+        Write-Host "        -Prompt       override the default claude prompt" -ForegroundColor DarkGray
+        Write-Host "        -y            skip confirmation prompts" -ForegroundColor DarkGray
+        Write-Host "        --by-project  (now the DEFAULT) group the tab in a window named after" -ForegroundColor DarkGray
+        Write-Host "                      the repo, themed from the per-repo map (e.g. ziti -> teal-dusk)." -ForegroundColor DarkGray
+        Write-Host "                      Pick a different window in the prompt ('auto' is highlighted)." -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt twig " -NoNewline -ForegroundColor Cyan
         Write-Host "<branch> [-Prompt <str>] [-y]"

@@ -92,7 +92,8 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(V:/work/tools/go/current/bin/go.exe build:*)",
-      "Bash(//v/work/tools/go/current/bin/go.exe build:*)"
+      "Bash(//v/work/tools/go/current/bin/go.exe build:*)",
+      "Skill(code-review)"
     ],
     "deny": [
       "Bash(git checkout*)",

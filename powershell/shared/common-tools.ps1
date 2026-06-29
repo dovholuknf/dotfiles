@@ -108,7 +108,11 @@ function _TuiSelect {
         [int]$DefaultIndex = 0,
         # Max visible rows. Caps the viewport even when the terminal is tall.
         # Pass -PageSize 0 to mean "as many as fit in the window".
-        [int]$PageSize = 12
+        [int]$PageSize = 12,
+        # Optional callback invoked with the highlighted item whenever the cursor
+        # lands on a new row (and once on open). Used for live preview, e.g. the
+        # theme picker applies the theme as you scroll. Errors are swallowed.
+        [scriptblock]$OnHighlight
     )
     if (-not $Items.Count) { return $null }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
@@ -147,9 +151,16 @@ function _TuiSelect {
 
     # Mutable render state. Hashtable so the render scriptblock can update it
     # without scope gymnastics.
-    $state = @{ top = 0; lastLines = 0; first = $true }
+    $state = @{ top = 0; lastLines = 0; first = $true; lastHighlight = -1 }
 
     $render = {
+        # Live-preview hook: fire when the highlighted row changes. Done before any
+        # cursor math so a callback that writes OSC (e.g. theme apply) can't shift
+        # the line accounting. Swallow errors -- preview must never break the picker.
+        if ($OnHighlight -and $idx -ne $state.lastHighlight) {
+            try { & $OnHighlight $Items[$idx] } catch {}
+            $state.lastHighlight = $idx
+        }
         # Scroll the viewport to keep $idx visible.
         if ($idx -lt $state.top)                   { $state.top = $idx }
         if ($idx -ge $state.top + $viewport)       { $state.top = $idx - $viewport + 1 }
@@ -627,5 +638,116 @@ function cleanup-ziti {
                 }
             }
         }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Shared profile helpers: defined here so both users' profiles get them from one
+# place. Per-user navigation shortcuts and the per-user `prompt` stay in each
+# profile. These reference env vars at call time, so they work as long as the
+# vars are set before this file is dot-sourced (both profiles do that).
+# ---------------------------------------------------------------------------
+
+function gwt {
+    # Two ways the script tells us to move the parent shell:
+    #   1. 'cd' subcommand prints the worktree path on stdout -> we Set-Location.
+    #   2. Any other subcommand that lands in a worktree writes the path to a
+    #      hint file (%TEMP%\gwt-cwd-hint-<PID>.txt) which we read after.
+    # We also sync [Environment]::CurrentDirectory, not just $PWD: a shell whose
+    # real Win32 working directory is a worktree keeps an OS handle on it, which
+    # blocks a later prune. Set-Location alone does not move that handle.
+    $hintFile = Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt"
+    Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
+    $env:GWT_HINT_FILE = $hintFile
+    if ($args.Count -ge 1 -and $args[0] -eq 'cd') {
+        $p = & "$env:ON_PATH\git-worktree.ps1" @args
+        if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p; [Environment]::CurrentDirectory = $p }
+    } else {
+        & "$env:ON_PATH\git-worktree.ps1" @args
+    }
+    Remove-Item Env:GWT_HINT_FILE -ErrorAction SilentlyContinue
+    if (Test-Path $hintFile) {
+        $newCwd = (Get-Content $hintFile -Raw -ErrorAction SilentlyContinue).Trim()
+        Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
+        if ($newCwd -and (Test-Path $newCwd)) { Set-Location $newCwd; [Environment]::CurrentDirectory = $newCwd }
+    }
+}
+
+# Navigation shortcuts that are identical for both users. Per-user ones (and the
+# divergent `cddf`) live in each profile.
+function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
+function cdgh ()  { cd $env:GH_ROOT }
+function cdnf ()  { cd $env:NF_ROOT }
+function cdz ()   { cd $env:NF_ROOT\ziti }
+function cdo ()   { cd $env:OZ_ROOT }
+function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
+function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
+function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
+
+# Alias hygiene: drop the built-in aliases that shadow the real unix tools both
+# users expect (curl, mv, cp, rm, ls, diff, find), and map vi -> vim. Per-user
+# extras (e.g. claude's `which`) stay in each profile.
+foreach ($a in 'curl','mv','cp','rm','ls','diff','find') {
+    Remove-Item "alias:$a" -ErrorAction Ignore
+}
+Set-Alias -Name vi -Value 'vim.exe'
+
+# Ctrl+d: delete char, or exit on empty line (both users want this).
+if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
+    Set-PSReadLineKeyHandler -Key Ctrl+d -Function DeleteCharOrExit
+}
+
+function agent-log {
+    # Live-tail gwt session states, showing only the two that matter:
+    #   needs-input -> an agent is waiting on you      (yellow, "NEEDS YOU")
+    #   idle        -> an agent finished its turn       (green,  "done")
+    # All other transitions (thinking/startup/resume/...) are suppressed.
+    # Each row shows: time  TAG  [terminal-group]  branch  @ path
+    # The terminal group (wt WindowName) isn't in the log, so we look it up from
+    # the session ledger by matching the worktree path. Ctrl-C to stop.
+    $root    = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
+    $log     = Join-Path $root 'watch\state.log'
+    $sessDir = Join-Path $root 'sessions'
+    if (-not (Test-Path $log)) { Write-Host "no state log at $log" -ForegroundColor DarkGray; return }
+
+    function _WindowForPath([string]$p) {
+        if (-not (Test-Path $sessDir)) { return $null }
+        $norm = ($p -replace '/', '\').TrimEnd('\').ToLower()
+        foreach ($f in Get-ChildItem $sessDir -Filter '*.json' -ErrorAction SilentlyContinue) {
+            try {
+                $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
+                if ($e.WorktreePath -and ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -eq $norm)) {
+                    return $e.WindowName
+                }
+            } catch {}
+        }
+        return $null
+    }
+
+    Get-Content $log -Wait -Tail 50 | ForEach-Object {
+        if ($_ -notmatch '^(?<ts>\S+)\s+(?<state>\S+)\s+(?<branch>.+?)\s+@\s+(?<path>.+)$') { return }
+        $state = $Matches.state
+        if ($state -notin @('needs-input','idle','thinking')) { return }
+        $time   = try { [datetime]::Parse($Matches.ts).ToString('HH:mm:ss') } catch { $Matches.ts }
+        $branch = $Matches.branch.Trim()
+        $path   = $Matches.path.Trim()
+        # Log sometimes records '(unknown)' for the branch -- fall back to the
+        # worktree dir's leaf name, which is what the branch usually is anyway.
+        if ($branch -in @('(unknown)','') ) { $branch = Split-Path $path -Leaf }
+        $group  = _WindowForPath $path
+        $grpTag = if ($group) { "[$group]" } else { '[?]' }
+        # tags padded to equal width so columns stay aligned
+        $tag    = switch ($state) {
+            'needs-input' { 'NEEDS YOU' }
+            'thinking'    { 'thinking ' }
+            default       { 'done     ' }
+        }
+        $color  = switch ($state) {
+            'needs-input' { 'Yellow' }
+            'thinking'    { 'Cyan' }
+            default       { 'Green' }
+        }
+        Write-Host ("{0}  {1}  {2}  {3}  @ {4}" -f `
+            $time, $tag, $grpTag.PadRight(20), $branch.PadRight(28), $path) -ForegroundColor $color
     }
 }

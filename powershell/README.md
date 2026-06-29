@@ -1,3 +1,21 @@
+# powershell/
+
+The pwsh side of the dotfiles. The rest of this file is one-time machine setup (WSL / VHD) notes. For how the
+day-to-day pieces work, start here:
+
+| File | What it is |
+| --- | --- |
+| `Microsoft.PowerShell_profile.ps1` | Clint's profile. Sets env vars, dot-sources the shared + feature scripts. |
+| `shared/common-tools.ps1` | Helpers shared by both users' profiles: `_TuiSelect`, the `gwt` wrapper, common `cd*` shortcuts, alias hygiene, `agent-log`, path toggles. No secrets. |
+| `wt-themes.ps1` + `wt-themes-rainbow.ps1` | Per-tab theming. See `docs/themes.md`. |
+| `claude-shell.ps1` | Spawns wt tabs running claude in a worktree; the window picker; theme-per-window mapping. |
+| `gwt-session-registry.ps1` | Reads / writes the session ledger and the spawn entrypoint `_InvokeGwtSpawn`. |
+| `onpath/` | Scripts meant to live on `$env:PATH`. See `onpath/README.md`. `git-worktree.ps1` (`gwt`) is the big one. |
+| `docs/gwt-states.md` | The `gwt` worktree + session state machines. |
+| `docs/themes.md` | The theme system end to end. |
+
+Conventions, pitfalls, and the `_TuiSelect` picker contract live in the repo-root `CLAUDE.md`.
+
 ## Starting from NOTHING
 
 * make wsl instance

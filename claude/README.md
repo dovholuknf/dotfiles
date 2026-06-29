@@ -10,6 +10,7 @@ claude/
     pre-tool-use-hook.ps1     # the gatekeeper: blocks a handful of footguns
     no-compound-cd.ps1        # older single-purpose version of the cd guard, kept for reference
     set-session-state.ps1     # patches the session ledger with thinking/idle/needs-input
+    set-tab-title.ps1         # sets the wt tab title to "needs input" while claude waits
     session-bootstrap.ps1     # tiny dispatcher invoked by SessionStart / SessionEnd
   agents/
     persona.md                # claude-code subagent that reads the agents/ pack at runtime
@@ -39,8 +40,8 @@ After that, edits to either side resolve through the link. `git status` in the d
 | `PreToolUse` (every tool call) | `pre-tool-use-hook.ps1` |
 | `UserPromptSubmit` | `set-session-state.ps1 -State thinking` |
 | `Stop` | sound + `set-session-state.ps1 -State idle` |
-| `Notification` (permission_prompt) | sound + `set-session-state.ps1 -State needs-input` |
-| `Notification` (elicitation_dialog) | sound + `set-session-state.ps1 -State needs-input` |
+| `Notification` (permission_prompt) | sound + `set-session-state.ps1 -State needs-input` + `set-tab-title.ps1 -Title "‼️ needs input"` |
+| `Notification` (elicitation_dialog) | sound + `set-session-state.ps1 -State needs-input` + `set-tab-title.ps1 -Title "‼️ needs input"` |
 | `PermissionRequest` | sound |
 | `SessionStart` | (1) `session-bootstrap.ps1 -Phase start` -> `_RegisterOrClaimClaudeSession` registers / claims the entry, stamps `ClaudeSessionId`. (2) `set-session-state.ps1 -FromPayloadSource` reads claude's `source` field (`startup` / `resume` / `clear` / `compact`) and writes a matching `state.log` line plus patches `State` on the JSON. |
 | `SessionEnd` | (1) `set-session-state.ps1 -State ended` writes the `ended` line to `state.log` and patches `State='ended'`. (2) `session-bootstrap.ps1 -Phase end` -> `_UnregisterClaudeSession` zeros the Pid. |
@@ -84,6 +85,16 @@ instance is doing across many wt tabs.
 
 `State` only updates the JSON for ALIVE entries (plus the one-shot `ended` write on SessionEnd). PAUSED / STALE
 entries show no state sub-tag.
+
+## Tab-title "needs input" marker
+
+`set-tab-title.ps1` flips the Windows Terminal tab title to `‼️ needs input` on the two `Notification` matchers, so a
+waiting session is visible in the tab bar (above the scroll region, unlike anything you could print). The catch: a
+hook's stdout is captured by claude-code for the hook JSON protocol, so writing an OSC title sequence there never
+reaches the terminal. The hook instead reaches the tab via the Win32 console API: `FreeConsole`, then
+`AttachConsole(ATTACH_PARENT_PROCESS)` to attach to the parent (claude / node) process that owns the wt ConPTY, then
+`SetConsoleTitleW`. claude re-sets the title on its next render, so the marker naturally clears when claude resumes.
+That is the right window: it shows only while claude is actually waiting on you.
 
 ## Adding a new hook
 

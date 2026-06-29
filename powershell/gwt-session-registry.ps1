@@ -46,6 +46,13 @@ function _InvokeGwtSpawn {
         Set-Location $entry.WorktreePath
     }
 
+    # --by-project windows are named after the repo, so no work-type theme
+    # matched above. Fall back to the per-repo theme map (e.g. ziti -> teal-dusk),
+    # which Set-Theme reads from the worktree's git remote now that we've cd'd in.
+    if (-not $themeFn -and (Get-Command Set-Theme -ErrorAction SilentlyContinue)) {
+        Set-Theme -UseRepoTheme -Quiet
+    }
+
     # If NoClaude flag is set on the entry, stop here (claudeshell case).
     if ($entry.NoClaude) { return }
 

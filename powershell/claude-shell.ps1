@@ -93,12 +93,19 @@ function Select-ClaudePrompt {
 # ---------------------------------------------------------------------------
 
 function _SelectWtWindow {
-    param([string]$Default)   # if set + matches a preset, that row becomes the highlighted default
+    param(
+        [string]$Default,   # if set + matches a preset, that row becomes the highlighted default
+        [string]$Repo       # repo name -- powers the 'auto' (group-by-project) row
+    )
+    $autoDesc = if ($Repo) { "group by project -> window `"$Repo`", theme auto-picked (default)" }
+                else       { 'group by project (current repo), theme auto-picked (default)' }
     $presets = @(
+        [PSCustomObject]@{ Name = '__auto__';      Desc = $autoDesc }
         [PSCustomObject]@{ Name = 'active-work';   Desc = 'attach to "active-work" window' }
         [PSCustomObject]@{ Name = 'pull-requests'; Desc = 'attach to "pull-requests" window' }
         [PSCustomObject]@{ Name = 'tangent';       Desc = 'attach to "tangent" window' }
-        [PSCustomObject]@{ Name = 'worktrees';     Desc = 'attach to "worktrees" window (default)' }
+        [PSCustomObject]@{ Name = 'discourse';     Desc = 'attach to "discourse" window' }
+        [PSCustomObject]@{ Name = 'worktrees';     Desc = 'attach to "worktrees" window' }
         [PSCustomObject]@{ Name = '__new__';       Desc = 'open in a brand-new wt window (no attach)' }
         [PSCustomObject]@{ Name = '__custom__';    Desc = 'type your own window name' }
     )
@@ -113,18 +120,22 @@ function _SelectWtWindow {
         -DisplayScript {
             param($p)
             $label = switch ($p.Name) {
+                '__auto__'   { 'auto' }
                 '__new__'    { 'new' }
                 '__custom__' { 'custom' }
                 default      { $p.Name }
             }
             '{0,-14}  {1}' -f $label, $p.Desc
         }
-    if (-not $picked) { return $presets[$defaultIdx].Name }
+    if (-not $picked) { $picked = $presets[$defaultIdx] }   # Esc/cancel -> the default (auto)
     if ($picked.Name -eq '__custom__') {
         $name = (Read-Host "window name").Trim()
         if ([string]::IsNullOrWhiteSpace($name)) { return '__new__' }
         return $name
     }
+    # 'auto' resolves to the repo name (group by project). Caller also handles
+    # '__auto__' in case no -Repo was supplied here.
+    if ($picked.Name -eq '__auto__' -and $Repo) { return $Repo }
     return $picked.Name
 }
 
@@ -138,6 +149,7 @@ function _GetThemeFnForWindow {
         'active-work'   { 'ActiveWork' }
         'pull-requests' { 'PullRequests' }
         'tangent'       { 'Tangent' }
+        'discourse'     { 'Discourse' }
         'worktrees'     { 'Worktrees' }
         'ad-hoc'        { 'AdHoc' }
         'main'          { 'Main' }
@@ -339,7 +351,8 @@ function _OpenClaudeShell {
 }
 
 function _ConfirmOpenOrCd {
-    param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen)
+    param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen,
+          [switch]$ByProject)   # group the tab into a per-project window named after $Repo
 
     # Short-circuit: if an alive session already exists for this path, show the
     # same heads-up _OpenClaudeShell would print -- but do it BEFORE running
@@ -347,16 +360,22 @@ function _ConfirmOpenOrCd {
     if (-not (_ConfirmNoAliveSessionAt -Path $Path)) { return }
 
     if ($AutoOpen) {
+        # Default is group-by-project: window named after the repo, theme auto-
+        # picked by the spawned shell. (-ByProject kept as an explicit synonym.)
+        $window = if ($Repo) { $Repo } else { 'active-work' }
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { (_GetClaudePromptPresets -Repo $Repo -Branch $Branch)[0].Text }
-        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName 'active-work' -Force
+        _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window -Force
         return
     }
 
     $resp = Read-Host "open in claude? (Y/n)"
     if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
-        $window = _SelectWtWindow
-        if ($window -eq '__new__') { $window = $null }
+        # -ByProject skips the picker and groups by repo; otherwise the picker
+        # defaults to 'auto' (also group-by-project).
+        $window = if ($ByProject -and $Repo) { $Repo } else { _SelectWtWindow -Repo $Repo }
+        if ($window -eq '__auto__') { $window = if ($Repo) { $Repo } else { $null } }
+        if ($window -eq '__new__')  { $window = $null }
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { Select-ClaudePrompt -Repo $Repo -Branch $Branch }
         _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window -Force
@@ -829,10 +848,12 @@ function ClaudeShell {
                 if (-not $Force) { return }
             }
 
-            $window = if ($PSBoundParameters.ContainsKey('WindowName')) { $WindowName } else { _SelectWtWindow }
-            if ($window -eq '__new__') { $window = $null }
+            $repoLeaf = Split-Path $cwd -Leaf
+            $window = if ($PSBoundParameters.ContainsKey('WindowName')) { $WindowName } else { _SelectWtWindow -Repo $repoLeaf }
+            if ($window -eq '__auto__') { $window = $repoLeaf }
+            if ($window -eq '__new__')  { $window = $null }
             _OpenClaudeShell -Path $cwd `
-                             -Repo (Split-Path $cwd -Leaf) `
+                             -Repo $repoLeaf `
                              -Branch 'claudeshell' `
                              -WindowName $window `
                              -NoClaude `

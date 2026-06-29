@@ -12,11 +12,24 @@ Scripts intended to live on `$env:PATH`. The profile adds this directory automat
 
 | Script | What it does |
 | --- | --- |
-| `git-worktree.ps1` | The `gwt` toolkit. Clone, new worktree from branch / PR / issue, list with full state machine, prune, session-ledger management. The big one. See `../docs/gwt-states.md`. |
+| `git-worktree.ps1` | The `gwt` toolkit. Clone, new worktree from branch / PR / issue / URL, list with full state machine, prune, session-ledger management. The big one. See `../docs/gwt-states.md`. |
 | `New-Worktree.ps1` | Older single-purpose "make a worktree from a PR URL" script. Kept for reference; `gwt` covers this. |
 | `Prune-All-Worktrees.ps1` | Bulk prune across an entire `D:\git\<host>\<org>\<repo>` set. `gwt prune -Org <org>` is the modern equivalent. |
 | `test-gwt-states.ps1` | Test harness. Builds a sandbox with one example of every worktree state, runs `gwt list`, asserts the classification. |
 | `prune-claude-projects.ps1` | Find / delete orphan claude-code transcript directories under `~/.claude/projects/` whose decoded path no longer exists. Default is read-only. `-Apply` to delete. |
+
+### gwt flags worth knowing
+
+- `gwt new <branch|url> [--by-project] [-y]` -- `--by-project` is now the DEFAULT: the spawned tab groups into a
+  window named after the repo and the theme is auto-picked from the per-repo map (see `../docs/themes.md`). The window
+  picker highlights `auto`; pick `active-work` / `pull-requests` / `tangent` / `discourse` / `worktrees` / `new` /
+  `custom` to override. A PR / issue / generic git-host url routes to the right flow; a discourse url is redirected to
+  `gwt discourse`.
+- `gwt prune <branch> [-Force] [-Fetch] [-NoFetch]` -- an ACTIVE / ACTIVE-REMOTE-GONE / DIRTY worktree gets one inline
+  force prompt, then prune verifies the directory is actually gone and (opt-in, slow) names the locking process via
+  PowerToys File Locksmith if it survives.
+- Fetch is cached for 5 minutes per repo across `list` / `update` / `prune`. `-Fetch` forces a fresh fetch, `-NoFetch`
+  skips it. See the root `CLAUDE.md` and `../docs/gwt-states.md`.
 
 ## Git helpers
 

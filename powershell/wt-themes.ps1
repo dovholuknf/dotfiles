@@ -34,6 +34,7 @@ $script:OriginalPSReadLineColors = $null
 # Map repo name (last segment of origin URL, no .git) -> theme name.
 # use-repotheme reads this to snap to the right palette for the current repo.
 $script:RepoThemes = @{
+    'sdk-golang' = 'terracotta'
     'ziti-console' = 'deep-amethyst'
     'ziti-sdk-py' = 'deep-ocean'
     'ziti-sdk-csharp' = 'nord'
@@ -354,11 +355,28 @@ function Set-Theme {
                     } else { $n }
                 }
                 $active = if ($global:WtThemeName) { "  [active: $($global:WtThemeName)]" } else { '' }
-                $prompt = "choose theme (Up/Down + Enter, Esc/q to cancel)${active}`n" +
+                $prompt = "choose theme (Up/Down previews live, Enter accepts, Esc/q cancels)${active}`n" +
                           "  tip: 'Set-Theme -Tour' walks every theme; add -Demo / -Palette / -Sample / -All to pick the preview style"
-                $picked = _TuiSelect -Items $sorted -Prompt $prompt -DisplayScript $themeLabel
+                # Live preview: apply each theme as the cursor lands on it. Capture
+                # the active theme first so Esc/cancel can put it back.
+                $origThemeName = $global:WtThemeName
+                $previewTheme = {
+                    param($n)
+                    if ($script:WtThemes.ContainsKey($n)) {
+                        $script:_PendingThemeName = $n
+                        Apply-Theme $script:WtThemes[$n]
+                    }
+                }
+                $picked = _TuiSelect -Items $sorted -Prompt $prompt -DisplayScript $themeLabel -OnHighlight $previewTheme
                 if (-not $picked) {
-                    Write-Host "no selection" -ForegroundColor Yellow
+                    # Restore whatever was active before we started previewing.
+                    if ($origThemeName -and $script:WtThemes.ContainsKey($origThemeName)) {
+                        $script:_PendingThemeName = $origThemeName
+                        Apply-Theme $script:WtThemes[$origThemeName]
+                    } else {
+                        Reset-Theme
+                    }
+                    Write-Host "no selection (theme restored)" -ForegroundColor Yellow
                     return
                 }
                 $Name = $picked

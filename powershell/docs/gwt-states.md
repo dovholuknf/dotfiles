@@ -70,7 +70,8 @@ visible across DIRTY / UNTRACKED-ONLY / PRUNE / ACTIVE-REMOTE-GONE rows.
 | `gwt list` | All states + MAIN + CURRENT (the symlink) + orphans |
 | `gwt status` / `gwt changes` | DIRTY, ACTIVE, ACTIVE-REMOTE-GONE, ORPHAN-DIRTY, ORPHAN-NO-GIT (everything with "something to look at") |
 | `gwt prune` | Only PRUNE candidates + orphans; DIRTY skipped unless `-Force` |
-| `gwt prune -Force` | Adds DIRTY to the prunable set |
+| `gwt prune -Force` | Adds DIRTY (and ACTIVE / ACTIVE-REMOTE-GONE) to the prunable set |
+| `gwt prune <branch>` | Narrow to one worktree. If it is ACTIVE / ACTIVE-REMOTE-GONE / DIRTY you get ONE inline `force remove anyway?` prompt instead of a flat refusal. After removal it verifies the dir is gone and, if not, prints `ERROR: ... still exists` plus an opt-in File Locksmith probe naming the holder. |
 | `gwt list -Verbose` | Same as `gwt list` but inlines `git status --short` for DIRTY rows and `git log origin/main..HEAD` for ACTIVE/ACTIVE-REMOTE-GONE rows |
 
 ## detection limits (honest about what we can and can't know)
@@ -102,7 +103,8 @@ visible across DIRTY / UNTRACKED-ONLY / PRUNE / ACTIVE-REMOTE-GONE rows.
 |---|---|---|
 | `_AssertUnderWorktreeRoot` | All `Remove-Item -Recurse -Force` sites | Throws if the target isn't under `$WorktreeRoot`. Last-line-of-defense against deleting outside the canonical layout. |
 | Alive-session check | `Remove-Worktree`, orphan-removal | Refuses to remove a path if a claude session is alive there |
-| cwd-inside-target hop | `Remove-Worktree` | If the parent shell's cwd is inside the worktree about to be deleted, auto-cd's to MAIN and sets the gwt hint file so the wrapper follows |
+| cwd-inside-target hop | `Remove-Worktree`, `_ChangeToMainFolder` | If the parent shell's cwd is inside the worktree about to be deleted, auto-cd's to MAIN, sets the gwt hint file so the wrapper follows, AND sets `[Environment]::CurrentDirectory` (the real Win32 cwd, which is what actually holds the OS lock; `Set-Location` alone does not move it) |
+| cwd-lock release | `_ForceRemoveWorktreeDir` | Before deleting, if THIS process's `[Environment]::CurrentDirectory` is at or under the target, drops it to the drive root so the shell stops locking its own target. Then verifies the dir is gone and reports the holder via File Locksmith if it survives. |
 | Saved-protection | `Test-WorktreeIsSaved` | Reads session-registry entries; if any has Saved=true for this path, prune refuses (even with -Force). Ad-hoc claude launches in non-git dirs auto-set Saved. |
 | Canonical-path guard in clean | `gwt sessions clean` | Refuses to drop session entries whose WorktreePath isn't under `$env:WORKTREE_ROOT\<host>\<org>\<repo>\<branch>` or `$env:GIT_ROOT\<host>\<org>\<repo>` |
 
