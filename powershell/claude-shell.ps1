@@ -267,6 +267,12 @@ function _OpenClaudeShell {
         [switch]$Verbose            # show runas chatter
     )
 
+    # Resolve picker sentinels here, the single chokepoint that records the window
+    # and runs wt, so no caller can leak a literal '__auto__' into the ledger (which
+    # made every 'auto' pile into one window named __auto__). 'auto' = group by repo.
+    if ($WindowName -eq '__auto__') { $WindowName = if ($Repo) { $Repo } else { $null } }
+    if ($WindowName -eq '__new__')  { $WindowName = $null }
+
     if (-not $ReuseSessionId) {
         if (-not (_ConfirmNoAliveSessionAt -Path $Path -Force:$Force)) { return }
     }
