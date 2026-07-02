@@ -31,6 +31,12 @@ How I want code to read. Most of this is "less is more" applied to source.
 - Don't write configuration knobs for hypotheticals. Add the knob when the second use case actually
   shows up.
 
+## Hardcoded values
+
+- Never bake environment-specific values into code or tests: my machine hostname, absolute paths, or
+  anything copied from live run output. Use neutral placeholders (testhost, example.com, /var/tmp) that
+  stay sensible and correct for any reader later.
+
 ## Generated code
 
 - Don't hand-edit generated files (protobuf, generated REST clients, generated SQL types, sqlc

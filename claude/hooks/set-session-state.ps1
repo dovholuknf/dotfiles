@@ -45,6 +45,12 @@ try {
     try { Add-Content -Path $dbg -Value ("    parsed session_id={0}" -f $sid) } catch {}
     if (-not $sid) { exit 0 }
 
+    # SessionEnd carries a `reason` (clear | logout | prompt_input_exit | other).
+    # It only exists on a clean exit (a kill fires nothing), so it can't flag a
+    # dirty exit -- but it tells apart the kinds of clean exit, and notably catches
+    # `clear`, which fires SessionEnd without the session actually ending.
+    $reason = "$($payload.reason)"
+
     # SessionStart-only: read claude's `source` field and use it as the state.
     # Accepted values: startup, resume, clear, compact. If missing, fall back
     # to 'startup' so the line still surfaces in the log.
@@ -67,17 +73,72 @@ try {
     $logFile = Join-Path $watchDir 'state.log'
 
     $now = (Get-Date).ToString('o')
+
+    # Per-folder activity log: drop the same transition into <cwd>\.claude\agent-log.txt
+    # so any repo or worktree shows its own claude history (and thus the last time a
+    # session ran there) without consulting the central ledger. The folder is implicit
+    # in the path, so the line just carries time, state, and the claude session id.
+    # Best-effort: never blocks the hook. Gitignore .claude/agent-log.txt if you don't
+    # want it tracked.
+    $cwd = $payload.cwd
+    if (-not $cwd) { $cwd = $payload.workspace.current_dir }
+    if ($cwd -and (Test-Path $cwd)) {
+        try {
+            $dotClaude = Join-Path $cwd '.claude'
+            [System.IO.Directory]::CreateDirectory($dotClaude) | Out-Null
+            $folderLog = Join-Path $dotClaude 'agent-log.txt'
+            $reasonTag = if ($reason) { "  reason=$reason" } else { '' }
+            $logLine   = '{0}  {1,-11}  session={2}{3}' -f $now, $State, $sid, $reasonTag
+            # A fresh launch (source=startup) starts the folder log over; a resumed
+            # session (claude -c -> source=resume), /clear, compact, and every
+            # mid-session event append. So the file reflects the current session, and
+            # full history still lives in the central state.log.
+            if ($FromPayloadSource -and $State -eq 'startup') {
+                Set-Content -Path $folderLog -Value $logLine -Encoding UTF8
+            } else {
+                Add-Content -Path $folderLog -Value $logLine -Encoding UTF8
+            }
+        } catch {}
+    }
+
     foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
         try {
             $e = Get-Content $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json
             if ($e.ClaudeSessionId -ne $sid) { continue }
             $e | Add-Member -NotePropertyName State           -NotePropertyValue $State -Force
             $e | Add-Member -NotePropertyName LastStateChange -NotePropertyValue $now   -Force
+            if ($reason) { $e | Add-Member -NotePropertyName EndReason -NotePropertyValue $reason -Force }
             ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $f.FullName -Encoding UTF8
 
             $branch = if ($e.Label) { $e.Label } elseif ($e.Branch) { $e.Branch } else { '(unknown)' }
             $line   = '{0}  {1,-11}  {2,-30}  @ {3}' -f $now, $State, $branch, $e.WorktreePath
             Add-Content -Path $logFile -Value $line -Encoding UTF8
+
+            # Per-window tab-order registry: append this tab (keyed by its stable
+            # WT_SESSION) the first time we see it, and NEVER move or remove it here.
+            # A tab's WT_SESSION survives claude exiting and 'claude -c' restarting in
+            # the same tab, so append-if-missing keeps its position fixed across that
+            # cycle. (Removing on SessionEnd + re-appending on resume used to shuffle
+            # it to the end -- that was the reorder bug.) A tab that truly closed just
+            # leaves a stale line; 'gwt sessions tabs' flags it [GHOST] and
+            # 'tabs prune' / 'tabs test' drop it. Position = approximate wt tab index.
+            $wtSess = if ($e.WtSession) { $e.WtSession } else { $env:WT_SESSION }
+            if ($wtSess -and $e.WindowName -and $State -ne 'ended') {
+                try {
+                    $winDir = Join-Path $wtRoot 'windows'
+                    [System.IO.Directory]::CreateDirectory($winDir) | Out-Null
+                    $safe     = ($e.WindowName -replace '[^A-Za-z0-9._-]', '_')
+                    $tabFile  = Join-Path $winDir "$safe.tabs"
+                    $existing = if (Test-Path $tabFile) { @(Get-Content $tabFile -ErrorAction SilentlyContinue) } else { @() }
+                    # For a main clone the branch is just 'main', which is useless as a
+                    # label (every repo's main clone looks the same). Fall back to the
+                    # folder leaf (the repo name) so agora/main reads 'agora'.
+                    $tabLabel = if ($branch -in @('main','master') -and $e.WorktreePath) { Split-Path $e.WorktreePath -Leaf } else { $branch }
+                    if (-not @($existing | Where-Object { ($_ -split "`t")[0] -eq $wtSess }).Count) {
+                        Add-Content -Path $tabFile -Value ("{0}`t{1}`t{2}" -f $wtSess, $tabLabel, $e.WorktreePath) -Encoding UTF8
+                    }
+                } catch {}
+            }
             break
         } catch {}
     }

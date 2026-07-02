@@ -82,6 +82,13 @@ I consider a change finished when:
   Update them with every behavior change. I asked for this directly: "keep track of what we do and
   make sure docs are updated and make a test plan too so we don't regress."
 
+## Test and dev artifacts
+
+- Isolate test and dev runs from my shared user state. Point them at a dedicated config/home dir. Never
+  write into ~/.ziti, ~/.config, or other global user config that a real session depends on.
+- Clean up what a run created (certs, identities, temp homes) before handing back. If you overwrote
+  shared state, say so plainly rather than leaving me to find it.
+
 ## When to stop and check in
 
 - After you've done the thing I asked.

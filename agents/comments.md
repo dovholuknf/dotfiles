@@ -29,6 +29,9 @@ delete the comment.
 - Restating a well-named thing. If the name carries it, drop the comment, or rename the identifier.
 - Narrating the call flow or the test that exercises a function. A function comment is about the function,
   not its callers or what some test proves with it.
+- A cross-reference to code that can drift. `mirrors the struct in controller.yml` rots the moment either
+  side moves. Describe what THIS code does. A stable pointer (issue, URL, spec section) is still fine (see
+  above), but rationale for a deferred decision belongs in the PR body or commit message, not here.
 - Decoration. No banner bars, no `==== section ====`, unless a long file genuinely needs navigation.
 - Examples pulled from the current session. A comment describes the code, not the conversation that produced
   it. Never use a value, path, or name that came up in our chat as the illustrative example (especially a

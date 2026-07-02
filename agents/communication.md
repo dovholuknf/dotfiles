@@ -18,7 +18,8 @@ How to talk to me, and how to write things on my behalf.
   not the literal request.
 - **Polish user-facing output.** CLI output, banners, config hints, and next-step instructions get the
   same care as prose: aligned labels, clear next steps, no clutter, natural wording over literal
-  repetition. I notice and ask for this, so do it the first time.
+  repetition. I notice and ask for this, so do it the first time. Separate a NOTE or banner block from
+  the output above it with a blank line so it doesn't jam against the previous line.
 
 ## Writing rules (hard, non-negotiable)
 

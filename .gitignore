@@ -63,6 +63,9 @@ Thumbs.db
 desktop.ini
 *.stackdump
 
+# --- claude-code runtime (per-folder activity log written by the session hook) ---
+.claude/agent-log.txt
+
 # --- local-only overrides ---
 *.local
 *.local.*

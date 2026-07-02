@@ -43,6 +43,9 @@ Rules:
 - No marketing tone. No "this PR improves X." Just say what it does.
 - No "🤖 Generated with Claude Code" footer. No `Co-Authored-By:` line. Ever.
 - Link issues in the body, not the title.
+- Document a deliberate choice a reviewer would question (a thin helper kept, a DRY violation, a skipped
+  abstraction, an out-of-scope edge case) here, not in code comments. A short "Deliberate decisions" note
+  preempts the objection where reviewers actually look.
 - If there's a screenshot or terminal capture that proves the change works, include it.
 
 ## Commit messages
