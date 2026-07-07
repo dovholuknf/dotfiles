@@ -87,6 +87,40 @@ $script:GitRoot    = $SourceRoot.TrimEnd('\')
 $script:SessionDir = "$script:WtRoot\sessions"
 
 function _DetectCurrentRepoFromCwd {
+    # Prefer git: if cwd is inside a work tree, derive host/org/repo from origin's
+    # URL. This is correct no matter how the clone is nested (e.g. a non-standard
+    # <git-root>\github\openziti\nf\ziti), unlike counting path segments. Fall back
+    # to the path arithmetic below when there is no repo / no origin (e.g. sitting
+    # at a bare worktree root with no branch checked out yet).
+    try {
+        $origin = (& git remote get-url origin 2>$null | Out-String).Trim()
+        if ($origin) {
+            $u = $origin -replace '\.git$', ''
+            $h = $null; $rest = $null
+            if     ($u -match '^[^@/]+@([^:]+):(.+)$')                 { $h = $Matches[1]; $rest = $Matches[2] }
+            elseif ($u -match '^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/]+)/(.+)$') { $h = $Matches[1]; $rest = $Matches[2] }
+            if ($h -and $rest) {
+                $segs = @(($rest -split '/') | Where-Object { $_ })
+                if ($segs.Count -ge 2) {
+                    $shortHost = switch ($h) {
+                        'github.com'    { 'github' }
+                        'bitbucket.org' { 'bitbucket' }
+                        'gitlab.com'    { 'gitlab' }
+                        default         { $h }
+                    }
+                    $o = $segs[0]; $r = $segs[-1]
+                    return @{
+                        Host     = $shortHost
+                        Org      = $o
+                        Repo     = $r
+                        MainPath = (Join-Path (Join-Path (Join-Path $script:GitRoot $shortHost) $o) $r)
+                        WtBase   = (Join-Path (Join-Path (Join-Path $script:WtRoot  $shortHost) $o) $r)
+                    }
+                }
+            }
+        }
+    } catch {}
+
     # Pure path arithmetic: figure out which repo (host/org/repo) the cwd
     # belongs to. Recognizes two layouts:
     #   $script:WtRoot\<host>\<org>\<repo>\<branch>\...   (worktree)
@@ -646,6 +680,32 @@ function _GetProcMapCached {
         }
     }
     return $script:_ProcMapCache
+}
+
+function _IsPidAlive {
+    # Fast, cross-user liveness via kernel32 OpenProcess -- no WMI/CIM, so no ~2s
+    # connection floor. Returns $true/$false, or $null if the P/Invoke can't be set
+    # up (caller then falls back to CIM). A live PID returns a handle; if it exists
+    # but we lack rights, OpenProcess fails with ERROR_ACCESS_DENIED (5), which STILL
+    # means alive. ERROR_INVALID_PARAMETER (87) is the only "no such process" signal.
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    if (-not ('Gwt.Proc' -as [type])) {
+        try {
+            Add-Type -Namespace Gwt -Name Proc -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)]
+public static extern System.IntPtr OpenProcess(uint access, bool inherit, uint pid);
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)]
+public static extern bool CloseHandle(System.IntPtr h);
+'@ -ErrorAction Stop
+        } catch { return $null }
+    }
+    # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000 (least-privileged, usually granted).
+    $h = [Gwt.Proc]::OpenProcess(0x1000, $false, [uint32]$ProcessId)
+    if ($h -ne [IntPtr]::Zero) { [void][Gwt.Proc]::CloseHandle($h); return $true }
+    $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($err -eq 5) { return $true }   # access denied -> exists
+    return $false                       # 87 (and anything else) -> treat as dead
 }
 
 function Get-AliveSessionForPath {
@@ -1701,6 +1761,11 @@ switch ($Command) {
     'sessions' {
         # Shared location so both clint and the spawned claude user shells can read/write.
         $sessionDir = $script:SessionDir
+
+        # 'tabs' works purely off the per-window registry files, not the session
+        # ledger, so skip the full scan + CIM liveness + repo-scope preamble here
+        # (it does its own lighter liveness pass only when a mode needs it).
+        if ($Target -ne 'tabs') {
         Write-Color "gwt sessions: scanning '$sessionDir'" DarkGray
         if (-not (Test-Path $sessionDir)) {
             Write-Color "  directory does not exist (or not readable from this user)" Yellow
@@ -1757,6 +1822,7 @@ switch ($Command) {
         if ($scopeResult.Scoped) {
             Write-Color ("  scoped to {0}  ({1} entries from other repos hidden; pass -All to see all)" -f $scopeResult.ScopeName, $scopeResult.Hidden) DarkGray
         }
+        } # end ledger preamble (skipped for 'tabs')
 
         # Resolve a candidate set against the (positional) $Match substring plus the
         # exact-match $Name / $Window filters. If multiple match, prompt with a
@@ -1900,16 +1966,112 @@ switch ($Command) {
             'tabs' {
                 # Per-window tab-order registry the hook maintains. Modes (via the
                 # next positional, e.g. 'gwt sessions tabs test'):
-                #   (none)  show each window's tabs in order with their -t index (read-only)
+                #   (none)  show each window's tabs, auto-dropping dead ones as it reads
+                #   set     register/reposition THIS tab (does what the hook does, prompts
+                #           for the window since wt can't report a tab's own window/index)
                 #   prune   drop ghost lines whose session is no longer alive (re-syncs indexes)
                 #   test    focus each tracked tab and ask you to confirm it landed right
                 #   clear   wipe the whole registry so a clean quit-all/reopen-all rebuilds it
                 $winDir = Join-Path $script:WtRoot 'windows'
+                $mode   = if ($Match) { $Match.ToLower() } else { 'show' }
+
+                if ($mode -eq 'set') {
+                    # Replay what the SessionStart hook does, but for THIS tab on demand,
+                    # prompting for anything not derivable. wt exposes no "what window/index
+                    # am I" query, so the window (and position) come from you. Run it from
+                    # the tab after exiting claude; $PID is then this tab's pwsh, which is
+                    # exactly the liveness PID the registry checks.
+                    $wtSess = $env:WT_SESSION
+                    if (-not $wtSess) {
+                        throw "no WT_SESSION -- run 'gwt sessions tabs set' inside the Windows Terminal tab you want to register"
+                    }
+                    $cwd    = (Get-Location).Path
+                    $branch = (& git rev-parse --abbrev-ref HEAD 2>$null | Out-String).Trim()
+                    if (-not $branch -or $branch -eq 'HEAD') { $branch = '' }
+                    $scope    = _DetectCurrentRepoFromCwd
+                    $repoLeaf = if ($scope) { $scope.Repo } else { Split-Path $cwd -Leaf }
+
+                    # Find this tab's existing ledger entry (by WT_SESSION), if any.
+                    $file = $null; $entry = $null
+                    if (Test-Path $script:SessionDir) {
+                        foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+                            try { $e = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+                            if ($e.WtSession -eq $wtSess) { $file = $sf.FullName; $entry = $e; break }
+                        }
+                    }
+
+                    # Window: -Window wins; otherwise the picker (defaulting to auto=repo).
+                    $win = $Window
+                    if (-not $win) {
+                        $picked = _SelectWtWindow -Repo $repoLeaf
+                        if (-not $picked) { Write-Color "cancelled" DarkGray; return }
+                        $win = $picked
+                    }
+                    if ($win -eq '__auto__') { $win = $repoLeaf }
+                    if ($win -eq '__new__')  { throw "'set' needs an existing window name, not a brand-new window" }
+
+                    # Create a ledger entry if this tab has none, then patch the fields the
+                    # spawn/hook would have written so liveness + window tracking both work.
+                    [System.IO.Directory]::CreateDirectory($script:SessionDir) | Out-Null
+                    if (-not $entry) {
+                        $id    = [guid]::NewGuid().ToString()
+                        $file  = Join-Path $script:SessionDir "$id.json"
+                        $entry = [pscustomobject]@{ Id = $id }
+                    }
+                    $now = (Get-Date).ToString('o')
+                    $sets = @{ WorktreePath=$cwd; Branch=$branch; Repo=$repoLeaf; WindowName=$win; WtSession=$wtSess; Pid=$PID; State='idle'; LastStateChange=$now }
+                    foreach ($k in $sets.Keys) { $entry | Add-Member -NotePropertyName $k -NotePropertyValue $sets[$k] -Force }
+                    ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path $file -Encoding UTF8
+
+                    # Tab line: a worktree lives in exactly ONE tab in ONE window. So
+                    # before inserting, drop any existing line across ALL window files that
+                    # is either this tab (WtSession) OR the same worktree path (path is the
+                    # dedupe key). That turns a second 'set' into a MOVE, not a duplicate.
+                    $cwdNorm = ($cwd -replace '/', '\').TrimEnd('\').ToLower()
+                    [System.IO.Directory]::CreateDirectory($winDir) | Out-Null
+                    foreach ($wf in (Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue)) {
+                        $ls   = @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
+                        $keep = @($ls | Where-Object {
+                            $p        = $_ -split "`t"
+                            $linePath = if ($p.Count -ge 3) { ($p[2] -replace '/', '\').TrimEnd('\').ToLower() } else { '' }
+                            ($p[0] -ne $wtSess) -and ($linePath -ne $cwdNorm)
+                        })
+                        if ($keep.Count -ne $ls.Count) {
+                            if ($keep.Count) { Set-Content -Path $wf.FullName -Value $keep -Encoding UTF8 }
+                            else { Remove-Item $wf.FullName -Force -ErrorAction SilentlyContinue }
+                        }
+                    }
+                    $safe    = ($win -replace '[^A-Za-z0-9._-]', '_')
+                    $tabFile = Join-Path $winDir "$safe.tabs"
+                    $lines   = [System.Collections.ArrayList]@(if (Test-Path $tabFile) { @(Get-Content $tabFile -ErrorAction SilentlyContinue) } else { @() })
+                    # Label: default to the branch (or repo leaf for a main clone), but let
+                    # the user name it whatever they recognize the tab as.
+                    $labelDefault = if ($branch -and $branch -notin @('main','master')) { $branch } else { $repoLeaf }
+                    $labelIn = Read-Host ("label for this tab (blank = '{0}')" -f $labelDefault)
+                    $label   = if ([string]::IsNullOrWhiteSpace($labelIn)) { $labelDefault } else { $labelIn.Trim() }
+                    $newLine = "{0}`t{1}`t{2}" -f $wtSess, $label, $cwd
+                    # Ask a human 1-based tab number, then convert to the 0-based index the
+                    # registry / wt focus-tab use. Blank appends at the end.
+                    $numRaw = Read-Host ("what tab number is this? (1 = first tab, blank = last, {0})" -f ($lines.Count + 1))
+                    $idx = $lines.Count
+                    if (-not [string]::IsNullOrWhiteSpace($numRaw)) {
+                        $tmp = 0
+                        if ([int]::TryParse($numRaw.Trim(), [ref]$tmp) -and $tmp -gt 0) {
+                            $idx = [Math]::Min($tmp - 1, $lines.Count)
+                        } else {
+                            Write-Color "  tab number must be a positive whole number -- appending at the end" Yellow
+                        }
+                    }
+                    [void]$lines.Insert($idx, $newLine)
+                    Set-Content -Path $tabFile -Value @($lines) -Encoding UTF8
+                    Write-Color ("registered this tab -> [{0}] -t {1}  ({2})" -f $win, $idx, $label) Green
+                    return
+                }
+
                 if (-not (Test-Path $winDir)) {
                     Write-Color "no tab registry yet at $winDir -- it fills in as sessions start/stop" DarkGray
                     return
                 }
-                $mode = if ($Match) { $Match.ToLower() } else { 'show' }
 
                 if ($mode -eq 'clear') {
                     $files = @(Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue)
@@ -1921,17 +2083,51 @@ switch ($Command) {
                 $files = @(Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue | Sort-Object Name)
                 if (-not $files.Count) { Write-Color "no windows tracked yet (start a session to populate)" DarkGray; return }
 
-                # Live WtSession set (entries with an alive PID) -- used to spot ghost
-                # lines left by tabs that died without a clean SessionEnd.
-                $procMap = _GetProcMapCached
-                $liveWt  = @{}
+                # Liveness scoped to the tabs actually in the registry -- NOT the whole
+                # OS process table. Collect the WtSessions the .tabs files reference, map
+                # them to PIDs from the ledger, then run ONE Win32_Process query filtered
+                # to just those PIDs (WQL 'ProcessId=a OR ProcessId=b ...'). A WtSession is
+                # live if ANY of its ledger entries' PIDs is alive (handles dup entries).
+                $tabWt = @{}
+                foreach ($wf in $files) {
+                    foreach ($ln in @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)) {
+                        $ws = ($ln -split "`t")[0]
+                        if ($ws) { $tabWt[$ws] = $true }
+                    }
+                }
+                $wtPids = @{}
                 foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
-                    try {
-                        $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json
-                        if ($se.WtSession -and $se.Pid -and $procMap[[int]$se.Pid]) { $liveWt[$se.WtSession] = $true }
-                    } catch {}
+                    try { $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+                    if ($se.WtSession -and $tabWt.ContainsKey($se.WtSession) -and $se.Pid -and [int]$se.Pid -gt 0) {
+                        if (-not $wtPids.ContainsKey($se.WtSession)) { $wtPids[$se.WtSession] = @() }
+                        $wtPids[$se.WtSession] += [int]$se.Pid
+                    }
+                }
+                $liveWt  = @{}
+                $allPids = @($wtPids.Values | ForEach-Object { $_ } | Sort-Object -Unique)
+                if ($allPids.Count) {
+                    $aliveP = @{}
+                    $useCim = $false
+                    foreach ($p in $allPids) {
+                        $r = _IsPidAlive $p
+                        if ($null -eq $r) { $useCim = $true; break }   # P/Invoke unavailable
+                        if ($r) { $aliveP[$p] = $true }
+                    }
+                    if ($useCim) {
+                        # Fallback: one filtered CIM query (slower, but cross-user reliable).
+                        Write-Color ("  checking {0} tab process(es)..." -f $allPids.Count) DarkGray
+                        $aliveP = @{}
+                        $filter = ($allPids | ForEach-Object { "ProcessId=$_" }) -join ' OR '
+                        Get-CimInstance Win32_Process -Filter $filter -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object { $aliveP[[int]$_.ProcessId] = $true }
+                    }
+                    foreach ($ws in $wtPids.Keys) {
+                        if (@($wtPids[$ws] | Where-Object { $aliveP.ContainsKey($_) }).Count) { $liveWt[$ws] = $true }
+                    }
                 }
 
+                # Collect dead-PID tab lines stripped during 'show' so they are reported
+                # once at the end instead of interleaved with the live listing.
+                $removedDead = @()
                 foreach ($wf in $files) {
                     $win = [System.IO.Path]::GetFileNameWithoutExtension($wf.Name)
 
@@ -1949,6 +2145,16 @@ switch ($Command) {
                     }
 
                     if ($mode -eq 'test') {
+                        # Dead-PID lines are known junk -- strip them BEFORE focusing
+                        # anything, so 'test' never tries to open an already-exited tab.
+                        $raw      = @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
+                        $liveOnly = @($raw | Where-Object { $liveWt.ContainsKey(($_ -split "`t")[0]) })
+                        if ($liveOnly.Count -ne $raw.Count) {
+                            if ($liveOnly.Count) { Set-Content -Path $wf.FullName -Value $liveOnly -Encoding UTF8 }
+                            else { Remove-Item $wf.FullName -Force -ErrorAction SilentlyContinue }
+                            Write-Color ("[{0}] dropped {1} exited tab(s) before testing" -f $win, ($raw.Count - $liveOnly.Count)) DarkGray
+                        }
+                        if (-not $liveOnly.Count) { continue }
                         # Correcting loop: focus each tab, ask if it landed right. On 'n',
                         # ask whether the tab is even open (no -> drop the ghost line), else
                         # ask its real index and move the line there. Any fix re-reads the
@@ -1989,19 +2195,43 @@ switch ($Command) {
                         continue
                     }
 
-                    # show
+                    # show: dead tabs are KNOWABLE (their pwsh PID is gone), so strip them
+                    # from the file up front, list only the live ones renumbered 0..n, and
+                    # stash the removed lines to report at the end.
                     $tlines = @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
-                    Write-Color ("[{0}]  {1} tab(s)" -f $win, $tlines.Count) Cyan
-                    for ($i = 0; $i -lt $tlines.Count; $i++) {
-                        $parts = $tlines[$i] -split "`t"
-                        $wsess = $parts[0]
+                    $liveLines = @($tlines | Where-Object { $liveWt.ContainsKey(($_ -split "`t")[0]) })
+                    $deadLines = @($tlines | Where-Object { -not $liveWt.ContainsKey(($_ -split "`t")[0]) })
+                    if ($deadLines.Count) {
+                        if ($liveLines.Count) { Set-Content -Path $wf.FullName -Value $liveLines -Encoding UTF8 }
+                        else { Remove-Item $wf.FullName -Force -ErrorAction SilentlyContinue }
+                        foreach ($d in $deadLines) {
+                            $dp = $d -split "`t"
+                            $removedDead += [pscustomobject]@{
+                                Window = $win
+                                Branch = if ($dp.Count -ge 2) { $dp[1] } else { '(?)' }
+                                Path   = if ($dp.Count -ge 3) { $dp[2] } else { '' }
+                            }
+                        }
+                    }
+                    if (-not $liveLines.Count) { continue }
+                    Write-Color ("[{0}]  {1} tab(s)" -f $win, $liveLines.Count) Cyan
+                    for ($i = 0; $i -lt $liveLines.Count; $i++) {
+                        $parts = $liveLines[$i] -split "`t"
                         $br    = if ($parts.Count -ge 2) { $parts[1] } else { '(?)' }
                         $path  = if ($parts.Count -ge 3) { $parts[2] } else { '' }
-                        $ghost = if ($liveWt.ContainsKey($wsess)) { '' } else { '  [claude exited]' }
-                        Write-Host ('    -t {0,-2}  {1,-30} {2}{3}' -f $i, $br, $path, $ghost)
+                        Write-Host ('    -t {0,-2}  {1,-30} {2}' -f $i, $br, $path)
                     }
                 }
-                if ($mode -eq 'show') { Write-Color "modes: tabs prune (drop exited) | tabs test (verify+fix) | tabs clear (reset)" DarkGray }
+                if ($mode -eq 'show') {
+                    if ($removedDead.Count) {
+                        Write-Host ""
+                        Write-Color ("removing dead claudes ({0}):" -f $removedDead.Count) Yellow
+                        foreach ($d in $removedDead) {
+                            Write-Host ('    [{0,-13}] {1,-30} {2}' -f $d.Window, $d.Branch, $d.Path)
+                        }
+                    }
+                    Write-Color "modes: tabs set (register this tab) | tabs test (verify+fix) | tabs clear (reset)" DarkGray
+                }
                 return
             }
             'restore' {

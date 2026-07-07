@@ -322,6 +322,11 @@ function _OpenClaudeShell {
     } else {
         $wtArgs = "wt.exe -d `"$Path`" pwsh -NoExit -EncodedCommand $enc"
     }
+    # Echo the resolved destination so 'auto' (which maps to the repo name) isn't a
+    # silent guess -- the user sees exactly which wt window the tab lands in.
+    $winMsg = if ([string]::IsNullOrWhiteSpace($WindowName)) { "opening in a new wt window" } else { "using wt window '$WindowName'" }
+    Write-Color $winMsg Cyan
+
     # Admin shells can't read the unelevated /savecred vault -- warn early.
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if ($isAdmin) {

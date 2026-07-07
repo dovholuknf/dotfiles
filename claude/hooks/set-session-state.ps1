@@ -101,46 +101,65 @@ try {
         } catch {}
     }
 
+    # Collect ALL entries carrying this ClaudeSessionId. It is NOT unique across
+    # files: 'claude -c' reuses the session id and a later spawn can seed a second
+    # entry for the same worktree, so several files can share it with different
+    # WtSession / WindowName. Pick the RIGHT one -- the entry for THIS tab wins by
+    # WtSession match, else the newest by last activity. Taking the first match blind
+    # is what wrote the tab line under a stale entry's window (the '[pr-1269]' bug).
+    $candidates = @()
     foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
-        try {
-            $e = Get-Content $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json
-            if ($e.ClaudeSessionId -ne $sid) { continue }
-            $e | Add-Member -NotePropertyName State           -NotePropertyValue $State -Force
-            $e | Add-Member -NotePropertyName LastStateChange -NotePropertyValue $now   -Force
-            if ($reason) { $e | Add-Member -NotePropertyName EndReason -NotePropertyValue $reason -Force }
-            ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $f.FullName -Encoding UTF8
+        try { $ce = Get-Content $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { continue }
+        if ($ce.ClaudeSessionId -ne $sid) { continue }
+        $candidates += [pscustomobject]@{ File = $f.FullName; Entry = $ce }
+    }
+    if ($candidates.Count) {
+        $pick = $null
+        if ($env:WT_SESSION) {
+            $pick = @($candidates | Where-Object { $_.Entry.WtSession -eq $env:WT_SESSION })[0]
+        }
+        if (-not $pick) {
+            $pick = @($candidates | Sort-Object {
+                if ($_.Entry.LastStateChange) { "$($_.Entry.LastStateChange)" }
+                elseif ($_.Entry.LastSpawnedAt) { "$($_.Entry.LastSpawnedAt)" }
+                else { "$($_.Entry.SpawnedAt)" }
+            } -Descending)[0]
+        }
+        $file = $pick.File
+        $e    = $pick.Entry
+        $e | Add-Member -NotePropertyName State           -NotePropertyValue $State -Force
+        $e | Add-Member -NotePropertyName LastStateChange -NotePropertyValue $now   -Force
+        if ($reason) { $e | Add-Member -NotePropertyName EndReason -NotePropertyValue $reason -Force }
+        ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $file -Encoding UTF8
 
-            $branch = if ($e.Label) { $e.Label } elseif ($e.Branch) { $e.Branch } else { '(unknown)' }
-            $line   = '{0}  {1,-11}  {2,-30}  @ {3}' -f $now, $State, $branch, $e.WorktreePath
-            Add-Content -Path $logFile -Value $line -Encoding UTF8
+        $branch = if ($e.Label) { $e.Label } elseif ($e.Branch) { $e.Branch } else { '(unknown)' }
+        $line   = '{0}  {1,-11}  {2,-30}  @ {3}' -f $now, $State, $branch, $e.WorktreePath
+        Add-Content -Path $logFile -Value $line -Encoding UTF8
 
-            # Per-window tab-order registry: append this tab (keyed by its stable
-            # WT_SESSION) the first time we see it, and NEVER move or remove it here.
-            # A tab's WT_SESSION survives claude exiting and 'claude -c' restarting in
-            # the same tab, so append-if-missing keeps its position fixed across that
-            # cycle. (Removing on SessionEnd + re-appending on resume used to shuffle
-            # it to the end -- that was the reorder bug.) A tab that truly closed just
-            # leaves a stale line; 'gwt sessions tabs' flags it [GHOST] and
-            # 'tabs prune' / 'tabs test' drop it. Position = approximate wt tab index.
-            $wtSess = if ($e.WtSession) { $e.WtSession } else { $env:WT_SESSION }
-            if ($wtSess -and $e.WindowName -and $State -ne 'ended') {
-                try {
-                    $winDir = Join-Path $wtRoot 'windows'
-                    [System.IO.Directory]::CreateDirectory($winDir) | Out-Null
-                    $safe     = ($e.WindowName -replace '[^A-Za-z0-9._-]', '_')
-                    $tabFile  = Join-Path $winDir "$safe.tabs"
-                    $existing = if (Test-Path $tabFile) { @(Get-Content $tabFile -ErrorAction SilentlyContinue) } else { @() }
-                    # For a main clone the branch is just 'main', which is useless as a
-                    # label (every repo's main clone looks the same). Fall back to the
-                    # folder leaf (the repo name) so agora/main reads 'agora'.
-                    $tabLabel = if ($branch -in @('main','master') -and $e.WorktreePath) { Split-Path $e.WorktreePath -Leaf } else { $branch }
-                    if (-not @($existing | Where-Object { ($_ -split "`t")[0] -eq $wtSess }).Count) {
-                        Add-Content -Path $tabFile -Value ("{0}`t{1}`t{2}" -f $wtSess, $tabLabel, $e.WorktreePath) -Encoding UTF8
-                    }
-                } catch {}
-            }
-            break
-        } catch {}
+        # Per-window tab-order registry: append this tab (keyed by its stable
+        # WT_SESSION) the first time we see it, and NEVER move or remove it here.
+        # A tab's WT_SESSION survives claude exiting and 'claude -c' restarting in
+        # the same tab, so append-if-missing keeps its position fixed across that
+        # cycle. (Removing on SessionEnd + re-appending on resume used to shuffle
+        # it to the end -- that was the reorder bug.) A tab that truly closed just
+        # leaves a stale line; 'gwt sessions tabs list' now drops it on read.
+        $wtSess = if ($e.WtSession) { $e.WtSession } else { $env:WT_SESSION }
+        if ($wtSess -and $e.WindowName -and $State -ne 'ended') {
+            try {
+                $winDir = Join-Path $wtRoot 'windows'
+                [System.IO.Directory]::CreateDirectory($winDir) | Out-Null
+                $safe     = ($e.WindowName -replace '[^A-Za-z0-9._-]', '_')
+                $tabFile  = Join-Path $winDir "$safe.tabs"
+                $existing = if (Test-Path $tabFile) { @(Get-Content $tabFile -ErrorAction SilentlyContinue) } else { @() }
+                # For a main clone the branch is just 'main', which is useless as a
+                # label (every repo's main clone looks the same). Fall back to the
+                # folder leaf (the repo name) so agora/main reads 'agora'.
+                $tabLabel = if ($branch -in @('main','master') -and $e.WorktreePath) { Split-Path $e.WorktreePath -Leaf } else { $branch }
+                if (-not @($existing | Where-Object { ($_ -split "`t")[0] -eq $wtSess }).Count) {
+                    Add-Content -Path $tabFile -Value ("{0}`t{1}`t{2}" -f $wtSess, $tabLabel, $e.WorktreePath) -Encoding UTF8
+                }
+            } catch {}
+        }
     }
 } catch {}
 
