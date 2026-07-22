@@ -338,24 +338,34 @@ function _OpenClaudeShell {
     } else {
         $runasOut = & runas /user:claude /savecred $wtArgs 2>&1
         if ($LASTEXITCODE -ne 0) {
-            Write-Color "  runas failed (exit $LASTEXITCODE)" Red
-            if ($runasOut) {
-                Write-Color "  output: $runasOut" Red
+            # A missing/expired saved credential makes 'runas /savecred' fall back to an
+            # interactive 'Enter the password' prompt, which this captured run swallowed
+            # (exit 1 with 'password' in the output, or no output at all). Detect that and
+            # retry ATTACHED so the user types it once and /savecred caches it -- no
+            # -Verbose needed. Admin shells read a separate vault, so guide instead there.
+            $looksLikeCred = (-not $runasOut) -or ("$runasOut" -match 'password|credential')
+            if ($looksLikeCred -and -not $isAdmin) {
+                Write-Color "  claude credential not cached -- enter it once (saved for next time):" Yellow
+                runas /user:claude /savecred $wtArgs
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Color "  credential saved; future 'gwt claude' calls won't prompt." DarkGray
+                } else {
+                    Write-Color "  runas still failed (exit $LASTEXITCODE) after the interactive attempt" Red
+                }
             } else {
-                Write-Color "  (no output captured -- often means saved credential missing/expired)" DarkGray
-                if ($isAdmin) {
+                Write-Color "  runas failed (exit $LASTEXITCODE)" Red
+                if ($runasOut) {
+                    Write-Color "  output: $runasOut" Red
+                } elseif ($isAdmin) {
                     Write-Color "  -> Admin shell credential vault is separate. Try a non-admin shell." Yellow
                 }
-                Write-Color "  to (re-)save credential, run interactively once:" DarkGray
-                Write-Color "      runas /user:claude /savecred wt.exe" Cyan
-                Write-Color "  it will prompt for claude's password; subsequent gwt calls won't ask again." DarkGray
+                $encLen = $wtArgs.Length
+                Write-Color "  full wt args length: $encLen chars (runas command-line limit ~2048)" DarkGray
+                if ($encLen -gt 1900) {
+                    Write-Color "  -> encoded command may be too long; try a shorter -Prompt or -y to skip prompt" Yellow
+                }
+                Write-Color "  to retry with full output visible: re-run gwt with -Verbose" DarkGray
             }
-            $encLen = $wtArgs.Length
-            Write-Color "  full wt args length: $encLen chars (runas command-line limit ~2048)" DarkGray
-            if ($encLen -gt 1900) {
-                Write-Color "  -> encoded command may be too long; try a shorter -Prompt or -y to skip prompt" Yellow
-            }
-            Write-Color "  to retry with full output visible: re-run gwt with -Verbose" DarkGray
         }
     }
     $script:LastSpawnedSessionId = $sessionId
@@ -605,23 +615,46 @@ function _RegisterOrClaimClaudeSession {
         }
     } catch {}
 
-    # Try to find an existing entry: prefer WtSession match, then WorktreePath.
-    $existing = $null
+    # Find the entry to claim. A tab is exactly one WtSession, so collect ALL
+    # entries carrying this WtSession -- more than one means duplication (a spawn
+    # pre-write plus an older entry that still holds this WtSession). Claiming the
+    # first one found (arbitrary directory order) is what orphaned the pre-write and
+    # produced two 'live' rows for one tab. Instead claim the NEWEST (this launch's
+    # pre-write, which carries the spawn's WindowName/Branch/Prompt) and DELETE the
+    # rest, collapsing to one file per tab. Fall back to a path match for ad-hoc
+    # launches that never went through a gwt pre-write.
+    $wtMatches = @()
+    $pathMatch = $null
     Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($existing) { return }
-        try {
-            $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
-            if ($wtSess -and $e.WtSession -eq $wtSess) {
-                $existing = [PSCustomObject]@{ Entry = $e; File = $_.FullName; MatchedBy = 'WtSession' }
-                return
+        try { $e = Get-Content $_.FullName -Raw | ConvertFrom-Json } catch { return }
+        if ($wtSess -and $e.WtSession -eq $wtSess) {
+            $wtMatches += [PSCustomObject]@{ Entry = $e; File = $_.FullName }
+            return
+        }
+        if (-not $pathMatch -and $e.WorktreePath) {
+            $epath = ($e.WorktreePath -replace '/', '\').TrimEnd('\')
+            if ($epath -eq $cwd -and -not ($e.Pid -and $e.Pid -ne 0)) {
+                $pathMatch = [PSCustomObject]@{ Entry = $e; File = $_.FullName }
             }
-            if ($e.WorktreePath) {
-                $epath = ($e.WorktreePath -replace '/', '\').TrimEnd('\')
-                if ($epath -eq $cwd -and -not ($e.Pid -and $e.Pid -ne 0)) {
-                    $existing = [PSCustomObject]@{ Entry = $e; File = $_.FullName; MatchedBy = 'WorktreePath' }
-                }
-            }
-        } catch {}
+        }
+    }
+
+    $existing = $null
+    if ($wtMatches.Count) {
+        $sorted = @($wtMatches | Sort-Object {
+            if ($_.Entry.FirstSpawnedAt) { "$($_.Entry.FirstSpawnedAt)" }
+            elseif ($_.Entry.LastSpawnedAt) { "$($_.Entry.LastSpawnedAt)" }
+            else { "$($_.Entry.SpawnedAt)" }
+        } -Descending)
+        $existing = [PSCustomObject]@{ Entry = $sorted[0].Entry; File = $sorted[0].File; MatchedBy = 'WtSession' }
+        foreach ($dup in ($sorted | Select-Object -Skip 1)) {
+            try {
+                Remove-Item $dup.File -Force -ErrorAction SilentlyContinue
+                Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    DEDUP-DROP file={0} (same WtSession {1})" -f $dup.File, $wtSess)
+            } catch {}
+        }
+    } elseif ($pathMatch) {
+        $existing = [PSCustomObject]@{ Entry = $pathMatch.Entry; File = $pathMatch.File; MatchedBy = 'WorktreePath' }
     }
 
     if ($existing) {

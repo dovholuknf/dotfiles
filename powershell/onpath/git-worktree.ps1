@@ -1611,6 +1611,12 @@ switch ($Command) {
         $branch = "discourse-$topicId"
         Write-Color "branch:          $branch" DarkGray
 
+        # discourse always launches claude with a fixed investigate-and-summarize
+        # prompt. The topic id names the DISCOURSE-<id>.md file, and the topic URL is
+        # embedded so claude knows which post to read. An explicit -Prompt overrides it.
+        $topicUrl = if ($titleSlug) { "https://$discourseHost/t/$titleSlug/$topicId" } else { "https://$discourseHost/t/$topicId" }
+        $discoursePrompt = "read this discourse post ($topicUrl), summarize it here and in DISCOURSE-$topicId.md file, then let's figure out how you and i can make a plan to answer the user."
+
         # Forward to 'new' with explicit host/org/repo so Resolve-RepoContext
         # doesn't need a cwd-based git remote.
         $fwd = @{
@@ -1621,7 +1627,7 @@ switch ($Command) {
             RemoteHost = $hostPart
         }
         if ($y)      { $fwd.y      = $true }
-        if ($Prompt) { $fwd.Prompt = $Prompt }
+        if ($Prompt) { $fwd.Prompt = $Prompt } else { $fwd.Prompt = $discoursePrompt }
         & $PSCommandPath @fwd
         return
     }
@@ -1818,6 +1824,7 @@ switch ($Command) {
         # Default scope: this repo only (when cwd is inside one). Pass -All for
         # the global cross-repo view.
         $scopeResult = _ApplyRepoScope -Entries $entries -All:$All
+        $entriesAllRepos = $entries   # full pre-scope set, for cross-repo fallbacks (restore)
         $entries = $scopeResult.Entries
         if ($scopeResult.Scoped) {
             Write-Color ("  scoped to {0}  ({1} entries from other repos hidden; pass -All to see all)" -f $scopeResult.ScopeName, $scopeResult.Hidden) DarkGray
@@ -1880,7 +1887,8 @@ switch ($Command) {
         # 'clean' = drop stale entries without relaunch.
         switch ($Target) {
             'audit' {
-                # Read-only health + recovery overview across ALL repos. Changes nothing.
+                # Health + recovery overview across ALL repos. Read-only EXCEPT for one
+                # opt-in prompt at the end to drop entries whose worktree dir is gone.
                 # Answers "what is live, what was used recently and isn't back, and what
                 # entries are junk", plus a breakdown of how sessions exited.
                 $sessDir = $script:SessionDir
@@ -1912,10 +1920,16 @@ switch ($Command) {
                         PathNorm  = if ($e.WorktreePath) { ($e.WorktreePath -replace '/','\').TrimEnd('\').ToLower() } else { '' }
                         Alive     = $alive
                         Last      = if ($e.LastStateChange) { $e.LastStateChange } elseif ($e.LastSpawnedAt) { $e.LastSpawnedAt } else { $e.SpawnedAt }
+                        Started   = if ($e.FirstSpawnedAt) { $e.FirstSpawnedAt } elseif ($e.SpawnedAt) { $e.SpawnedAt } else { $null }
+                        File      = $f.FullName
                     }
                 }
 
-                $live = @($auditEntries | Where-Object Alive)
+                # Dedupe LIVE by worktree path: duplicate ledger rows for one running
+                # session (same path, both PIDs alive) should show once, not twice.
+                $live = @(@($auditEntries | Where-Object Alive) | Group-Object PathNorm | ForEach-Object {
+                    $_.Group | Sort-Object { "$($_.Last)" } -Descending | Select-Object -First 1
+                })
                 $livePaths = @{}
                 foreach ($l in $live) { if ($l.PathNorm) { $livePaths[$l.PathNorm] = $true } }
 
@@ -1928,28 +1942,44 @@ switch ($Command) {
 
                 $autoWin   = @($auditEntries | Where-Object { $_.Window -eq '__auto__' })
                 $gonePath  = @($auditEntries | Where-Object { $_.Path -and -not (Test-Path $_.Path) })
+                # Truly-dead subset: worktree dir gone AND path is under WORKTREE_ROOT.
+                # A missing main-clone path (under GIT_ROOT) is left alone -- it may be a
+                # temporary unmount or a moved drive, not real cruft.
+                $wtRootPfx = ($script:WtRoot.TrimEnd('\').ToLower() + '\')
+                $goneDead  = @($gonePath | Where-Object { $_.PathNorm -and $_.PathNorm.StartsWith($wtRootPfx) })
                 $dupGroups = @($auditEntries | Where-Object { $_.PathNorm } | Group-Object PathNorm | Where-Object { $_.Count -gt 1 })
                 $reasons   = @($auditEntries | Where-Object { $_.EndReason } | Group-Object EndReason | Sort-Object Count -Descending)
 
                 Write-Color ("gwt sessions audit -- {0} entries, {1} live, {2} not reopened" -f $auditEntries.Count, $live.Count, $notReopened.Count) Cyan
                 Write-Host ""
                 Write-Color "LIVE ($($live.Count)):" Green
+                Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f 'started','last-seen','window','branch','path') -ForegroundColor DarkGray
                 foreach ($l in ($live | Sort-Object Window, Branch)) {
-                    Write-Host ('  {0,-16} {1,-30} @ {2}' -f $l.Window, $l.Branch, $l.Path)
+                    $ls = if ($l.Started) { try { [datetime]::Parse($l.Started).ToString('MM-dd HH:mm:ss') } catch { "$($l.Started)" } } else { '?' }
+                    $ll = if ($l.Last)    { try { [datetime]::Parse($l.Last).ToString('MM-dd HH:mm:ss') } catch { "$($l.Last)" } } else { '?' }
+                    Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f $ls, $ll, $l.Window, $l.Branch, $l.Path)
                 }
                 Write-Host ""
                 Write-Color "NOT REOPENED ($($notReopened.Count)) -- dir present, no live session, restorable:" Yellow
-                Write-Host ('  {0,-16} {1,-9} {2,-18} {3,-28} {4}' -f 'ended','state','how','branch','path') -ForegroundColor DarkGray
+                # started = when the session first opened. last-seen = last interaction
+                # (LastStateChange): for an ENDED row that is the exit time, for a crashed
+                # one it is the last activity before the reboot. state + how together are
+                # the last-interaction type (state = thinking/idle/ended, how = exit reason).
+                Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f 'started','last-seen','state','how','branch','path') -ForegroundColor DarkGray
                 foreach ($n in $notReopened) {
-                    $when = if ($n.Last) { try { [datetime]::Parse($n.Last).ToString('MM-dd HH:mm:ss') } catch { "$($n.Last)" } } else { '?' }
-                    $how  = if ($n.EndReason) { $n.EndReason } else { '-' }
-                    Write-Host ('  {0,-16} {1,-9} {2,-18} {3,-28} {4}' -f $when, $n.State, $how, $n.Branch, $n.Path)
+                    $started = if ($n.Started) { try { [datetime]::Parse($n.Started).ToString('MM-dd HH:mm:ss') } catch { "$($n.Started)" } } else { '?' }
+                    $when    = if ($n.Last)    { try { [datetime]::Parse($n.Last).ToString('MM-dd HH:mm:ss') } catch { "$($n.Last)" } } else { '?' }
+                    $how     = if ($n.EndReason) { $n.EndReason } else { '-' }
+                    Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f $started, $when, $n.State, $how, $n.Branch, $n.Path)
                 }
                 Write-Host ""
                 if ($autoWin.Count -or $gonePath.Count -or $dupGroups.Count) {
                     Write-Color "INTEGRITY:" Magenta
                     if ($autoWin.Count)   { Write-Host ("  {0} entry(ies) with window '__auto__' (legacy data bug)" -f $autoWin.Count) }
-                    if ($gonePath.Count)  { Write-Host ("  {0} entry(ies) point at a worktree dir that no longer exists" -f $gonePath.Count) }
+                    if ($gonePath.Count)  {
+                        Write-Host ("  {0} entry(ies) point at a worktree dir that no longer exists:" -f $gonePath.Count)
+                        foreach ($g in $gonePath) { Write-Host ('      {0,-28} {1}' -f $g.Branch, $g.Path) -ForegroundColor DarkGray }
+                    }
                     if ($dupGroups.Count) { Write-Host ("  {0} worktree path(s) with duplicate entries" -f $dupGroups.Count) }
                     Write-Host ""
                 }
@@ -1958,8 +1988,28 @@ switch ($Command) {
                     foreach ($r in $reasons) { Write-Host ('  {0,-20} {1}' -f $r.Name, $r.Count) }
                     Write-Host ""
                 }
+                # Offer to drop the well-and-truly-dead entries: their worktree dir is
+                # gone, so they can never be restored. Opt-in (default N) so audit stays
+                # safe to run casually.
+                if ($goneDead.Count) {
+                    $resp = Read-Host ("remove {0} dead session entr(ies) whose worktree dir is gone? (y/N)" -f $goneDead.Count)
+                    if ($resp -match '^[Yy]') {
+                        $removed = 0
+                        foreach ($g in $goneDead) { try { Remove-Item $g.File -Force -ErrorAction Stop; $removed++ } catch {} }
+                        Write-Color "  removed $removed dead entr(ies)" Green
+                    } else {
+                        Write-Color "  left as-is" DarkGray
+                    }
+                    if ($gonePath.Count -gt $goneDead.Count) {
+                        Write-Color ("  ({0} missing-dir entr(ies) under the git root left alone -- could be a temporary unmount)" -f ($gonePath.Count - $goneDead.Count)) DarkGray
+                    }
+                    Write-Host ""
+                }
                 Write-Color "next:" DarkGray
-                if ($notReopened.Count) { Write-Color "  gwt sessions restore -All -IncludeEnded   # bring back the not-reopened set" DarkGray }
+                if ($notReopened.Count) {
+                    Write-Color "  gwt sessions restore -All                 # reopen crash victims (ABORTED); skips cleanly-ended" DarkGray
+                    Write-Color "  gwt sessions restore -All -IncludeEnded   # also reopen sessions you closed cleanly (all rows above)" DarkGray
+                }
                 if ($dupGroups.Count -or $gonePath.Count) { Write-Color "  gwt sessions clean -Aborted -IncludeDuplicates   # drop dead / duplicate entries" DarkGray }
                 return
             }
@@ -2237,7 +2287,11 @@ switch ($Command) {
             'restore' {
                 # Idempotency: only consider STALE entries -- alive ones are already up.
                 $allStale = @($entries | Where-Object { -not $_.Alive })
-                if (-not $allStale.Count) { Write-Color "no paused sessions to restore (everything is ACTIVE)" DarkGray; return }
+                # A discriminator ($Match/$Name) may match a session in ANOTHER repo, so
+                # don't bail early on an empty scoped set when one is passed -- fall through
+                # to the filter, which widens to all repos and offers to jump.
+                $hasFilter = [bool]($Match -or $Name)
+                if (-not $allStale.Count -and -not $hasFilter) { Write-Color "no paused sessions to restore (everything is ACTIVE)" DarkGray; return }
 
                 # By default skip ENDED entries. The user closed those deliberately;
                 # restoring them is annoying. Pass -IncludeEnded to opt back in.
@@ -2248,7 +2302,7 @@ switch ($Command) {
                     if ($droppedEnded -gt 0) {
                         Write-Color "skipping $droppedEnded ENDED session(s) -- pass -IncludeEnded to restore them" DarkGray
                     }
-                    if (-not $allStale.Count) { Write-Color "no paused sessions to restore (all not-alive were ENDED)" DarkGray; return }
+                    if (-not $allStale.Count -and -not $hasFilter) { Write-Color "no paused sessions to restore (all not-alive were ENDED)" DarkGray; return }
                 }
 
                 # dedupe by WorktreePath (keeps newest by LastSpawnedAt) -- protects against
@@ -2278,12 +2332,66 @@ switch ($Command) {
                             $_.WindowName   -like "*$Match*"
                         })
                     }
-                    if (-not $filtered.Count) {
-                        Write-Color "no paused entries match the given filter" Yellow
-                        return
+                    if ($filtered.Count) {
+                        $stale = $filtered
+                        Write-Color "filter -> $($stale.Count) match(es)" Cyan
+                    } else {
+                        $needle   = if ($Match) { $Match } else { $Name }
+                        $matchesF = {
+                            param($e)
+                            (-not $Name  -or $e.Branch -ieq $Name) -and
+                            (-not $Match -or ($e.Branch -like "*$Match*" -or $e.WorktreePath -like "*$Match*" -or $e.WindowName -like "*$Match*"))
+                        }
+
+                        # Before declaring "no match", check whether it is already RUNNING.
+                        # A live match isn't a restore at all -- offer to focus its tab. This
+                        # is why 'no paused entries' was misleading: the session was alive.
+                        $aliveMatch = @($entriesAllRepos | Where-Object { $_.Alive -and (& $matchesF $_) })
+                        if ($aliveMatch.Count) {
+                            $m = $aliveMatch[0]
+                            Write-Host ""
+                            Write-Color ("  '{0}' is already running @ {1}" -f $needle, $m.WorktreePath) Green
+                            $f = Read-Host "  focus its tab instead? (Y/n)"
+                            if ([string]::IsNullOrWhiteSpace($f) -or $f -match '^[Yy]$') {
+                                & $PSCommandPath -Command 'focus' -Target $needle
+                            } else {
+                                Write-Color "  ok, leaving it" DarkGray
+                            }
+                            return
+                        }
+
+                        # Not running. If we were scoped (not -All), widen the PAUSED search
+                        # to every repo and offer to jump there.
+                        $expanded = @()
+                        if ($scopeResult.Scoped -and -not $All) {
+                            $poolAll = @($entriesAllRepos | Where-Object { -not $_.Alive })
+                            if (-not $IncludeEnded) { $poolAll = @($poolAll | Where-Object { $_.State -ne 'ended' }) }
+                            $poolAll = @($poolAll | Group-Object WorktreePath | ForEach-Object {
+                                $_.Group | Sort-Object @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} -Descending | Select-Object -First 1
+                            })
+                            $expanded = @($poolAll | Where-Object { & $matchesF $_ })
+                        }
+                        if (-not $expanded.Count) {
+                            Write-Color "no paused entries match the given filter" Yellow
+                            return
+                        }
+                        Write-Host ""
+                        Write-Color ("  not here: '{0}' isn't a paused session in {1}" -f $needle, $scopeResult.ScopeName) Yellow
+                        if ($expanded.Count -eq 1) {
+                            Write-Color   "  found it in another worktree:" Green
+                            Write-Host  ('      {0,-30} @ {1}' -f $expanded[0].Branch, $expanded[0].WorktreePath) -ForegroundColor Cyan
+                            Write-Host ""
+                            $jump = Read-Host "  restore it from there? (y/N)"
+                            if ($jump -notmatch '^[Yy]') { Write-Color "  aborted" DarkGray; return }
+                            $stale = @($expanded)
+                        } else {
+                            Write-Color ("  found in {0} other worktrees -- pick one:" -f $expanded.Count) Green
+                            $pick = _TuiSelect -Items @($expanded) -Prompt "  which worktree to restore?" `
+                                -DisplayScript { param($e) '{0,-30} @ {1}' -f $e.Branch, $e.WorktreePath }
+                            if (-not $pick) { Write-Color "  aborted" DarkGray; return }
+                            $stale = @($pick)
+                        }
                     }
-                    $stale = $filtered
-                    Write-Color "filter -> $($stale.Count) match(es)" Cyan
                 }
 
                 $dupes = $allStale.Count - @($stale).Count
@@ -2301,11 +2409,33 @@ switch ($Command) {
                 $restoreMode  = 'auto'
 
                 if (@($stale).Count -eq 1 -and -not $Window) {
-                    Write-Color ("  $($stale[0].Branch) @ $($stale[0].WorktreePath)") DarkGray
-                    # picker defaults to 'auto' (group by project); old window still selectable.
-                    $pickedWindow = _SelectWtWindow -Repo $stale[0].Repo
-                    if ($pickedWindow -eq '__auto__') { $pickedWindow = (& $autoWinFor $stale[0]) }
-                    if ($pickedWindow -eq '__new__')  { $pickedWindow = $null }
+                    $one     = $stale[0]
+                    $autoWin = (& $autoWinFor $one)
+                    Write-Color ("  $($one.Branch) @ $($one.WorktreePath)") DarkGray
+                    # Mirror 'gwt claude': if this worktree has saved picks, offer to resume
+                    # them (Y = default). 'n', or no saved picks, drops to the window picker.
+                    $state   = if ($Reselect) { $null } else { Load-GwtState $one.WorktreePath }
+                    $resumed = $false
+                    if ($state) {
+                        $sw      = "$($state.Window)"
+                        $winDesc = if ($sw -eq '__auto__') { "auto '$autoWin'" }
+                                   elseif ($sw -eq '' -or $sw -eq '__new__') { 'new window' }
+                                   else { $sw }
+                        $resp = Read-Host "  resume last picks? (window=$winDesc) (Y/n)"
+                        if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
+                            $pickedWindow = if ($sw -eq '__auto__') { $autoWin }
+                                            elseif ($sw -eq '' -or $sw -eq '__new__') { $null }
+                                            else { $sw }
+                            $resumed = $true
+                        }
+                    }
+                    if (-not $resumed) {
+                        $pickedWindow = _SelectWtWindow -Repo $one.Repo
+                        # Cancelling the picker (Esc/q/Ctrl-C) aborts -- do NOT fall to auto.
+                        if (-not $pickedWindow) { Write-Color "  aborted" DarkGray; return }
+                        if ($pickedWindow -eq '__auto__') { $pickedWindow = $autoWin }
+                        if ($pickedWindow -eq '__new__')  { $pickedWindow = $null }
+                    }
                 } elseif (-not $Window) {
                     Write-Host ""
                     foreach ($s in $stale) {
@@ -2803,6 +2933,18 @@ switch ($Command) {
                 Write-Host ""
             }
             default {
+                # A non-empty $Target that matched no case above is a typo'd subcommand
+                # (e.g. 'sessions prune'). It used to silently fall through to the list,
+                # which reads as "it did something". Call it out and nudge toward 'clean'.
+                if ($Target -and $Target -ne 'list') {
+                    Write-Color "unknown 'gwt sessions' subcommand: '$Target'" Yellow
+                    if ($Target -match 'prune|clean|rm|remove|delete|drop') {
+                        Write-Color "  did you mean 'gwt sessions clean'?  (drops ended + stale; add -Aborted for aborted, -IncludeDuplicates for dupes)" DarkGray
+                    } else {
+                        Write-Color "  known: list (default), clean, restore, audit, tabs, save, unsave, close, move, usage" DarkGray
+                    }
+                    Write-Color "  showing 'gwt sessions list':" DarkGray
+                }
                 if (-not $entries) { Write-Color "no sessions registered yet" DarkGray; return }
 
                 # Dedupe by WorktreePath: alive entries always win; among

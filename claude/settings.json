@@ -256,7 +256,7 @@
     "command": "bash /c/Users/claude/.claude/statusline-command.sh"
   },
   "feedbackSurveyRate": 0,
-  "effortLevel": "medium",
+  "effortLevel": "xhigh",
   "autoUpdatesChannel": "latest",
   "junk": [
     {
