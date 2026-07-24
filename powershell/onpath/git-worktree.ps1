@@ -37,6 +37,7 @@ param(
     [string]$SourceRoot    = $( $r = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' };      ($r -replace '\\+','\').TrimEnd('\') ),
     [string]$WorktreeRoot  = $( $r = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }; ($r -replace '\\+','\').TrimEnd('\') ),
     [switch]$y,
+    [switch]$Current,       # 'new': skip the activate prompt and point <WtRoot>\current at the new worktree
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
     [switch]$NoAgentSetup,  # skip the post-create dotagents CLAUDE.md symlink step
@@ -1313,8 +1314,12 @@ switch ($Command) {
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
-        $r = Read-Host "activate this worktree (point '$($ctx.WtRoot)\current' here)? (y/N)"
-        if ($r -match '^[Yy]$') { _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath }
+        if ($Current) {
+            _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath
+        } else {
+            $r = Read-Host "activate this worktree (point '$($ctx.WtRoot)\current' here)? (y/N)"
+            if ($r -match '^[Yy]$') { _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath }
+        }
         _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject
         _SetGwtCwdHint $wtPath
     }
@@ -1626,7 +1631,8 @@ switch ($Command) {
             Repo       = $repoPart
             RemoteHost = $hostPart
         }
-        if ($y)      { $fwd.y      = $true }
+        $fwd.y       = $true   # discourse defaults to -y: auto-open claude in the auto (repo) window
+        $fwd.Current = $true   # discourse defaults to -Current: point <WtRoot>\current at this worktree
         if ($Prompt) { $fwd.Prompt = $Prompt } else { $fwd.Prompt = $discoursePrompt }
         & $PSCommandPath @fwd
         return

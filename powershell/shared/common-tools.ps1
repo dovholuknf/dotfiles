@@ -673,10 +673,69 @@ function gwt {
     }
 }
 
+# Bitbucket read-only API helper. GET-only by design; the real guardrail is the
+# token's scopes (create an Atlassian API token with only read:* bitbucket
+# scopes, e.g. read:repository:bitbucket + read:pullrequest:bitbucket).
+# Creds come from env (set in each user's .profile.ps1, never committed):
+#   $env:BB_EMAIL  = your atlassian account email
+#   $env:BB_TOKEN  = the read-only atlassian API token
+# Usage:
+#   bbapi repositories/<workspace>/<repo>/pullrequests?state=OPEN
+#   bbapi repositories/netfoundry/<repo>/pullrequests/42
+#   bbapi <path> -All      # follow pagination, merge every page's .values
+#   bbapi <path> -Raw      # emit raw JSON text instead of a parsed object
+function bbapi {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string] $Path,
+        [switch] $Raw,
+        [switch] $All
+    )
+    if (-not $env:BB_EMAIL -or -not $env:BB_TOKEN) {
+        throw "bbapi: set `$env:BB_EMAIL and `$env:BB_TOKEN in your .profile.ps1 first."
+    }
+    $basic = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes("$($env:BB_EMAIL):$($env:BB_TOKEN)"))
+
+    # accept a bare path (after /2.0/) or a full https URL (e.g. a 'next' link)
+    $url = if ($Path -match '^https?://') { $Path }
+           else { "https://api.bitbucket.org/2.0/$($Path.TrimStart('/'))" }
+
+    $pages = @()
+    while ($url) {
+        # --location: several endpoints (e.g. pullrequests/N/diff|diffstat) 302
+        # to the real content; without it curl returns an empty redirect body.
+        $json = curl.exe --silent --show-error --fail-with-body `
+            --location `
+            --http1.1 --ipv4 `
+            --request GET `
+            --url $url `
+            --header "Authorization: Basic $basic" `
+            --header "Accept: application/json"
+        if ($LASTEXITCODE -ne 0) { throw "bbapi: curl failed ($LASTEXITCODE) for $url`n$json" }
+
+        if (-not $All) {
+            if ($Raw) { return $json }
+            return ($json | ConvertFrom-Json)
+        }
+
+        $obj = $json | ConvertFrom-Json
+        if ($null -eq $obj.values) {
+            if ($Raw) { return $json }
+            return $obj
+        }
+        $pages += $obj.values
+        $url = $obj.next
+    }
+    return $pages
+}
+
 # Navigation shortcuts that are identical for both users. Per-user ones (and the
 # divergent `cddf`) live in each profile.
 function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
 function cdgh ()  { cd $env:GH_ROOT }
+function cdbb ()  { cd $env:BB_ROOT }
+function cdbbnf () { cd $env:BB_ROOT\netfoundry }
 function cdnf ()  { cd $env:NF_ROOT }
 function cdz ()   { cd $env:NF_ROOT\ziti }
 function cdo ()   { cd $env:OZ_ROOT }

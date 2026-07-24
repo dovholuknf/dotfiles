@@ -53,6 +53,9 @@ function StartMcpGateway {
 function editsettings() {
   np "C:\Users\clint\AppData\Local\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState\settings.json"
 }
+function vncm1mini {
+    & "C:\Program Files (x86)\TigerVNC\vncviewer.exe" -AlwaysCursor -CursorType=System m1mini.vnc.dovanet
+}
 function toclaude() {
     & "C:\Windows\System32\OpenSSH\ssh.exe" `
         -p 222 `
