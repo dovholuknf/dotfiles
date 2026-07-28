@@ -28,6 +28,11 @@ $env:WORKTREE_ROOT   = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:
 # shared helpers + add-/remove- tool toggles
 . $env:DOTFILES\powershell\shared\common-tools.ps1
 
+# Local secrets (BB_EMAIL / BB_TOKEN, etc). Lives in the user profile dir, NOT the
+# repo, so it never gets pushed. Optional: skipped if the file isn't there.
+$localSecrets = Join-Path $HOME '.profile.secrets.ps1'
+if (Test-Path $localSecrets) { . $localSecrets }
+
 # clint-only: alias for the dotfiles onpath dir
 function add-dotfiles_onpath    { update-path -EnvVarName DOVHOLUK_ONPATH -First }
 function remove-dotfiles_onpath { update-path -EnvVarName DOVHOLUK_ONPATH -Remove }

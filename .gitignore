@@ -73,6 +73,7 @@ local.*
 secrets.*
 *.secret
 *.secret.*
+*.secrets.ps1
 *private*
 
 # --- build / cache ---

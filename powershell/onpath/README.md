@@ -41,7 +41,7 @@ Scripts intended to live on `$env:PATH`. The profile adds this directory automat
 | `tidy-git-branches-list.ps1` | Same idea, list-only variant. |
 | `rebase-local-branches.ps1` | Iterate local branches and rebase each on top of `origin/main`. Has cosmetic emojis. |
 | `clean-git.ps1`, `git-clean.ps1` | Per-branch cleanups. Slightly different shapes, both pre-`gwt`. |
-| `dovnfgh.ps1`, `dovpersonal.ps1`, `dovpersonalgh.ps1` | Switch `git config user.email/.name/signingkey` for the current repo to a known identity. |
+| `dovnfgh.ps1`, `dovnfbb.ps1`, `dovpersonal.ps1`, `dovpersonalgh.ps1` | Switch `git config user.email/.name/signingkey` for the current repo to a known identity (`dovnfbb` = netfoundry Bitbucket identity, email read from `$env:BB_EMAIL`). |
 | `topersonal.ps1` | Rewrite the current repo's `origin` URL from `git@github.com:...` to `git@personal-github.com:...` (a ssh config alias for the personal identity). |
 
 ## System / disk

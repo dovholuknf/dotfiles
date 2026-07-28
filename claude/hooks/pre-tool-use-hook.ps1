@@ -55,6 +55,16 @@ if ($json.tool_name -eq "Bash") {
 		exit 0
 	}
 
+	# No perl. Matches perl invoked as the command (start, or after a pipe/compound),
+	# not 'perl' inside a path/arg or words like 'perldoc'.
+	if ($cmd -match '(^|;|\||\n|&&)\s*perl\b') {
+		@{
+			decision = "block"
+			reason   = "Do not use perl. Use bash (or the dedicated file/search/edit tools) instead."
+		} | ConvertTo-Json -Compress
+		exit 0
+	}
+
 	# Docker: forbid inline env-var prefixes; env must be passed via flags
 	if ($cmd -match '^\s*([A-Za-z_]\w*=\S+\s+)+docker\b') {
 		@{

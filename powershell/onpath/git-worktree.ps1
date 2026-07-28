@@ -412,14 +412,52 @@ function Invoke-AgentSetup {
 }
 
 function Get-PrHeadBranch {
-    param([string]$Org, [string]$Repo, [string]$PrNumber)
+    param([string]$Org, [string]$Repo, [string]$PrNumber, [string]$RemoteHost = 'github.com')
+    if ($RemoteHost -eq 'bitbucket.org') {
+        # Bitbucket exposes no PR git ref, so a PR number can't be mapped to a branch
+        # from git alone. Two paths, both ending in a plain SSH fetch of that branch:
+        #   API creds present -> bbapi resolves the source branch automatically.
+        #   no creds          -> list remote heads over SSH (token-free) and pick one.
+        if ($env:BB_EMAIL -and $env:BB_TOKEN) {
+            $pr = bbapi "repositories/$Org/$Repo/pullrequests/$PrNumber"
+            $b  = "$($pr.source.branch.name)"
+            if (-not $b) { throw "bbapi: couldn't resolve source branch for PR $PrNumber (PR exists?)" }
+            # Fork PRs live in a different source repo -- origin won't have the branch.
+            $srcRepo = "$($pr.source.repository.full_name)"
+            if ($srcRepo -and ($srcRepo -ine "$Org/$Repo")) {
+                throw "PR $PrNumber is from a fork ($srcRepo) -- fork PRs aren't wired yet. Clone the fork or fetch the branch manually."
+            }
+            return $b
+        }
+        # No API creds: git already sees every branch, so pick the PR's source branch.
+        Write-Color "PR #${PrNumber}: no Bitbucket API creds and no PR git ref -- pick the PR's source branch:" Yellow
+        $raw   = & git ls-remote --heads "git@$RemoteHost`:$Org/$Repo.git" 2>$null
+        $names = @($raw | ForEach-Object { if ($_ -match 'refs/heads/(.+)$') { $Matches[1] } } | Where-Object { $_ } | Sort-Object)
+        if (-not $names.Count) { throw "couldn't list remote branches for $Org/$Repo over SSH (auth or network?)" }
+        $picked = _TuiSelect -Items $names -Prompt "source branch for PR #${PrNumber}:"
+        if (-not $picked) { throw "cancelled -- no branch picked for PR $PrNumber" }
+        return $picked
+    }
     $r = (& gh pr view $PrNumber --repo "$Org/$Repo" --json headRefName -q .headRefName 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "gh pr view failed for PR ${PrNumber}: $r" }
     return $r
 }
 
 function Sync-PrBranch {
-    param([string]$Src, [string]$Branch, [string]$PrNumber)
+    param([string]$Src, [string]$Branch, [string]$PrNumber, [string]$RemoteHost = 'github.com')
+    if ($RemoteHost -eq 'bitbucket.org') {
+        # Bitbucket has no refs/pull/<n>/head, so fetch the source branch by name.
+        # Works for open PRs; a merged PR whose source branch was deleted can't be
+        # fetched this way (say so rather than failing cryptically).
+        try {
+            # ${Branch} delimits the name: bare "$Branch:" parses as a scope qualifier
+            # and eats the colon, producing a garbage refspec.
+            Invoke-Git $Src @('fetch','origin',"+refs/heads/${Branch}:refs/heads/${Branch}")
+        } catch {
+            throw "couldn't fetch branch '$Branch' from origin. If the PR is merged and its branch was deleted, Bitbucket keeps no pull-head ref -- restore the branch or check out the merge commit manually."
+        }
+        return
+    }
     # Fetch the PR head by its pull ref. 'fetch origin <branch>' fails with
     # "couldn't find remote ref" whenever origin lacks that branch: a merged PR
     # whose branch was deleted, or a PR from a fork. GitHub keeps refs/pull/<n>/head
@@ -1073,12 +1111,19 @@ if ($Command -match '^https?://') {
     if ($Command -match '^https?://[^/]+/[^/]+/[^/]+/pull/\d+') {
         $Target  = $Command -replace '(?<=pull/\d+)(/.*)?$',''  # strip /changes, /files, etc.
         $Command = 'pr'
+    } elseif ($Command -match '^https?://bitbucket\.org/[^/]+/[^/]+/pull-requests/\d+') {
+        # Bitbucket PR URL uses 'pull-requests' (hyphen). Strip trailing /diff, /commits, /activity.
+        $Target  = $Command -replace '(?<=pull-requests/\d+)(/.*)?$',''
+        $Command = 'pr'
     } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)/issues/(?<num>\d+)') {
         $script:RemoteHost = $Matches.host
         $script:Org        = $Matches.org
         $script:Repo       = $Matches.repo
         $Target  = $Matches.num
         $Command = 'issue'
+    } elseif ($Command -match '^https?://[^/]+\.zendesk\.com/.*?/tickets/\d+') {
+        $Target  = $Command
+        $Command = 'zendesk'
     } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+?)(?:\.git)?/?\s*$') {
         $script:RemoteHost = $Matches.host
         $script:Org        = $Matches.org
@@ -1213,12 +1258,16 @@ switch ($Command) {
             & $PSCommandPath new $name @passArgs
             break
         }
+        # Zendesk ticket URLs -- point at the right command.
+        if ($Target -match '^https?://[^/]+\.zendesk\.com/.*?/tickets/\d+') {
+            throw "that looks like a Zendesk ticket, not a git repo. did you mean:  gwt zendesk $Target"
+        }
         # Discourse thread URLs are <host>/t/<slug>[/<id>] -- point at the right command.
         if ($Target -match '^https?://[^/]+/t/[^/]+') {
             throw "that looks like a discourse thread, not a git repo. did you mean:  gwt discourse $Target"
         }
         if ($Target -match '^https?://') {
-            throw "'$Target' is a URL but not a recognized git repo URL -- for a discourse thread use 'gwt discourse <url>'"
+            throw "'$Target' is a URL but not a recognized git repo URL -- discourse thread: 'gwt discourse <url>', Zendesk ticket: 'gwt zendesk <url>'"
         }
         if ($Target -eq '.')   { throw "'new' needs an explicit branch name (the '.' shortcut is only for 'gwt claude .')" }
         if ($Target -match '^\s|\s$|[\\\/:\?\*\[\]~^]') { throw "branch name '$Target' contains an illegal character" }
@@ -1464,6 +1513,11 @@ switch ($Command) {
             $script:Org  = $Matches.org
             $script:Repo = $Matches.repo
             $prNum = $Matches.pr
+        } elseif ($Target -match '^https?://bitbucket\.org/(?<org>[^/]+)/(?<repo>[^/]+?)/pull-requests/(?<pr>\d+)') {
+            $script:Org        = $Matches.org
+            $script:Repo       = $Matches.repo
+            $script:RemoteHost = 'bitbucket.org'
+            $prNum = $Matches.pr
         } elseif ($Target -match '^\d+$') {
             $prNum = $Target
         } else {
@@ -1477,7 +1531,7 @@ switch ($Command) {
         Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
         Invoke-Git $ctx.Src @('worktree','prune')
 
-        $branch     = Get-PrHeadBranch -Org $ctx.Org -Repo $ctx.Repo -PrNumber $prNum
+        $branch     = Get-PrHeadBranch -Org $ctx.Org -Repo $ctx.Repo -PrNumber $prNum -RemoteHost $ctx.RemoteHost
         $existingWt = Get-WorktreePathForBranch $ctx.Src $branch
 
         if ($existingWt) {
@@ -1538,7 +1592,7 @@ switch ($Command) {
             }
         }
 
-        Sync-PrBranch $ctx.Src $branch $prNum
+        Sync-PrBranch $ctx.Src $branch $prNum $ctx.RemoteHost
         Ensure-Worktree $ctx.Src $wtPath $branch
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
@@ -1634,6 +1688,76 @@ switch ($Command) {
         $fwd.y       = $true   # discourse defaults to -y: auto-open claude in the auto (repo) window
         $fwd.Current = $true   # discourse defaults to -Current: point <WtRoot>\current at this worktree
         if ($Prompt) { $fwd.Prompt = $Prompt } else { $fwd.Prompt = $discoursePrompt }
+        & $PSCommandPath @fwd
+        return
+    }
+
+    'zendesk' {
+        # Create a worktree to investigate a Zendesk support ticket. Mirrors 'discourse'.
+        # Accepts:
+        #   * full URL  -- https://<sub>.zendesk.com/agent/tickets/12345
+        #   * bare id   -- 12345  (assumes netfoundry.zendesk.com)
+        if (-not $Target) { throw "'zendesk' requires a Zendesk ticket URL or numeric ticket id" }
+        $ticketId    = $null
+        $zendeskHost = $null
+
+        if ($Target -match '^\d+$') {
+            $ticketId    = $Target
+            $zendeskHost = 'netfoundry.zendesk.com'
+            Write-Color "bare ticket id -- assuming host netfoundry.zendesk.com" DarkGray
+        } elseif ($Target -match '^https?://(?<zhost>[^/]+).*?/tickets/(?<id>\d+)') {
+            $ticketId    = $Matches.id
+            $zendeskHost = $Matches.zhost
+        } else {
+            throw "expected a Zendesk ticket URL or bare numeric ticket id"
+        }
+
+        Write-Color "zendesk ticket: $ticketId" Cyan
+        Write-Color "zendesk host:   $zendeskHost" DarkGray
+
+        # Accept either 'org/repo' (default github) or 'host:org/repo'.
+        # Empty input defaults to github/openziti/ziti.
+        $defaultRepo = 'openziti/ziti'
+        $resp = (Read-Host "target repo (default '$defaultRepo', also accepts 'bitbucket.org:org/repo')").Trim()
+        if (-not $resp) {
+            $resp = $defaultRepo
+            Write-Color "no repo given -- defaulting to $defaultRepo" DarkGray
+        }
+
+        $hostPart = 'github.com'
+        $orgRepo  = $resp
+        if ($resp -match '^(?<host>[^:]+):(?<rest>.+)$') {
+            $hostPart = $Matches.host
+            $orgRepo  = $Matches.rest
+        }
+        if ($orgRepo -notmatch '^(?<org>[^/]+)/(?<repo>[^/]+)$') {
+            throw "expected 'org/repo' -- got '$orgRepo'"
+        }
+        $orgPart  = $Matches.org
+        $repoPart = $Matches.repo
+        Write-Color "using $hostPart : $orgPart/$repoPart" Cyan
+
+        $branch = "zendesk-$ticketId"
+        Write-Color "branch:          $branch" DarkGray
+
+        # zendesk always launches claude with a fixed investigate-and-summarize prompt.
+        # The ticket id names the ZENDESK-<id>.md file, and the ticket URL is embedded
+        # so claude can pull it (via the zendesk MCP). An explicit -Prompt overrides it.
+        $ticketUrl     = "https://$zendeskHost/agent/tickets/$ticketId"
+        $zendeskPrompt = "read this zendesk ticket ($ticketUrl), summarize it here and in ZENDESK-$ticketId.md file. list any attachments on the ticket and tell me whether there are any, then ask me which to download (a Ziti Desktop Edge for Windows feedback bundle is usually a .zip -- the debug-ziti-desktop-edge-win skill analyzes those). then let's figure out how you and i can make a plan to answer the customer."
+
+        # Forward to 'new' with explicit host/org/repo so Resolve-RepoContext
+        # doesn't need a cwd-based git remote.
+        $fwd = @{
+            Command    = 'new'
+            Target     = $branch
+            Org        = $orgPart
+            Repo       = $repoPart
+            RemoteHost = $hostPart
+        }
+        $fwd.y       = $true   # zendesk defaults to -y: auto-open claude in the auto (repo) window
+        $fwd.Current = $true   # zendesk defaults to -Current: point <WtRoot>\current at this worktree
+        if ($Prompt) { $fwd.Prompt = $Prompt } else { $fwd.Prompt = $zendeskPrompt }
         & $PSCommandPath @fwd
         return
     }
@@ -3102,8 +3226,20 @@ switch ($Command) {
             catch { $tangentFallback = $true }
         }
         if (-not $tangentFallback) {
-            $wtPath = Get-WorktreePathForBranch $ctx.Src $Target
-            if (-not $wtPath -or -not (Test-Path $wtPath)) { $tangentFallback = $true }
+            # Get-WorktreePathForBranch runs git against the canonical main clone
+            # ($ctx.Src). If that clone doesn't exist (e.g. the repo was checked out
+            # straight into the worktree area, no clone at $GIT_ROOT), it throws --
+            # catch it instead of letting the whole command die.
+            try   { $wtPath = Get-WorktreePathForBranch $ctx.Src $Target }
+            catch { $wtPath = $null }
+            if (-not $wtPath -or -not (Test-Path $wtPath)) {
+                # No resolvable worktree, but cwd is a valid checkout of this repo.
+                # Open claude right here with the real repo + branch (its .claude.json
+                # MCPs are keyed to this path), not a generic tangent.
+                $top = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
+                if ($top) { $wtPath = ($top -replace '/', '\').TrimEnd('\') }
+                else      { $tangentFallback = $true }
+            }
         }
 
         if ($tangentFallback) {
@@ -4280,6 +4416,12 @@ switch ($Command) {
         Write-Host "        create a worktree to investigate a discourse topic" -ForegroundColor DarkGray
         Write-Host "        prompts for target repo (default github, accepts 'host:org/repo')" -ForegroundColor DarkGray
         Write-Host "        branch name: discourse-<topic-id>" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt zendesk " -NoNewline -ForegroundColor Cyan
+        Write-Host "<zendesk-ticket-url|id> [-Prompt <str>] [-y]"
+        Write-Host "        create a worktree to investigate a Zendesk ticket (mirrors discourse)" -ForegroundColor DarkGray
+        Write-Host "        prompts for target repo (default github, accepts 'host:org/repo')" -ForegroundColor DarkGray
+        Write-Host "        branch name: zendesk-<ticket-id>" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt pr " -NoNewline -ForegroundColor Cyan
         Write-Host "<url-or-number> [-Prompt <str>] [-y]"

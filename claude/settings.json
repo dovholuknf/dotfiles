@@ -71,6 +71,7 @@
       "Bash(ziti:*)",
       "Bash(ssh.exe *)",
       "Bash(/v/work/tools/go/current/bin/go build:*)",
+      "Bash(zrok2 *)",
       "Read(//c/temp/**)",
       "Read(//c/users/claude/**)",
       "Read(//d/work/**)",
@@ -89,11 +90,13 @@
       "WebSearch",
       "mcp__ziti-mcp__*",
       "mcp__datawarehouse-mcp__*",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(V:/work/tools/go/current/bin/go.exe build:*)",
       "Bash(//v/work/tools/go/current/bin/go.exe build:*)",
-      "Skill(code-review)"
+      "Skill(code-review)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:netfoundry.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:openziti.io)"
     ],
     "deny": [
       "Bash(git checkout*)",
@@ -261,7 +264,7 @@
     "command": "bash /c/Users/claude/.claude/statusline-command.sh"
   },
   "feedbackSurveyRate": 0,
-  "effortLevel": "xhigh",
+  "effortLevel": "medium",
   "autoUpdatesChannel": "latest",
   "junk": [
     {

@@ -505,11 +505,17 @@ function add-ziti {
                       $parts | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { $_ } }
                   }} -Descending)
 
-    # Prepend any build* dirs under $PWD that contain ziti.exe so a local build
-    # floats to the top of the picker pre-highlighted.
-    $localBuilds = @(Get-ChildItem $PWD -Directory -Filter 'build*' -ErrorAction SilentlyContinue |
-                     Where-Object { Test-Path (Join-Path $_.FullName 'ziti.exe') })
-    $allVersions = @($localBuilds) + @($versions)
+    # Surface locally-available ziti binaries so you can switch to an ad-hoc download
+    # or build without -Path: any immediate subdir of $PWD (one level deep) that holds
+    # a ziti.exe, plus $PWD itself if it holds one. These float to the top of the
+    # picker, pre-highlighted, ahead of the $env:ZITI_HOME versions.
+    $localDirs = @(Get-ChildItem $PWD -Directory -ErrorAction SilentlyContinue |
+                   Where-Object { Test-Path (Join-Path $_.FullName 'ziti.exe') } |
+                   Sort-Object Name -Descending)
+    if (Test-Path (Join-Path $PWD.Path 'ziti.exe')) {
+        $localDirs = @(Get-Item -LiteralPath $PWD.Path) + @($localDirs)
+    }
+    $allVersions = @($localDirs) + @($versions)
 
     if (-not $allVersions.Count) {
         $env:ZITI_DEFAULT = $env:ZITI_HOME
@@ -528,7 +534,7 @@ function add-ziti {
         $label = {
             param($d)
             $isLocal = $d.FullName.ToLower().StartsWith($cwdNorm)
-            if ($isLocal) { "$($d.Name)  (local)" } else { $d.Name }
+            if ($isLocal) { $d.FullName } else { $d.Name }
         }
         $pick = _TuiSelect -Items $allVersions `
                     -Prompt "choose ziti version (Up/Down + Enter, Esc to cancel):" `
@@ -734,6 +740,7 @@ function bbapi {
 # divergent `cddf`) live in each profile.
 function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
 function cdgh ()  { cd $env:GH_ROOT }
+function cdghnf () { cd $env:GH_ROOT\netfoundry }
 function cdbb ()  { cd $env:BB_ROOT }
 function cdbbnf () { cd $env:BB_ROOT\netfoundry }
 function cdnf ()  { cd $env:NF_ROOT }
