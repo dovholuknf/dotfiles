@@ -34,6 +34,7 @@ $script:OriginalPSReadLineColors = $null
 # Map repo name (last segment of origin URL, no .git) -> theme name.
 # use-repotheme reads this to snap to the right palette for the current repo.
 $script:RepoThemes = @{
+    'sterling' = 'orange-coral'
     'ziti-tv' = 'mauve-purple'
     'docusaurus-shared' = 'matrix'
     'sdk-golang' = 'terracotta'
@@ -782,6 +783,31 @@ $theme_terracotta = @{
            $null,    '#ff7589','#c8cf85','#f08e62','#a8c0d2','#dca6cf','#9bd2c0',$null)
 }
 
+# ---- bright orange backgrounds (dark text). preview all three: Set-Theme -Tour -Filter orange ----
+$theme_orange_tangerine = @{
+    # Vivid tangerine bg, dark text. The pure-orange option.
+    label='orange-tangerine'; bg='#74310e'; fg='#ffe2b8'; cursor='#ff8c1a'
+    sel_bg='#7a3812'; sel_fg='#fff1d6'
+    ansi=@('#321204','#ff5a3a','#c8c768','#ff9933','#7fb2c4','#d68fe8','#7ad1bb','#ffe2b8',
+           $null,    '#ff8866','#dde088','#ffb15a','#a3cedc','#e6b3ee','#a6e8d6',$null)
+}
+
+$theme_orange_marigold = @{
+    # Golden marigold bg, a touch more yellow than tangerine.
+    label='orange-marigold'; bg='#c47a14'; fg='#3a2400'; cursor='#3a2400'
+    sel_bg='#ffcf7a'; sel_fg='#3a2400'
+    ansi=@('#200e02','#6e0000','#0f4415','#3f3000','#082f66','#4a1160','#003b42','#281505',
+           $null,    '#820000','#0f4415','#4a3800','#0a3a7a','#571571','#00474f',$null)
+}
+
+$theme_orange_coral = @{
+    # Coral red-orange bg, warmer and redder than tangerine.
+    label='orange-coral'; bg='#6b2a1b'; fg='#f0d8c4'; cursor='#e07845'
+    sel_bg='#5f3225'; sel_fg='#ffe8d4'
+    ansi=@('#28140d','#e8516a','#b9c270','#e07845','#8fa9bd','#cf8fc4','#7ec4b3','#f0d8c4',
+           $null,    '#ff7589','#c8cf85','#f08e62','#a8c0d2','#dca6cf','#9bd2c0',$null)
+}
+
 # ---- ocean / cool themes ----
 $theme_ocean_deep = @{
     # Saturated deep-blue, somewhere between solarized-dark and nord.
@@ -853,6 +879,10 @@ $script:WtThemes = @{
     # additional orange-family backgrounds (less aggressive than admin-*)
     'pumpkin'        = $theme_pumpkin
     'terracotta'     = $theme_terracotta
+    # bright orange backgrounds (dark text) -- Set-Theme -Tour -Filter orange
+    'orange-tangerine' = $theme_orange_tangerine
+    'orange-marigold'  = $theme_orange_marigold
+    'orange-coral'     = $theme_orange_coral
     # alias entries -- same palette, different identity in the picker/registry.
     'ad-hoc'         = $theme_nord
     'discourse'      = $theme_terracotta

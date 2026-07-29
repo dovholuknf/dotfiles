@@ -70,6 +70,10 @@ Look at the changed files and the shape of the change, then choose from the avai
 - `*.cs` -> add `csharp-expert`
 - Windows admin surface (registry, GPO, MSI, services, `*.admx` / `*.adml`, Intune) ->
   add `windows-enterprise-veteran`
+- behavior change with test-coverage stakes (new feature, endpoint, branch, bug fix) ->
+  add `functional-tester` (does it do the right thing across edges and errors)
+- performance, concurrency, resource, or resilience surface (hot path, load, retries, pools, goroutines,
+  outbound calls) -> add `nonfunctional-tester` (how it holds up under load, failure, and time)
 
 Adjust with judgment. A diff that only touches docs or generated files may need no panel, say so. A
 change that adds a client, transport, auth, persistence, or a second copy of an existing flow should

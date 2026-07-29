@@ -741,6 +741,7 @@ function bbapi {
 function cddev () { cd $env:BB_DOV_ROOT\dev_stuff }
 function cdgh ()  { cd $env:GH_ROOT }
 function cdghnf () { cd $env:GH_ROOT\netfoundry }
+function cdtk ()  { cd $env:GH_ROOT\openziti-test-kitchen }
 function cdbb ()  { cd $env:BB_ROOT }
 function cdbbnf () { cd $env:BB_ROOT\netfoundry }
 function cdnf ()  { cd $env:NF_ROOT }

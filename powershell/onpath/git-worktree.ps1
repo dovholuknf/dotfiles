@@ -2046,7 +2046,7 @@ switch ($Command) {
                         Window    = if ($e.WindowName) { $e.WindowName } else { '(none)' }
                         State     = if ($e.State) { $e.State } else { '?' }
                         EndReason = $e.EndReason
-                        Path      = $e.WorktreePath
+                        Path      = if ($e.WorktreePath) { ($e.WorktreePath -replace '/','\').TrimEnd('\') } else { '' }
                         PathNorm  = if ($e.WorktreePath) { ($e.WorktreePath -replace '/','\').TrimEnd('\').ToLower() } else { '' }
                         Alive     = $alive
                         Last      = if ($e.LastStateChange) { $e.LastStateChange } elseif ($e.LastSpawnedAt) { $e.LastSpawnedAt } else { $e.SpawnedAt }
@@ -2083,11 +2083,11 @@ switch ($Command) {
                 Write-Color ("gwt sessions audit -- {0} entries, {1} live, {2} not reopened" -f $auditEntries.Count, $live.Count, $notReopened.Count) Cyan
                 Write-Host ""
                 Write-Color "LIVE ($($live.Count)):" Green
-                Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f 'started','last-seen','window','branch','path') -ForegroundColor DarkGray
+                Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f 'last-seen','started','window','branch','path') -ForegroundColor DarkGray
                 foreach ($l in ($live | Sort-Object Window, Branch)) {
                     $ls = if ($l.Started) { try { [datetime]::Parse($l.Started).ToString('MM-dd HH:mm:ss') } catch { "$($l.Started)" } } else { '?' }
                     $ll = if ($l.Last)    { try { [datetime]::Parse($l.Last).ToString('MM-dd HH:mm:ss') } catch { "$($l.Last)" } } else { '?' }
-                    Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f $ls, $ll, $l.Window, $l.Branch, $l.Path)
+                    Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f $ll, $ls, $l.Window, $l.Branch, $l.Path)
                 }
                 Write-Host ""
                 Write-Color "NOT REOPENED ($($notReopened.Count)) -- dir present, no live session, restorable:" Yellow
@@ -2095,12 +2095,12 @@ switch ($Command) {
                 # (LastStateChange): for an ENDED row that is the exit time, for a crashed
                 # one it is the last activity before the reboot. state + how together are
                 # the last-interaction type (state = thinking/idle/ended, how = exit reason).
-                Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f 'started','last-seen','state','how','branch','path') -ForegroundColor DarkGray
+                Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f 'last-seen','started','state','how','branch','path') -ForegroundColor DarkGray
                 foreach ($n in $notReopened) {
                     $started = if ($n.Started) { try { [datetime]::Parse($n.Started).ToString('MM-dd HH:mm:ss') } catch { "$($n.Started)" } } else { '?' }
                     $when    = if ($n.Last)    { try { [datetime]::Parse($n.Last).ToString('MM-dd HH:mm:ss') } catch { "$($n.Last)" } } else { '?' }
                     $how     = if ($n.EndReason) { $n.EndReason } else { '-' }
-                    Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f $started, $when, $n.State, $how, $n.Branch, $n.Path)
+                    Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f $when, $started, $n.State, $how, $n.Branch, $n.Path)
                 }
                 Write-Host ""
                 if ($autoWin.Count -or $gonePath.Count -or $dupGroups.Count) {
