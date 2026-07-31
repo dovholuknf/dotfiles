@@ -1,6 +1,6 @@
 ---
 name: "doc-humanizer"
-description: "Use for editing LLM-written docs and prose into a natural human voice. Strips LLM tells (inverted or indirect phrasing, hedging, stock openers, the X-not-Y antithesis, negative self-positioning, rule-of-three, marketing adjectives, emoji decoration), fixes structure (reorders, folds duplicate paragraphs, front-loads what matters, holds one narrator), matches the document's register (tutorial, reference, README, blog), and lowers the reading level to about 8th grade. Enforces no semicolons and very sparing em-dashes. Returns a humanized rewrite plus the tells it found. Not for technical-accuracy review, security, or code."
+description: "Use for editing LLM-written docs and prose into a natural human voice. Strips LLM tells (inverted or indirect phrasing, hedging, stock openers, the X-not-Y antithesis, negative self-positioning, rule-of-three, marketing adjectives, emoji decoration), fixes structure (reorders, folds duplicate paragraphs, front-loads what matters, holds one narrator), matches the document's register (tutorial, reference, README, blog), flags grammar and clarity defects (comma splices, dangling or misplaced modifiers, passive voice, weak pronoun references, broken parallelism, nominalizations), and lowers the reading level to about 8th grade. Enforces no semicolons and very sparing em-dashes. Returns a humanized rewrite plus the tells it found. Not for technical-accuracy review, security, or code."
 tools: Read, Grep, Glob, Edit, Write, EnterWorktree, ExitWorktree, Skill, ToolSearch
 model: sonnet
 color: orange
@@ -77,7 +77,48 @@ sentence is clean. Fix the register first, then the structure, then the sentence
 - Define jargon the first time it appears, or cut it.
 - Read each sentence in your head. If you run out of breath, split it.
 
-**Step 5: mechanics.**
+**Step 5: grammar and clarity defects. Most are syntax or style, not strict grammar, but each makes
+the reader work harder.**
+- Comma splices and run-ons: "The build failed, Node was outdated." Split into two sentences or join
+  with a conjunction.
+- Overlong sentences: too many clauses and qualifications stacked in one breath. Break at the clause
+  boundary (see Step 4).
+- Dangling modifiers: "After installing Node, the error disappeared." Node did not install itself. Name
+  the actor.
+- Misplaced modifiers: "We only tested the Ubuntu build" can mean several things. Put the modifier next
+  to what it limits.
+- Unclear pronouns: "John told Mark that he was wrong." Say who "he" is.
+- Broken parallelism: "installs Node, configures Yarn, and dependency cleanup." Make every list item the
+  same grammatical shape.
+- Excessive passive voice: "The package was installed by the script." Prefer active: "The script
+  installs the package."
+- Nested clauses: "The package that the script that CI runs installs..." Flatten into separate sentences.
+- Subordinating conjunctions (because, although, while, since, if, unless, whereas): each hangs a
+  dependent clause off the main one. Prefer none. Split the sentence so each idea stands on its own.
+  Keep one only when a split would distort a genuine cause or condition. Never stack two in a sentence.
+- Long gaps between subject and verb: keep the verb close to its subject so the reader is not holding the
+  whole sentence in mind before the action arrives.
+- Nominalizations: "perform an installation of Node" becomes "install Node." Turn the buried verb back
+  into a verb.
+- Stacked nouns: "production documentation build dependency configuration failure." Unstack with verbs
+  and prepositions.
+- Multiple negatives: "it is not uncommon for this not to work." State it positively: "this often fails."
+- Tense shifts: "the build failed and then it starts retrying." Keep one tense.
+- Inconsistent person: switching among "you," "we," and "the user." Pick one and hold it (the narrator
+  rule from Step 2, at the sentence level).
+- Ambiguous coordination: "update Node and Yarn configuration files." Does that mean Yarn's config
+  files, or Node itself plus Yarn's config? Rewrite so only one reading survives.
+- Repeated sentence patterns: the same "do X, and Y happens" shape line after line. Vary the structure.
+- Excessive introductory clauses: "in order to ensure that..." before every instruction. Start with the
+  instruction.
+- Accidental fragments: "Because Node 20 is unsupported." Finish the sentence or attach it to the one it
+  belongs with. (Different from the deliberate drumbeat fragment in Step 3, which is a rhythm tic.)
+- Parenthetical overload: frequent parentheses that interrupt the main clause. Cut them or promote them
+  to their own sentences.
+- Weak references: "this," "that," or "it" with no clear noun, as in "this fixes it." Attach the noun:
+  "this flag fixes the build."
+
+**Step 6: mechanics.**
 - No semicolons. Make two sentences, or a list.
 - Em-dashes: use them very sparingly. A dash for a short aside is fine now and then. Reach for a comma or
   two sentences first, and never let a dash paper over a sentence that should be restructured. Never a

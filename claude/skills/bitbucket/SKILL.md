@@ -4,7 +4,7 @@ description: >
   Read Bitbucket Cloud data (pull requests, diffs, comments, repos, commits, pipelines) via the
   read-only `bbapi` PowerShell helper. Invoke whenever the user wants to look at something in
   Bitbucket: a PR or pull request, a bitbucket.org URL, a diff/review, repo or branch contents,
-  or CI pipelines in the `netfoundry` or `dovholuk` workspaces. Read-only; it cannot write.
+  or CI pipelines in your Bitbucket workspaces. Read-only. It cannot write.
 ---
 
 # bitbucket
@@ -20,7 +20,7 @@ token), and the Atlassian API token is scoped read-only on top of that. Never at
 The Bash tool is Git Bash, so call PowerShell explicitly. Running `pwsh` loads the user profile,
 which defines `bbapi` and sets the creds (`$env:BB_EMAIL`, `$env:BB_TOKEN`) — no manual setup.
 
-- Simple one-shot: `pwsh -Command "bbapi 'repositories/netfoundry/<repo>/pullrequests?state=OPEN'"`
+- Simple one-shot: `pwsh -Command "bbapi 'repositories/<workspace>/<repo>/pullrequests?state=OPEN'"`
 - Flags: `-All` follows pagination and merges every page's `.values`; `-Raw` returns raw text
   (used for `/diff` and file source). Note `-Raw` yields an array of lines, not one string — fine
   for diffs, join with "`n" if you need a single blob.
@@ -37,7 +37,7 @@ The `pwsh -File <script>` pattern is the reliable default for anything non-trivi
 
 ```powershell
 # scratchpad\pr.ps1
-$base = 'repositories/netfoundry/<repo>/pullrequests/<id>'
+$base = 'repositories/<workspace>/<repo>/pullrequests/<id>'
 $pr = bbapi $base
 "PR #$($pr.id): $($pr.title) [$($pr.state)]  $($pr.source.branch.name) -> $($pr.destination.branch.name)"
 bbapi "$base/diff" -Raw
@@ -61,10 +61,10 @@ Then: `pwsh -File "<scratchpad>/pr.ps1"`.
 
 A browser URL maps to an API path with one rename: the browser uses `pull-requests` (hyphen), the
 API uses `pullrequests` (no hyphen). Example:
-`https://bitbucket.org/netfoundry/customer-connect-docs/pull-requests/17/diff`
--> `bbapi 'repositories/netfoundry/customer-connect-docs/pullrequests/17/diff' -Raw`
+`https://bitbucket.org/your-workspace/your-repo/pull-requests/17/diff`
+-> `bbapi 'repositories/your-workspace/your-repo/pullrequests/17/diff' -Raw`
 
-Workspaces in use: `netfoundry`, `dovholuk`.
+Workspaces are the `<ws>` segment above (your Bitbucket workspace slugs).
 
 ## Troubleshooting
 

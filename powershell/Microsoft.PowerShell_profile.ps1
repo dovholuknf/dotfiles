@@ -142,62 +142,8 @@ if (Test-Path($ChocolateyProfile)) {
   Import-Module "$ChocolateyProfile"
 }
 
-$script:_LastThemeCwd = $null
-$script:_LastHintRepo = $null
-Function Prompt () {
-    $cwd = $pwd.ProviderPath
-    if ($cwd -ne $script:_LastThemeCwd) {
-        $script:_LastThemeCwd = $cwd
-        if (Get-Command Set-Theme -ErrorAction SilentlyContinue) {
-            Set-Theme -UseRepoTheme -Quiet
-        }
-    }
-
-    if ($global:WtCurrentRepo) {
-        $width = 30
-        $name  = $global:WtCurrentRepo
-        if ($name.Length -gt $width) { $name = $name.Substring(0, $width) }
-        $pad   = $width - $name.Length
-        $left  = [int][Math]::Floor($pad / 2)
-        $label = (' ' * $left) + $name + (' ' * ($pad - $left))
-        $row   = [Console]::CursorTop + 1  # 1-based ANSI row; capture NOW before any Write-Host
-        $col   = [Console]::WindowWidth - $width + 1
-        $esc   = [char]27
-        $color = '97;44'  # fallback: bright white on blue
-        if ($global:CurrentTheme -and $global:CurrentTheme.bg -and $global:CurrentTheme.ansi[6]) {
-            $th = $global:CurrentTheme.bg.TrimStart('#')       # text = theme bg color
-            $bh = $global:CurrentTheme.ansi[6].TrimStart('#')  # stripe bg = theme DarkCyan slot
-            $tr = [Convert]::ToInt32($th.Substring(0,2),16)
-            $tg = [Convert]::ToInt32($th.Substring(2,2),16)
-            $tb = [Convert]::ToInt32($th.Substring(4,2),16)
-            $sr = [Convert]::ToInt32($bh.Substring(0,2),16)
-            $sg = [Convert]::ToInt32($bh.Substring(2,2),16)
-            $sb = [Convert]::ToInt32($bh.Substring(4,2),16)
-            $color = "38;2;${tr};${tg};${tb};48;2;${sr};${sg};${sb}"
-        }
-        [Console]::Write("${esc}[s${esc}[${row};${col}H${esc}[${color}m${label}${esc}[0m${esc}[u")
-    }
-
-    If (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Host "[Admin]" -NoNewLine -ForegroundColor "Red"
-    }
-    if ($global:WtThemeName) {
-        Write-Host "[$global:WtThemeName] " -NoNewLine -ForegroundColor "DarkCyan"
-    } else {
-        Write-Host "[default] " -NoNewLine -ForegroundColor "DarkGray"
-    }
-    Write-Host $env:COMPUTERNAME -NoNewLine -ForegroundColor "White"
-    Write-Host ": " -NoNewLine
-    Write-Host $pwd.ProviderPath -ForegroundColor "Green"
-    $repoChanged = $global:WtCurrentRepo -ne $script:_LastHintRepo
-    $script:_LastHintRepo = $global:WtCurrentRepo
-    if (-not $global:WtThemeName -and $global:WtThemeCanMap -and $repoChanged) {
-        Write-Host "  hint: Set-Theme -UseRepoTheme" -ForegroundColor DarkGray
-    }
-    Write-Host "PS>" -NoNewLine -ForegroundColor "DarkGray"
-
-    return " "
-}
+# Themed prompt lives in common-tools.ps1 (_WtPrompt), shared with the claude account.
+function Prompt { _WtPrompt }
 function Set-ConsoleColor ($bc, $fc) {
     $Host.UI.RawUI.BackgroundColor = $bc
     $Host.UI.RawUI.ForegroundColor = $fc

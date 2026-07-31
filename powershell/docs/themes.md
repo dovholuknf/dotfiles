@@ -16,7 +16,8 @@ persisted in the Windows Terminal settings file. The change lives only in the ru
 | `Set-Theme <name>` | Apply by name. Prefix / substring tolerant (`Set-Theme tang` finds `tangent`). |
 | `Set-Theme <N>` | Apply the Nth theme in the sorted list. |
 | `Set-Theme` | No args: open the interactive picker (see live preview below). |
-| `Set-Theme -UseRepoTheme [-Quiet]` | Apply the theme mapped to the current repo (see below). |
+| `Set-Theme -UseRepoTheme [-Quiet]` | Apply the theme mapped to the current repo (see below). `-Quiet` = no output. |
+| `Set-Theme -SetRepoTheme` | Pick and save the theme mapping for the current repo (see below). |
 | `Set-Theme -Tour [-Filter <s>]` | Walk every theme (or those matching `-Filter`), Enter to advance. |
 | `Reset-Theme` | Restore the tab's default colors and clear `$global:WtThemeName`. |
 | `Show-ThemePalette` / `Show-Theme` | Preview the active theme's slots. |
@@ -50,22 +51,21 @@ ziti-doc          -> imperial-purple
 dotfiles          -> tangent
 ```
 
-### How `-UseRepoTheme` resolves the repo
+### How the repo is resolved (both switches)
 
 1. `git remote get-url origin` and take the last path segment.
 2. If that fails (no remote), parse the worktree path layout
    `<WORKTREE_ROOT>\<host>\<org>\<repo>\<branch>` and take `<repo>`.
 
-If the repo is in the map, that theme is applied. If not, behavior depends on `-Quiet`.
+### Apply (`-UseRepoTheme`) vs set (`-SetRepoTheme`)
 
-### Quiet vs manual
-
-- `Set-Theme -UseRepoTheme -Quiet` (used by the on-cd hook): mapped repo gets its theme, unmapped
-  repo triggers `Reset-Theme`. Never prompts.
-- `Set-Theme -UseRepoTheme` (manual, no `-Quiet`): always opens the picker so you can SET or CHANGE
-  the mapping. After you pick, it asks `(y)es / (a)gain / (N)o`. `y` writes the mapping back into
-  `wt-themes.ps1` via `_SaveRepoThemeMapping` (it replaces an existing line for the repo, or inserts
-  a new one). `a` reopens the picker to try another. `N` applies the pick without saving.
+- `Set-Theme -UseRepoTheme`: APPLY the current repo's mapped theme. A mapped repo gets its theme, an
+  unmapped repo resets and prints a one-line hint to run `-SetRepoTheme`. Add `-Quiet` to silence all
+  output (this is what the on-cd hook uses). It never opens the picker.
+- `Set-Theme -SetRepoTheme`: SET or CHANGE the mapping. It opens the picker, then asks
+  `(y)es / (a)gain / (N)o`. `y` writes the mapping back into `wt-themes.ps1` via `_SaveRepoThemeMapping`
+  (it replaces an existing line for the repo, or inserts a new one). `a` reopens the picker to try
+  another. `N` applies the pick without saving.
 
 ### Auto-apply on cd
 
@@ -81,7 +81,7 @@ The clint prompt adds, in addition to the usual host + path:
 - A `[theme-name]` prefix (or `[default]` when no theme is active) before the hostname.
 - A 30-char-wide repo banner pinned to the top-right of the prompt line. It is true-color: the
   theme's background hex is the text color, the theme's `ansi[6]` slot is the stripe background.
-- A one-time `hint: Set-Theme -UseRepoTheme` line shown when you enter a repo that has no mapping
+- A one-time `hint: Set-Theme -SetRepoTheme` line shown when you enter a repo that has no mapping
   yet but could have one. It re-shows only when the detected repo changes, not on every prompt.
 
 ## The rainbow themes

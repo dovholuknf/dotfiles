@@ -215,7 +215,8 @@ function Set-Theme {
     #   Set-Theme tangent          -- by name (substring / prefix tolerant)
     #   Set-Theme 6                -- by 1-based index into the sorted list
     #   Set-Theme -Tour            -- walk through every theme, Enter between each
-    #   Set-Theme -UseRepoTheme    -- apply the configured default for the current repo
+    #   Set-Theme -UseRepoTheme    -- apply the current repo's mapped theme (add -Quiet to stay silent)
+    #   Set-Theme -SetRepoTheme    -- pick + save the theme mapping for the current repo
     #   Set-Theme @{ ... }         -- by inline hashtable (custom test theme)
     #   $myTheme | Set-Theme       -- pipeline
     [CmdletBinding(DefaultParameterSetName = 'ByName')]
@@ -238,12 +239,14 @@ function Set-Theme {
         [Parameter(ParameterSetName='ByName')] [switch]$Sample,
         [Parameter(ParameterSetName='ByName')] [switch]$All,
         [Parameter(ParameterSetName='ByName')] [switch]$UseRepoTheme,
+        # Set or change the current repo's theme mapping (opens the picker, saves on confirm).
+        [Parameter(ParameterSetName='ByName')] [switch]$SetRepoTheme,
         # When set, suppresses the picker fallback and all output on no-match.
         # Used by the Prompt hook so auto-apply is silent when not in a mapped repo.
         [Parameter(ParameterSetName='ByName')] [switch]$Quiet
     )
     process {
-        if ($UseRepoTheme) {
+        if ($UseRepoTheme -or $SetRepoTheme) {
             $remote = git remote get-url origin 2>$null
             $repo   = $null
             if ($remote) {
@@ -262,49 +265,55 @@ function Set-Theme {
                 $global:WtThemeCanMap   = $false
                 $global:WtCurrentRepo   = $null
                 if ($Quiet) {
-                    # Write-Host "repo: (no git remote)  theme: (none -- resetting)" -ForegroundColor DarkGray
                     if ($global:WtThemeName) { Reset-Theme }
                 } else {
-                    Write-Host "not in a git repo (or no origin remote) -- opening picker" -ForegroundColor DarkGray
-                    Set-Theme
+                    Write-Host "  not in a git repo (or no origin remote)" -ForegroundColor DarkGray
                 }
                 return
             }
             $global:WtCurrentRepo = $repo
             $mapped = if ($script:RepoThemes.ContainsKey($repo)) { $script:RepoThemes[$repo] } else { $null }
-            if ($Quiet) {
-                # Auto-apply path (prompt hook). Apply the mapping or reset; never prompt.
+
+            # -SetRepoTheme: open the picker so the user can set OR change the mapping,
+            # then save on confirm. Loop on 'again' so themes can be auditioned without
+            # re-running the command.
+            if ($SetRepoTheme) {
+                $global:WtThemeCanMap = $false
                 if ($mapped) {
-                    $global:WtThemeCanMap = $false
-                    if ($global:WtThemeName -ne $mapped) { Set-Theme $mapped }
+                    Write-Host "  '$repo' currently maps to '$mapped' -- pick a new theme (Esc to keep)" -ForegroundColor DarkGray
                 } else {
-                    $global:WtThemeCanMap = $true
-                    if ($global:WtThemeName) { Reset-Theme }
+                    Write-Host "  no theme mapped for '$repo' -- pick one (Esc to skip)" -ForegroundColor DarkGray
+                }
+                while ($true) {
+                    Set-Theme
+                    $picked = $global:WtThemeName
+                    if (-not $picked -or $picked -eq $mapped) { break }
+                    $verb = if ($mapped) { "change '$repo' from '$mapped' to" } else { "save" }
+                    $r = (Read-Host "  $verb '$picked' for '$repo'? (y)es / (a)gain / (N)o").Trim()
+                    if ($r -match '^[Yy]') {
+                        _SaveRepoThemeMapping -Repo $repo -Theme $picked
+                        break
+                    } elseif ($r -match '^[Aa]') {
+                        continue   # reopen the picker
+                    } else {
+                        break
+                    }
                 }
                 return
             }
-            # Manual path: always open the picker so the user can set OR change the
-            # mapping, even when one already exists. Loop on 'pick again' so the
-            # user can audition themes without re-running the command.
-            $global:WtThemeCanMap = $false
+
+            # -UseRepoTheme: APPLY the mapped theme. -Quiet stays silent (prompt hook / spawn).
             if ($mapped) {
-                Write-Host "  '$repo' currently maps to '$mapped' -- pick a new theme (Esc to keep)" -ForegroundColor DarkGray
+                $global:WtThemeCanMap = $false
+                if ($global:WtThemeName -ne $mapped) { Set-Theme $mapped }
+                if (-not $Quiet) {
+                    Write-Host "  '$repo' -> '$mapped'  (Set-Theme -SetRepoTheme to change it)" -ForegroundColor DarkGray
+                }
             } else {
-                Write-Host "  no default theme for '$repo' -- pick one (Esc to skip)" -ForegroundColor DarkGray
-            }
-            while ($true) {
-                Set-Theme
-                $picked = $global:WtThemeName
-                if (-not $picked -or $picked -eq $mapped) { break }
-                $verb = if ($mapped) { "change '$repo' from '$mapped' to" } else { "save" }
-                $r = (Read-Host "  $verb '$picked' for '$repo'? (y)es / (a)gain / (N)o").Trim()
-                if ($r -match '^[Yy]') {
-                    _SaveRepoThemeMapping -Repo $repo -Theme $picked
-                    break
-                } elseif ($r -match '^[Aa]') {
-                    continue   # reopen the picker
-                } else {
-                    break
+                $global:WtThemeCanMap = $true
+                if ($global:WtThemeName) { Reset-Theme }
+                if (-not $Quiet) {
+                    Write-Host "  no theme mapped for '$repo'  (Set-Theme -SetRepoTheme to pick one)" -ForegroundColor DarkGray
                 }
             }
             return

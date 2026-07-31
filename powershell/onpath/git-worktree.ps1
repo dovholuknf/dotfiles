@@ -1696,15 +1696,18 @@ switch ($Command) {
         # Create a worktree to investigate a Zendesk support ticket. Mirrors 'discourse'.
         # Accepts:
         #   * full URL  -- https://<sub>.zendesk.com/agent/tickets/12345
-        #   * bare id   -- 12345  (assumes netfoundry.zendesk.com)
+        #   * bare id   -- 12345  (uses $env:ZENDESK_HOST)
         if (-not $Target) { throw "'zendesk' requires a Zendesk ticket URL or numeric ticket id" }
         $ticketId    = $null
         $zendeskHost = $null
 
         if ($Target -match '^\d+$') {
             $ticketId    = $Target
-            $zendeskHost = 'netfoundry.zendesk.com'
-            Write-Color "bare ticket id -- assuming host netfoundry.zendesk.com" DarkGray
+            $zendeskHost = $env:ZENDESK_HOST
+            if (-not $zendeskHost) {
+                throw "bare ticket id needs a host. set `$env:ZENDESK_HOST (e.g. in ~/.profile.secrets.ps1) or pass the full ticket URL"
+            }
+            Write-Color "bare ticket id -- assuming host $zendeskHost (from `$env:ZENDESK_HOST)" DarkGray
         } elseif ($Target -match '^https?://(?<zhost>[^/]+).*?/tickets/(?<id>\d+)') {
             $ticketId    = $Matches.id
             $zendeskHost = $Matches.zhost
