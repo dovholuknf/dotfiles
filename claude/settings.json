@@ -4,6 +4,12 @@
   },
   "permissions": {
     "allow": [
+      "Bash(ssh cdwsl *)",
+      "Bash(ssh.exe cdwsl *)",
+      "Bash(ssh cdaws *)",
+      "Bash(ssh.exe cdaws *)",
+      "Bash(ssh cdzrok *)",
+      "Bash(ssh.exe cdzrok *)",
       "Bash(ziti:*)",
       "Bash(ls:*)",
       "Bash(ls *)",
@@ -69,7 +75,6 @@
       "Bash(echo:*)",
       "Bash(xargs grep :*)",
       "Bash(ziti:*)",
-      "Bash(ssh.exe *)",
       "Bash(/v/work/tools/go/current/bin/go build:*)",
       "Bash(zrok2 *)",
       "Read(//c/temp/**)",

@@ -1768,8 +1768,10 @@ switch ($Command) {
     'twig' {
         if (-not $Target) { throw "'twig' requires a new branch name" }
 
-        $current = (& git rev-parse --abbrev-ref HEAD 2>&1 | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $current -or $current -eq 'HEAD') {
+        # NOTE: not $current -- that collides (case-insensitively) with the [switch]$Current
+        # parameter, so assigning a branch string to it throws a SwitchParameter cast error.
+        $srcBranch = (& git rev-parse --abbrev-ref HEAD 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $srcBranch -or $srcBranch -eq 'HEAD') {
             throw "can't detect current branch -- are you inside a git worktree?"
         }
         $currentWt = (& git rev-parse --show-toplevel 2>&1 | Out-String).Trim()
@@ -1797,7 +1799,7 @@ switch ($Command) {
             }
         }
 
-        Write-Color "twigging '$Target' off '$current'" Cyan
+        Write-Color "twigging '$Target' off '$srcBranch'" Cyan
 
         $ctx = Resolve-RepoContext
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
@@ -1806,8 +1808,8 @@ switch ($Command) {
         if (Test-LocalBranchExists $ctx.Src $Target) {
             throw "branch '$Target' already exists -- pick a different name"
         }
-        # branch off whatever $current currently points to locally -- do NOT force-update it
-        Invoke-Git $ctx.Src @('branch','--no-track',$Target,$current)
+        # branch off whatever $srcBranch currently points to locally -- do NOT force-update it
+        Invoke-Git $ctx.Src @('branch','--no-track',$Target,$srcBranch)
 
         $wtPath = Join-Path $ctx.WtRoot $Target
         Ensure-Worktree $ctx.Src $wtPath $Target
@@ -1824,18 +1826,18 @@ switch ($Command) {
                 }
                 $dstDir = Split-Path $dst -Parent
                 if ($dstDir) { [System.IO.Directory]::CreateDirectory($dstDir) | Out-Null }
-                Copy-Item -LiteralPath $src -Destination $dst -Force
+                Copy-Item -LiteralPath $src -Destination $dst -Force -Recurse   # -Recurse carries untracked dirs (e.g. test-results/)
                 Write-Color "  copied: $rel" DarkGray
             }
         }
 
         if ($patchFile -and (Test-Path $patchFile) -and (Get-Item $patchFile).Length -gt 0) {
             Write-Color "applying carried changes..." Cyan
-            & git -C $wtPath apply --index $patchFile 2>&1 | Out-String | Write-Host
+            & git -C $wtPath apply $patchFile 2>&1 | Out-String | Write-Host
             if ($LASTEXITCODE -ne 0) {
                 Write-Color "patch did not apply cleanly -- left at: $patchFile" Red
             } else {
-                Write-Color "carried changes applied (staged)." Green
+                Write-Color "carried changes applied (unstaged)." Green
                 Remove-Item $patchFile -Force
             }
         }
