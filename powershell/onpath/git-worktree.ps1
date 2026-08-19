@@ -30,6 +30,7 @@ param(
     [string]$Match,         # 'gwt sessions restore <pattern>' filters by Branch/WorktreePath substring
 
     [string]$From,          # 'new': create branch from this source
+    [string]$Lts,           # 'backport': target LTS line -- 'active' (newest release-v*.x) or 'maint' (next); or a release-vN.M.x name. Omit to be prompted.
     [string]$Org,
     [string]$Repo,
     [string]$RemoteHost,    # explicit host (e.g. 'github.com', 'bitbucket.org') -- for callers that don't have a git remote to detect from
@@ -67,8 +68,12 @@ param(
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
     [string]$SortBy,        # 'sessions usage': cost|tokens|recent (default: cost)
-    [switch]$DryRun,        # 'sessions clean': preview targets without removing
-    [switch]$IncludeEnded,  # 'sessions restore': also restore ENDED entries (default: skip them)
+    [switch]$DryRun,        # 'sessions clean' / 'restore': preview targets without acting
+    [switch]$IncludeEnded,  # 'sessions list' / 'restore': also show/restore ENDED entries (default: hidden)
+    [int]$MaxAgeDays = 7,   # 'sessions restore': skip sessions last active > N days ago (0 = no limit)
+    [switch]$ByTabs,        # 'sessions restore': force the .tabs-layout mode (default; skips the picker)
+    [switch]$BySessions,    # 'sessions restore': force the open-order + window-prompt mode (skips the picker)
+    [switch]$ExcludeActive, # 'sessions restore': drop currently-running sessions from the set (default: include them)
     [int]$Tail = 20,        # 'watch': how many lines of state.log to show before waiting
     [switch]$WithSize,      # 'summary': also walk each worktree for byte totals (slow)
     [switch]$Help
@@ -186,7 +191,11 @@ function _ApplyRepoScope {
 
 function Write-Color {
     param([string]$Text, [string]$Color = 'White')
-    Write-Host $Text -ForegroundColor $Color
+    # When stdout is redirected ('> file', '| grep'), emit to the success stream so
+    # the output can actually be captured. Write-Host paints the console directly and
+    # is invisible to both redirects and pipes. Interactive: keep the colored output.
+    if ([Console]::IsOutputRedirected) { Write-Output $Text }
+    else { Write-Host $Text -ForegroundColor $Color }
 }
 
 function Invoke-Git {
@@ -208,6 +217,75 @@ function Invoke-GitCapture {
     } finally { Pop-Location }
 }
 
+function script:_SessionJournal {
+    # Given a claude session id, find its transcript jsonl and return the last real
+    # user message ("where you left off") plus the jsonl mtime (last activity). The
+    # jsonl map is built once per gwt run and cached. Returns $null if not found.
+    param([string]$ClaudeSessionId)
+    if (-not $ClaudeSessionId) { return $null }
+    if (-not $script:_JournalMap) {
+        $script:_JournalMap = @{}
+        # Claude-code transcripts live under the account that ran them (the claude
+        # account hosts claude-code), so scan every user profile's projects dir, not
+        # just the current user's. clint runs gwt as an admin and can read them.
+        $usersRoot = Split-Path $env:USERPROFILE -Parent
+        $projDirs  = foreach ($u in (Get-ChildItem $usersRoot -Directory -ErrorAction SilentlyContinue)) {
+            $p = Join-Path $u.FullName '.claude\projects'
+            if (Test-Path $p) { $p }
+        }
+        foreach ($proj in $projDirs) {
+            foreach ($jf in (Get-ChildItem $proj -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue |
+                             Where-Object { $_.Directory.Name -ne 'subagents' })) {
+                $id = $jf.BaseName
+                if (-not $script:_JournalMap.ContainsKey($id) -or $jf.LastWriteTime -gt $script:_JournalMap[$id].LastWriteTime) {
+                    $script:_JournalMap[$id] = $jf
+                }
+            }
+        }
+    }
+    $jf = $script:_JournalMap[$ClaudeSessionId]
+    if (-not $jf) { return $null }
+    $msg = $null
+    foreach ($line in Get-Content $jf.FullName) {
+        try { $o = $line | ConvertFrom-Json } catch { continue }
+        if ($o.type -eq 'user' -and $o.message.role -eq 'user') {
+            $c = $o.message.content
+            if ($c -is [string]) { $t = $c }
+            else { $t = ($c | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }) -join ' ' }
+            if ($t -and $t -notmatch '^<' -and $t.Trim()) { $msg = $t }
+        }
+    }
+    if ($msg) { $msg = ($msg -replace '\s+',' ').Trim() }
+    [pscustomobject]@{ LastActive = $jf.LastWriteTime; LastMsg = $msg }
+}
+
+function _SelectTargetRepo {
+    # Picker for the discourse/zendesk "which repo does this belong to?" prompt.
+    # Most-likely repos first, default pre-highlighted, plus a 'custom' row that
+    # falls back to free text (org/repo or host:org/repo). Uses the shared
+    # _TuiSelect so it matches every other list in the toolkit.
+    param([string]$Default = 'openziti/ziti')
+    $common = @(
+        'openziti/ziti'
+        'openziti/ziti-tunnel-sdk-c'
+        'openziti/ziti-sdk-c'
+        'openziti/desktop-edge-win'
+        'openziti/ziti-sdk-csharp'
+    )
+    if ($Default -and ($common -notcontains $Default)) { $common = @($Default) + $common }
+    $custom = 'custom (type org/repo or host:org/repo)...'
+    $items  = @($common + $custom)
+    $defIdx = [Array]::IndexOf($items, $Default); if ($defIdx -lt 0) { $defIdx = 0 }
+    $picked = _TuiSelect -Items $items -Prompt 'target repo:' -DefaultIndex $defIdx
+    if (-not $picked) { return $null }   # cancelled
+    if ($picked -eq $custom) {
+        $resp = (Read-Host "  enter repo (org/repo, or host:org/repo)").Trim()
+        if (-not $resp) { return $Default }
+        return $resp
+    }
+    return $picked
+}
+
 function _HostShort {
     param([string]$h)
     switch ($h) {
@@ -219,6 +297,7 @@ function _HostShort {
 }
 
 function Resolve-RepoContext {
+    param([switch]$QuietLayout)   # suppress the off-layout warning for pure-navigate callers (e.g. 'gwt cd')
     # If Org/Repo were passed explicitly, accept an explicit -RemoteHost too (or
     # default to github.com) -- we don't need to consult a git remote at all.
     if ($script:Org -and $script:Repo -and -not $script:RemoteHost) {
@@ -304,7 +383,7 @@ function Resolve-RepoContext {
     # Layout warning only relevant when org/repo were inferred from cwd. When a
     # caller (gwt pr <url>, gwt discourse, gwt <bare url>, etc.) set them
     # explicitly, the cwd doesn't matter.
-    if (-not $script:WarnedLayout -and $script:OrgRepoFromCwd) {
+    if (-not $QuietLayout -and -not $script:WarnedLayout -and $script:OrgRepoFromCwd) {
         $cwd = (Get-Location).Path.TrimEnd('\') + '\'
         $sb  = $src.TrimEnd('\')    + '\'
         $wb  = $wtroot.TrimEnd('\') + '\'
@@ -329,12 +408,33 @@ function Resolve-RepoContext {
 
 function Ensure-RepoClonedAndUpdated {
     param([string]$Org, [string]$Repo, [string]$Src, [string]$RemoteHost = 'github.com')
-    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Src)) | Out-Null
     if (-not (Test-Path $Src)) {
         # No local clone: we cannot proceed offline, so this stays fatal.
         $url = "git@${RemoteHost}:$Org/$Repo.git"
+        # Verify the remote is actually a reachable git repo BEFORE cloning. A
+        # non-git URL (e.g. a product page routed here as host/org/repo) otherwise
+        # sends git into an ssh clone that blocks on a host-key / auth prompt and
+        # swallows Ctrl-C. BatchMode + no terminal prompt + a short connect timeout
+        # makes ls-remote fail fast instead of hanging.
+        $prevSsh    = $env:GIT_SSH_COMMAND
+        $prevPrompt = $env:GIT_TERMINAL_PROMPT
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GIT_SSH_COMMAND     = 'ssh -oBatchMode=yes -oConnectTimeout=8 -oStrictHostKeyChecking=accept-new'
+        try {
+            & git ls-remote $url 2>&1 | Out-Null
+            $reachable = ($LASTEXITCODE -eq 0)
+        } finally {
+            if ($null -ne $prevSsh)    { $env:GIT_SSH_COMMAND     = $prevSsh }    else { Remove-Item Env:GIT_SSH_COMMAND     -ErrorAction SilentlyContinue }
+            if ($null -ne $prevPrompt) { $env:GIT_TERMINAL_PROMPT = $prevPrompt } else { Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue }
+        }
+        if (-not $reachable) {
+            throw "not a git repo: $url is not reachable as a git repository (is '$RemoteHost/$Org/$Repo' really a git URL?)"
+        }
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Src)) | Out-Null
         & git clone $url $Src 2>&1
         if ($LASTEXITCODE -ne 0) { throw "clone failed: $url" }
+    } else {
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Src)) | Out-Null
     }
     # Repo already on disk -- updating is best-effort. A fetch/pull failure
     # (offline, VPN down, auth) shouldn't block working on what's local. Ask.
@@ -464,6 +564,44 @@ function Sync-PrBranch {
     # in both cases, so this always resolves. Forced (+) so an existing local
     # branch updates to the current PR head.
     Invoke-Git $Src @('fetch','origin',"+refs/pull/$PrNumber/head:refs/heads/$Branch")
+}
+
+function _ResolveLtsBranch {
+    # Map the symbolic LTS names to a real release branch, resolved LIVE so they don't
+    # rot: 'active' = highest release-vN.M.x on origin, 'maint' = the next one down.
+    # Also accepts a literal release-vN.M.x. Empty -Lts -> interactive picker.
+    param([string]$Src, [string]$Lts)
+    $raw = @(Invoke-GitCapture $Src @('for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin/release-v*'))
+    $rel = @()
+    foreach ($r in $raw) {
+        $name = ($r -replace '^origin/', '')
+        if ($name -match '^release-v(\d+)\.(\d+)\.x$') {
+            $rel += [pscustomobject]@{ Name = $name; Ver = [version]::new([int]$Matches[1], [int]$Matches[2]) }
+        }
+    }
+    $rel = @($rel | Sort-Object Ver -Descending)
+    if (-not $rel.Count) { throw "no release-vN.M.x branches on origin -- is the repo fetched?" }
+    $active = $rel[0].Name
+    $maint  = if ($rel.Count -ge 2) { $rel[1].Name } else { $null }
+
+    switch ("$Lts".Trim().ToLower()) {
+        'active'      { return $active }
+        'maint'       { if ($maint) { return $maint } else { throw "only one release line ($active) -- no maint LTS" } }
+        'maintenance' { if ($maint) { return $maint } else { throw "only one release line ($active) -- no maint LTS" } }
+        '' {
+            $items = @([pscustomobject]@{ Label = "active LTS  ($active)"; Branch = $active })
+            if ($maint) { $items += [pscustomobject]@{ Label = "maint LTS   ($maint)"; Branch = $maint } }
+            foreach ($r in ($rel | Select-Object -Skip 2)) { $items += [pscustomobject]@{ Label = "            $($r.Name)"; Branch = $r.Name } }
+            $pick = _TuiSelect -Items $items -Prompt 'backport target LTS:' -DisplayScript { param($i) $i.Label } -DefaultIndex 0
+            if (-not $pick) { throw "cancelled -- no backport target picked" }
+            return $pick.Branch
+        }
+        default {
+            $hit = @($rel | Where-Object { $_.Name -ieq $Lts })
+            if ($hit.Count) { return $hit[0].Name }
+            throw "unknown -Lts '$Lts' -- use 'active' ($active), 'maint' ($maint), or a release-vN.M.x name"
+        }
+    }
 }
 
 function _RehomeSessionEntry {
@@ -784,12 +922,26 @@ function _SetCurrentSymlink {
     # one stable project. Junctions also don't require Developer Mode / admin.
     # Name kept as _SetCurrentSymlink for backward compatibility with callers.
     param([Parameter(Mandatory)][string]$WtRoot, [Parameter(Mandatory)][string]$WorktreePath)
+    # git emits forward slashes; junctions want native backslash paths, and the
+    # printed target should match the Windows-style link path.
+    $WorktreePath = ($WorktreePath -replace '/', '\').TrimEnd('\')
     if (-not (Test-Path $WtRoot)) {
         [System.IO.Directory]::CreateDirectory($WtRoot) | Out-Null
     }
     $link = Join-Path $WtRoot 'current'
     if (Test-Path $link) {
-        try { Remove-Item $link -Force -ErrorAction Stop } catch {
+        # Delete the reparse point ONLY. Remove-Item on a directory junction
+        # whose target has children triggers PowerShell's "has children, Recurse
+        # not specified" confirm, and answering Y follows the junction and
+        # deletes the TARGET's contents. Directory.Delete removes just the link.
+        try {
+            $li = Get-Item $link -Force
+            if ($li.LinkType -in 'SymbolicLink','Junction') {
+                [System.IO.Directory]::Delete($link)
+            } else {
+                Remove-Item $link -Force -ErrorAction Stop
+            }
+        } catch {
             Write-Color "  could not replace existing 'current' at $link : $($_.Exception.Message)" Yellow
             return
         }
@@ -825,7 +977,8 @@ function _DropCurrentSymlinkIfPointsAt {
         if ($norm.TrimEnd('\').ToLower() -ne $WorktreePath.TrimEnd('\').ToLower()) { return }
 
         # It WAS pointing at the removed worktree. Repoint to main if possible.
-        Remove-Item $link -Force -ErrorAction SilentlyContinue
+        # Directory.Delete drops just the reparse point (see _SetCurrentSymlink).
+        try { [System.IO.Directory]::Delete($link) } catch { Remove-Item $link -Force -ErrorAction SilentlyContinue }
         if ($MainPath -and (Test-Path $MainPath)) {
             try {
                 New-Item -ItemType Junction -Path $link -Target $MainPath -ErrorAction Stop | Out-Null
@@ -844,11 +997,35 @@ function _SetGwtCwdHint {
     # can Set-Location the parent shell into the newly-created worktree. Keyed on
     # $PID so concurrent gwt calls don't trample each other.
     param([string]$Path)
+    # _ConfirmOpenOrCd sets this when the user declined to move -- honor it once.
+    if ($global:_GwtSuppressCd) { $global:_GwtSuppressCd = $false; return }
     if (-not $Path) { return }
     try {
         $hintFile = if ($env:GWT_HINT_FILE) { $env:GWT_HINT_FILE } `
                     else { Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt" }
         Set-Content -Path $hintFile -Value $Path -Encoding UTF8 -NoNewline
+    } catch {}
+}
+
+if (-not ('Gwt.Win' -as [type])) {
+    Add-Type -Namespace Gwt -Name Win -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo);
+'@
+}
+function _RefocusSelfWindow {
+    # 'wt focus-tab' foregrounds the target window, so a following Read-Host would
+    # read keystrokes typed into THAT tab, not this shell. Reclaim our own console
+    # to the foreground first. Windows blocks SetForegroundWindow from a non-
+    # foreground process unless a key was just pressed, so tap ALT to unlock it.
+    try {
+        $h = [Gwt.Win]::GetConsoleWindow()
+        if ($h -ne [IntPtr]::Zero) {
+            [Gwt.Win]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)  # ALT down
+            [Gwt.Win]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)  # ALT up
+            [Gwt.Win]::SetForegroundWindow($h) | Out-Null
+        }
     } catch {}
 }
 
@@ -1121,6 +1298,12 @@ if ($Command -match '^https?://') {
         $script:Repo       = $Matches.repo
         $Target  = $Matches.num
         $Command = 'issue'
+    } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)/security/advisories/(?<ghsa>GHSA-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4})') {
+        $script:RemoteHost = $Matches.host
+        $script:Org        = $Matches.org
+        $script:Repo       = $Matches.repo
+        $Target  = $Matches.ghsa
+        $Command = 'advisory'
     } elseif ($Command -match '^https?://[^/]+\.zendesk\.com/.*?/tickets/\d+') {
         $Target  = $Command
         $Command = 'zendesk'
@@ -1130,6 +1313,12 @@ if ($Command -match '^https?://') {
         $script:Repo       = $Matches.repo
         $Target  = $Command
         $Command = 'clone'
+    } elseif ($Command -match '^https?://(github\.com|bitbucket\.org|gitlab\.com)/[^/]+/[^/]+/') {
+        # Any deeper URL on a known git host (an actions run, a blob/tree link, a
+        # settings page): we can't infer a branch, so hand it to 'new', which pulls
+        # org/repo out and prompts for a worktree name.
+        $Target  = $Command
+        $Command = 'new'
     }
     # Anything else falls through with $Command still set to the URL -- the
     # default switch case will print "unknown command" with the URL as the name.
@@ -1143,19 +1332,30 @@ function Show-SubcommandHelp {
     switch ($key) {
         'sessions list' {
             Write-Host ""
-            Write-Color "gwt sessions list [-Usage]" Cyan
-            Write-Color "  List every registered claude session, grouped by wt window." DarkGray
-            Write-Color "  Tags: ACTIVE / PAUSED / STALE / SAVED (saved overrides the lifecycle tag)." DarkGray
+            Write-Color "gwt sessions list [-IncludeEnded] [-Usage]" Cyan
+            Write-Color "  Registered claude sessions as a flat table, newest activity first." DarkGray
+            Write-Color "  Tags: ACTIVE / ABORTED / STALE / ENDED / SAVED (saved overrides the rest)." DarkGray
+            Write-Color "  ENDED (closed cleanly) is hidden by default -- pass -IncludeEnded to show it." DarkGray
+            Write-Color "  Output honors '> file' and '| grep' (colored only when going to a terminal)." DarkGray
             Write-Color "  -Usage  print the per-subcommand cheat sheet below the listing." DarkGray
         }
         'sessions restore' {
             Write-Host ""
-            Write-Color "gwt sessions restore [<match>] [-Name <branch>] [-Window <name>]" Cyan
-            Write-Color "  Relaunch PAUSED sessions into their original wt window." DarkGray
-            Write-Color "  <match>    substring filter (Branch / WorktreePath / WindowName)" DarkGray
-            Write-Color "  -Name      exact branch match (combines with the others)" DarkGray
-            Write-Color "  -Window    on single-entry restore: override the destination window" DarkGray
-            Write-Color "             on multi-entry restore: also filters by exact window name" DarkGray
+            Write-Color "gwt sessions restore [<match>] [-ByTabs|-BySessions] [-DryRun] [-MaxAgeDays <n>] [-IncludeEnded] [-Name <branch>] [-Window <name>]" Cyan
+            Write-Color "  Relaunch ABORTED sessions. Only recoverable ones qualify: transcript on disk AND active recently." DarkGray
+            Write-Color "  Picks a mode (announced): 'by tabs' rebuilds the exact .tabs layout (DEFAULT), or" DarkGray
+            Write-Color "  'by sessions' opens in order with the auto/previous window prompt." DarkGray
+            Write-Color "  <match>       substring filter (Branch / WorktreePath / WindowName)" DarkGray
+            Write-Color "  -ByTabs       force .tabs-layout mode (skip the picker)" DarkGray
+            Write-Color "  -BySessions   force open-order + window-prompt mode (skip the picker)" DarkGray
+            Write-Color "  -DryRun       print what WOULD reopen, then stop (by-tabs: grouped by window then tab index)" DarkGray
+            Write-Color "  -ExcludeActive  drop currently-RUNNING sessions from the set. Default INCLUDES them so the" DarkGray
+            Write-Color "                  preview shows the full post-reboot layout (a live restore still skips running ones)." DarkGray
+            Write-Color "  -MaxAgeDays   skip sessions last active > n days ago (default 7; 0 = no limit)" DarkGray
+            Write-Color "  -IncludeEnded also restore sessions you closed cleanly (ENDED)" DarkGray
+            Write-Color "  -Name         exact branch match (combines with the others)" DarkGray
+            Write-Color "  -Window       on single-entry restore: override the destination window" DarkGray
+            Write-Color "                on multi-entry restore: also filters by exact window name" DarkGray
         }
         'sessions clean' {
             Write-Host ""
@@ -1226,6 +1426,13 @@ if ($_wantSubHelp -and $Command -and $Command -notin @('help','-h','--help')) {
 }
 
 try {
+# Alias: 'gwt tabs <mode>' == 'gwt sessions tabs <mode>'. Shift the mode into $Match
+# (where the sessions/tabs handler reads it) and route through 'sessions'.
+if ($Command -eq 'tabs') {
+    $Match   = $Target
+    $Target  = 'tabs'
+    $Command = 'sessions'
+}
 switch ($Command) {
 
     'new' {
@@ -1243,6 +1450,15 @@ switch ($Command) {
             $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
             if ($y) { $passArgs.y = $true }
             & $PSCommandPath issue $Matches.num @passArgs
+            break
+        }
+        if ($Target -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<repo>[^/]+)/security/advisories/(?<ghsa>GHSA-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4})') {
+            $script:RemoteHost = $Matches.host
+            $script:Org        = $Matches.org
+            $script:Repo       = $Matches.repo
+            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
+            if ($y) { $passArgs.y = $true }
+            & $PSCommandPath advisory $Matches.ghsa @passArgs
             break
         }
         # Any other URL from a KNOWN GIT HOST that we can pull host/org/repo from
@@ -1446,6 +1662,54 @@ switch ($Command) {
         _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath
     }
 
+    'close' {
+        # Close THIS tab cleanly (run from inside it):
+        #   1. drop its line from the per-window tab registry (removal reorders the
+        #      rest automatically -- positions are line order, no renumber needed)
+        #   2. mark its ledger entry ended
+        #   3. signal the profile wrapper to exit this shell, which closes the wt tab
+        # Identity comes from $env:WT_SESSION; cwd is the fallback when it's missing.
+        $wtSess = $env:WT_SESSION
+        $cwd    = (Get-Location).Path.Replace('/', '\').TrimEnd('\').ToLower()
+
+        $removedTabs = 0
+        $winDir = Join-Path $script:WtRoot 'windows'
+        if (Test-Path $winDir) {
+            foreach ($tf in (Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue)) {
+                $lines = @(Get-Content $tf.FullName -ErrorAction SilentlyContinue)
+                $keep = @($lines | Where-Object {
+                    $p  = $_ -split "`t"
+                    $ws = $p[0]
+                    $lp = if ($p.Count -ge 3) { ($p[2] -replace '/', '\').TrimEnd('\').ToLower() } else { '' }
+                    -not (($wtSess -and $ws -eq $wtSess) -or ($lp -and $lp -eq $cwd))
+                })
+                if ($keep.Count -ne $lines.Count) {
+                    if ($keep.Count) { Set-Content -Path $tf.FullName -Value $keep -Encoding UTF8 }
+                    else { Remove-Item $tf.FullName -Force -ErrorAction SilentlyContinue }
+                    $removedTabs += ($lines.Count - $keep.Count)
+                }
+            }
+        }
+
+        foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+            try { $e = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+            $ep = ($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+            if (($wtSess -and $e.WtSession -eq $wtSess) -or ($ep -and $ep -eq $cwd)) {
+                $e.Pid = 0
+                if ($e.PSObject.Properties.Match('State').Count) { $e.State = 'ended' }
+                else { Add-Member -InputObject $e -NotePropertyName State -NotePropertyValue 'ended' -Force }
+                ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $sf.FullName -Encoding UTF8
+            }
+        }
+
+        Write-Color "closed this tab (removed $removedTabs registry line(s)) -- shell exiting" Green
+        # Drop a hint the profile wrapper reads to exit the parent shell (closing the
+        # wt tab). If gwt was run outside the wrapper, there's no hint -- nothing closes.
+        if ($env:GWT_HINT_FILE) {
+            Set-Content -Path "$($env:GWT_HINT_FILE).close" -Value '1' -Encoding UTF8 -ErrorAction SilentlyContinue
+        }
+    }
+
     'issue' {
         # Triggered by an issue URL: github.com/<org>/<repo>/issues/<num>.
         # Creates a worktree at 'issue-<num>' branched off main, opens claude
@@ -1489,12 +1753,115 @@ switch ($Command) {
         & $PSCommandPath new $branch @pass
     }
 
+    'advisory' {
+        # Triggered by a GitHub security advisory URL:
+        # github.com/<org>/<repo>/security/advisories/GHSA-xxxx-yyyy-zzzz.
+        # Creates a worktree at 'advisory-<GHSA>' branched off main and opens
+        # claude with a prompt pointed at the advisory. GitHub's own fix flow
+        # uses a temporary private fork we can't clone over SSH; this is the
+        # local fix-branch you'd PR from.
+        if (-not $Target -or $Target -notmatch '^GHSA-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}$') {
+            throw "'advisory' expects a GHSA id (got '$Target') -- use a github security advisory URL"
+        }
+        $ghsa   = $Target
+        $branch = "advisory-$ghsa"
+        $ctx    = Resolve-RepoContext
+        [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
+
+        # Fetch the advisory body HERE (as the invoking shell) and embed it in the
+        # prompt. This matters for DRAFT advisories: a classic PAT with repo admin
+        # (what you run gwt with) can read them, but a fine-grained PAT -- and the
+        # spawned claude's token -- cannot. Fetching here and baking the text in means
+        # the spawned claude never has to hit an endpoint its token can't reach.
+        # PromptText is stored in the session JSON and passed to claude as a single
+        # argv (never a command line), so multi-line markdown is safe.
+        $summary = $null; $severity = $null; $description = $null; $forkFull = $null
+        try {
+            $raw = (& gh api "repos/$($ctx.Org)/$($ctx.Repo)/security-advisories/$ghsa" 2>$null | Out-String).Trim()
+            if ($raw) {
+                $adv         = $raw | ConvertFrom-Json
+                $summary     = $adv.summary
+                $severity    = $adv.severity
+                $description = $adv.description
+                $forkFull    = $adv.private_fork.full_name   # temporary private fork holding the fix PRs
+            }
+        } catch {}
+
+        Write-Color "advisory: $($ctx.Org)/$($ctx.Repo) $ghsa" Cyan
+        if ($severity) { Write-Color "severity: $severity" DarkGray }
+        if ($summary)  { Write-Color "summary:  $summary" DarkGray }
+        Write-Color "branch:   $branch" DarkGray
+        if (-not ($summary -or $description)) {
+            Write-Color "  (couldn't read the advisory body here -- draft advisories need a classic PAT with repo admin)" Yellow
+        }
+
+        # Pull in the actual fix. GitHub develops advisory fixes on a temporary PRIVATE
+        # fork (advisory.private_fork); its PRs hold the patches. Clone the fork and
+        # fetch every PR head locally as 'pr-<n>' so the spawned claude can diff them
+        # all -- however many there are -- by reading local git, with no need for its
+        # own access to the private fork. The clone runs over YOUR ssh; a token that
+        # can't reach the fork just lands in the catch and the advisory proceeds
+        # body-only.
+        $forkLines = @()
+        if ($forkFull -and $forkFull -match '^(?<forg>[^/]+)/(?<frepo>.+)$') {
+            $forkOrg  = $Matches.forg
+            $forkRepo = $Matches.frepo
+            $forkSrc  = Join-Path (Split-Path $ctx.Src -Parent) $forkRepo   # sibling of the main clone (same org)
+            Write-Color "fix fork: $forkFull" Cyan
+            try {
+                Ensure-RepoClonedAndUpdated -Org $forkOrg -Repo $forkRepo -Src $forkSrc -RemoteHost $ctx.RemoteHost
+                $prsRaw = (& gh api "repos/$forkFull/pulls?state=all&per_page=100" 2>$null | Out-String).Trim()
+                $prs = if ($prsRaw) { @($prsRaw | ConvertFrom-Json) } else { @() }
+                if (-not $prs.Count) {
+                    Write-Color "  no PRs on the fork -- the fix may live on its default branch" DarkGray
+                    $forkLines += "the fix fork $forkFull is cloned at $forkSrc but has no PRs; inspect its default branch there."
+                } else {
+                    $forkLines += "the proposed fix is split across $($prs.Count) PR(s) on the private fork $forkFull, cloned locally at ${forkSrc}:"
+                    foreach ($pr in ($prs | Sort-Object number)) {
+                        $n    = $pr.number
+                        $base = $pr.base.ref
+                        try { Invoke-Git $forkSrc @('fetch','origin',"+refs/pull/$n/head:refs/heads/pr-$n") } catch {}
+                        Write-Color ("  PR #{0} [{1}] {2}" -f $n, $pr.state, $pr.title) DarkGray
+                        $forkLines += "  - PR #$n ($($pr.state)) ""$($pr.title)"" -> local branch pr-$n, base origin/$base;  diff: git -C ""$forkSrc"" diff origin/$base..pr-$n"
+                    }
+                    $forkLines += "read every PR diff above, then synthesize the complete change set."
+                }
+            } catch {
+                Write-Color "  couldn't gather the fork PRs: $($_.Exception.Message)" Yellow
+            }
+        }
+
+        if (-not $Prompt) {
+            if ($summary -or $description -or $forkLines.Count) {
+                $sev  = if ($severity) { " (severity: $severity)" } else { "" }
+                $body = @("review security advisory $ghsa in $($ctx.Org)/$($ctx.Repo)$sev.")
+                if ($summary)         { $body += "summary: $summary" }
+                if ($description)     { $body += "details:`n$description" }
+                if ($forkLines.Count) { $body += ($forkLines -join "`n") }
+                $body += "propose a fix plan before changing anything."
+                $Prompt = $body -join "`n`n"
+            } else {
+                $Prompt = "investigate security advisory $ghsa in $($ctx.Org)/$($ctx.Repo) -- try to read it (gh api repos/$($ctx.Org)/$($ctx.Repo)/security-advisories/$ghsa); if your token can't (it's likely a draft), ask me to paste the advisory. propose a fix plan before changing anything."
+            }
+        }
+        $pass = @{
+            Org        = $ctx.Org
+            Repo       = $ctx.Repo
+            RemoteHost = $ctx.RemoteHost
+            Prompt     = $Prompt
+        }
+        if ($y) { $pass.y = $true }
+        & $PSCommandPath new $branch @pass
+    }
+
     'clone' {
         # Triggered by a bare repo URL (no /pull/<num>) or invoked directly.
         # Clones to the canonical D:\git\<host>\<org>\<repo> path if missing,
         # otherwise fetches + refreshes. Then opens claude in the main clone.
         $ctx = Resolve-RepoContext   # host/org/repo were set by URL parsing
-        [System.IO.Directory]::CreateDirectory((Split-Path $ctx.Src -Parent)) | Out-Null
+        # Ensure-RepoClonedAndUpdated creates the parent dir only after the repo
+        # verifies as reachable, so a non-git URL leaves nothing behind.
         Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
 
         # Default branch = whatever HEAD points at after clone (main, master, etc).
@@ -1600,6 +1967,79 @@ switch ($Command) {
         _SetGwtCwdHint $wtPath
     }
 
+    'backport' {
+        # gwt backport <pr-url|num> [-Lts active|maint] [-y]
+        # Branch a worktree off an LTS release line (not main) and cherry-pick the PR's
+        # commits into it. Branch/dir name: backport.<vX.Y.x>.<pr-source-branch>.
+        if (-not $Target) { throw "'backport' requires a GitHub PR URL or number" }
+        if ($Target -match '^https?://github\.com/(?<org>[^/]+)/(?<repo>[^/]+?)/pull/(?<pr>\d+)') {
+            $script:Org = $Matches.org; $script:Repo = $Matches.repo; $prNum = $Matches.pr
+        } elseif ($Target -match '^\d+$') {
+            $prNum = $Target
+        } else {
+            throw "expected a GitHub PR URL or number, got: $Target"
+        }
+
+        $ctx = Resolve-RepoContext
+        [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
+        Invoke-Git $ctx.Src @('worktree', 'prune')
+
+        # Target LTS -> release branch; its 'vX.Y.x' tag prefixes the backport branch.
+        $release = _ResolveLtsBranch $ctx.Src $Lts
+        $verPart = ($release -replace '^release-', '')          # release-v2.0.x -> v2.0.x
+        $head     = Get-PrHeadBranch -Org $ctx.Org -Repo $ctx.Repo -PrNumber $prNum -RemoteHost $ctx.RemoteHost
+        $headSafe = ($head -replace '/', '-')                   # keep the dir/branch flat
+        $newBranch = "backport.$verPart.$headSafe"
+        $wtPath    = Join-Path $ctx.WtRoot $newBranch
+
+        Write-Color "backport: PR #$prNum  (source: $head)" Cyan
+        Write-Color "  onto:   $release" DarkGray
+        Write-Color "  branch: $newBranch" DarkGray
+
+        $existingWt = Get-WorktreePathForBranch $ctx.Src $newBranch
+        if ($existingWt) {
+            Write-Color "ready: $existingWt (already exists)" Green
+            _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $newBranch -PromptOverride $Prompt -AutoOpen:$y
+            _SetGwtCwdHint $existingWt
+            return
+        }
+
+        # Create the branch off the (freshly fetched) release line, then the worktree.
+        if (Test-LocalBranchExists $ctx.Src $newBranch) {
+            Invoke-Git $ctx.Src @('branch', '-f', '--no-track', $newBranch, "origin/$release")
+        } else {
+            Invoke-Git $ctx.Src @('branch', '--no-track', $newBranch, "origin/$release")
+        }
+        Ensure-Worktree $ctx.Src $wtPath $newBranch
+
+        # PR commit OIDs (oldest-first) + download their objects, then cherry-pick with -x
+        # (records provenance). refs/pull/<n>/head exists even for merged PRs whose branch
+        # was deleted, so this works post-merge.
+        $oidRaw = (& gh pr view $prNum --repo "$($ctx.Org)/$($ctx.Repo)" --json commits -q '.commits[].oid' 2>&1 | Out-String)
+        $oids = @($oidRaw -split "\r?\n" | Where-Object { $_ -match '^[0-9a-f]{7,40}$' })
+        if (-not $oids.Count) {
+            Write-Color "couldn't read PR commits from gh -- worktree is ready; cherry-pick manually" Yellow
+        } else {
+            Invoke-Git $ctx.Src @('fetch', 'origin', "refs/pull/$prNum/head")   # download the objects
+            Write-Color "cherry-picking $($oids.Count) commit(s) (-x) onto $newBranch..." Cyan
+            Push-Location $wtPath
+            try { & git cherry-pick -x @oids; $cpExit = $LASTEXITCODE } finally { Pop-Location }
+            if ($cpExit -ne 0) {
+                Write-Color "cherry-pick STOPPED (conflict or empty commit) -- worktree left mid-pick, resolve it:" Yellow
+                Write-Color "  cd `"$wtPath`"" DarkGray
+                Write-Color "  git status ; fix conflicts ; git cherry-pick --continue   (or: git cherry-pick --abort)" DarkGray
+            } else {
+                Write-Color "cherry-pick complete ($($oids.Count) commit(s))" Green
+            }
+        }
+
+        Write-Color "ready: $wtPath" Green
+        _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $newBranch -PromptOverride $Prompt -AutoOpen:$y
+        _SetGwtCwdHint $wtPath
+    }
+
     'discourse' {
         # Create a worktree to investigate a discourse topic. Accepts:
         #   * full URL with id  -- https://host/t/slug/12345
@@ -1648,11 +2088,8 @@ switch ($Command) {
         # Accept either 'org/repo' (default github) or 'host:org/repo'.
         # Empty input defaults to github/openziti/ziti.
         $defaultRepo = 'openziti/ziti'
-        $resp = (Read-Host "target repo (default '$defaultRepo', also accepts 'bitbucket.org:org/repo')").Trim()
-        if (-not $resp) {
-            $resp = $defaultRepo
-            Write-Color "no repo given -- defaulting to $defaultRepo" DarkGray
-        }
+        $resp = _SelectTargetRepo -Default $defaultRepo
+        if (-not $resp) { Write-Color "no repo selected -- aborted" Yellow; return }
 
         $hostPart = 'github.com'
         $orgRepo  = $resp
@@ -1719,13 +2156,10 @@ switch ($Command) {
         Write-Color "zendesk host:   $zendeskHost" DarkGray
 
         # Accept either 'org/repo' (default github) or 'host:org/repo'.
-        # Empty input defaults to github/openziti/ziti.
-        $defaultRepo = 'openziti/ziti'
-        $resp = (Read-Host "target repo (default '$defaultRepo', also accepts 'bitbucket.org:org/repo')").Trim()
-        if (-not $resp) {
-            $resp = $defaultRepo
-            Write-Color "no repo given -- defaulting to $defaultRepo" DarkGray
-        }
+        # Zendesk tickets are usually tunneler issues, so pre-select ziti-tunnel-sdk-c.
+        $defaultRepo = 'openziti/ziti-tunnel-sdk-c'
+        $resp = _SelectTargetRepo -Default $defaultRepo
+        if (-not $resp) { Write-Color "no repo selected -- aborted" Yellow; return }
 
         $hostPart = 'github.com'
         $orgRepo  = $resp
@@ -1939,10 +2373,20 @@ switch ($Command) {
                 if ($e.Pid -and $e.Pid -ne 0) {
                     $cim = $procMap[[int]$e.Pid]
                     if ($cim) {
-                        if ($e.StartTime -and $cim.CreationDate) {
-                            $alive = [math]::Abs(($cim.CreationDate - [datetime]::Parse($e.StartTime)).TotalSeconds) -lt 2
+                        # Guard against PID REUSE (esp. after a reboot): a stale PID now owned
+                        # by an unrelated process must NOT read as alive. Compare the live
+                        # process CreationDate to the best "when this session started" stamp.
+                        # StartTime is exact (tight tolerance); the spawn stamps are looser but
+                        # still separate a same-boot match (seconds) from a reboot (hours+).
+                        $ref = $null; $tol = 2
+                        if     ($e.StartTime)     { $ref = $e.StartTime;     $tol = 2 }
+                        elseif ($e.LastSpawnedAt) { $ref = $e.LastSpawnedAt; $tol = 300 }
+                        elseif ($e.SpawnedAt)     { $ref = $e.SpawnedAt;     $tol = 300 }
+                        if ($ref -and $cim.CreationDate) {
+                            try { $alive = [math]::Abs(($cim.CreationDate - [datetime]::Parse($ref)).TotalSeconds) -lt $tol }
+                            catch { $alive = $true }
                         } else {
-                            $alive = $true
+                            $alive = $true   # no timestamp at all -- can't verify, assume alive
                         }
                     }
                 }
@@ -2017,6 +2461,11 @@ switch ($Command) {
             if (-not $picked) { return $null }
             return @($picked)
         }
+
+        # 'snapshot' is the friendly name for 'save -All': mark every running session
+        # Saved and freeze the current tab layout, so 'restore -ByTabs' rebuilds exactly
+        # this regardless of what you close afterward.
+        if ($Target -eq 'snapshot') { $Target = 'save'; $All = $true }
 
         # subcommand under 'sessions': default = list. 'restore' = relaunch stale.
         # 'clean' = drop stale entries without relaunch.
@@ -2142,6 +2591,7 @@ switch ($Command) {
                 }
                 Write-Color "next:" DarkGray
                 if ($notReopened.Count) {
+                    Write-Color "  gwt sessions restore -All -DryRun         # preview the ordered set first (recent + has-transcript)" DarkGray
                     Write-Color "  gwt sessions restore -All                 # reopen crash victims (ABORTED); skips cleanly-ended" DarkGray
                     Write-Color "  gwt sessions restore -All -IncludeEnded   # also reopen sessions you closed cleanly (all rows above)" DarkGray
                 }
@@ -2156,6 +2606,8 @@ switch ($Command) {
                 #           for the window since wt can't report a tab's own window/index)
                 #   prune   drop ghost lines whose session is no longer alive (re-syncs indexes)
                 #   test    focus each tracked tab and ask you to confirm it landed right
+                #   status  reconcile ledger vs tabs: report ghosts + ALIVE sessions missing
+                #           from the registry, and offer to register the latter
                 #   clear   wipe the whole registry so a clean quit-all/reopen-all rebuilds it
                 $winDir = Join-Path $script:WtRoot 'windows'
                 $mode   = if ($Match) { $Match.ToLower() } else { 'show' }
@@ -2268,6 +2720,115 @@ switch ($Command) {
                 $files = @(Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue | Sort-Object Name)
                 if (-not $files.Count) { Write-Color "no windows tracked yet (start a session to populate)" DarkGray; return }
 
+                # -Window narrows to one window so you can pick up where you left off
+                # (e.g. 'gwt sessions tabs test -Window ziti'). Exact name wins; otherwise
+                # substring, so 'ziti' hits the 'ziti' window, not ziti-sdk-csharp too.
+                if ($Window) {
+                    $exact = @($files | Where-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) -ieq $Window })
+                    $files = if ($exact.Count) { $exact } else { @($files | Where-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) -like "*$Window*" }) }
+                    if (-not $files.Count) { Write-Color "no tracked window matches -Window '$Window'" Yellow; return }
+                }
+
+                if ($mode -eq 'status') {
+                    # Reconcile the tab registry against the ledger, both directions:
+                    #   ghost     -- a .tabs line whose session is no longer alive (prune drops it)
+                    #   untracked -- an ALIVE session that no .tabs file lists (should be a tab
+                    #                but isn't). These are the "leftover" sessions; offer to
+                    #                register each into its window so restore / order see it.
+                    $meta = @{}   # WtSession -> { Label; Branch; Path; Window; Pids }
+                    foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+                        try { $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+                        if (-not $se.WtSession) { continue }
+                        $ws = $se.WtSession
+                        if (-not $meta.ContainsKey($ws)) {
+                            $meta[$ws] = [pscustomobject]@{ Ws=$ws; Label=$null; Branch=$se.Branch; Path=($se.WorktreePath -replace '/','\'); Window=$se.WindowName; Pids=@() }
+                        }
+                        if ($se.Label)      { $meta[$ws].Label  = $se.Label }
+                        if ($se.WindowName) { $meta[$ws].Window = $se.WindowName }
+                        if ($se.Pid -and [int]$se.Pid -gt 0) { $meta[$ws].Pids += [int]$se.Pid }
+                    }
+                    # Liveness over every ledger PID (one CIM query if P/Invoke can't see them).
+                    $allPids = @($meta.Values | ForEach-Object { $_.Pids } | Sort-Object -Unique)
+                    $aliveP  = @{}
+                    $useCim  = $false
+                    foreach ($p in $allPids) { $r = _IsPidAlive $p; if ($null -eq $r) { $useCim = $true; break }; if ($r) { $aliveP[$p] = $true } }
+                    if ($useCim -and $allPids.Count) {
+                        $aliveP = @{}
+                        $filter = ($allPids | ForEach-Object { "ProcessId=$_" }) -join ' OR '
+                        Get-CimInstance Win32_Process -Filter $filter -ErrorAction SilentlyContinue -Verbose:$false | ForEach-Object { $aliveP[[int]$_.ProcessId] = $true }
+                    }
+                    $wsAlive = { param($ws) $meta.ContainsKey($ws) -and (@($meta[$ws].Pids | Where-Object { $aliveP[$_] }).Count -gt 0) }
+
+                    # Ghost tab lines + the set of WtSessions that ARE in some .tabs file.
+                    $inTabs = @{}
+                    $ghosts = @()
+                    foreach ($wf in $files) {
+                        $w = [IO.Path]::GetFileNameWithoutExtension($wf.Name)
+                        foreach ($ln in @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)) {
+                            $ws = ($ln -split "`t")[0]; if (-not $ws) { continue }
+                            $inTabs[$ws] = $true
+                            if (-not (& $wsAlive $ws)) {
+                                $lbl = ($ln -split "`t"); $lbl = if ($lbl.Count -ge 2) { $lbl[1] } else { '(?)' }
+                                $ghosts += [pscustomobject]@{ Window=$w; Label=$lbl }
+                            }
+                        }
+                    }
+                    # Alive sessions in no .tabs file. -Window (if given) narrows to that window.
+                    $untracked = @($meta.Values | Where-Object {
+                        (& $wsAlive $_.Ws) -and -not $inTabs.ContainsKey($_.Ws) -and
+                        (-not $Window -or ($_.Window -and (($_.Window -ieq $Window) -or ($_.Window -like "*$Window*"))))
+                    })
+
+                    Write-Color "tab / session reconciliation:" Cyan
+                    if ($ghosts.Count) {
+                        Write-Color "  ghost tab lines (session no longer alive):" Yellow
+                        foreach ($g in $ghosts) { Write-Color ("    [{0}] {1}" -f $g.Window, $g.Label) DarkGray }
+                        # Fold prune in: default-yes so 'status' both reports AND cleans,
+                        # and you never need a separate 'tabs prune' pass.
+                        $dropAns = (Read-Host "  drop these $($ghosts.Count) ghost line(s) now? (Y/n)").Trim()
+                        if ([string]::IsNullOrWhiteSpace($dropAns) -or $dropAns -match '^[Yy]') {
+                            $dropped = 0
+                            foreach ($wf in $files) {
+                                $lines = @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
+                                $keep  = @($lines | Where-Object { & $wsAlive (($_ -split "`t")[0]) })
+                                if ($keep.Count -ne $lines.Count) {
+                                    if ($keep.Count) { Set-Content -Path $wf.FullName -Value $keep -Encoding UTF8 }
+                                    else { Remove-Item $wf.FullName -Force -ErrorAction SilentlyContinue }
+                                    $dropped += ($lines.Count - $keep.Count)
+                                }
+                            }
+                            Write-Color "    dropped $dropped ghost line(s)" Green
+                        }
+                    } else {
+                        Write-Color "  no ghost tab lines" DarkGray
+                    }
+                    if (-not $untracked.Count) {
+                        Write-Color "  every alive session is tracked in a tab registry" Green
+                        return
+                    }
+                    Write-Color "  ALIVE sessions not in any tab registry (should be open, untracked):" Yellow
+                    foreach ($m in $untracked) {
+                        $lbl = if ($m.Label) { $m.Label } else { $m.Branch }
+                        $win = if ($m.Window) { $m.Window } else { '(no window recorded)' }
+                        Write-Color ("    [{0}] {1} @ {2}" -f $win, $lbl, $m.Path) DarkGray
+                    }
+                    $ans = (Read-Host "  register these into their windows' tab order? (appended; run 'tabs test' to place) (y/N)").Trim()
+                    if ($ans -notmatch '^[Yy]') { Write-Color "  left as-is" DarkGray; return }
+                    $added = 0
+                    foreach ($m in $untracked) {
+                        if (-not $m.Window) { Write-Color ("    skip (no window): {0}" -f $m.Branch) Yellow; continue }
+                        $lbl  = if ($m.Label) { $m.Label } else { $m.Branch }
+                        $safe = ($m.Window -replace '[^A-Za-z0-9._-]', '_')
+                        $tf   = Join-Path $winDir "$safe.tabs"
+                        $line = "{0}`t{1}`t{2}" -f $m.Ws, $lbl, $m.Path
+                        Add-Content -Path $tf -Value $line -Encoding UTF8
+                        Write-Color ("    registered '{0}' -> [{1}]" -f $lbl, $m.Window) Green
+                        $added++
+                    }
+                    Write-Color "  added $added tab line(s). run 'gwt sessions tabs test' to fix their order." DarkGray
+                    return
+                }
+
                 # Liveness scoped to the tabs actually in the registry -- NOT the whole
                 # OS process table. Collect the WtSessions the .tabs files reference, map
                 # them to PIDs from the ledger, then run ONE Win32_Process query filtered
@@ -2280,10 +2841,18 @@ switch ($Command) {
                         if ($ws) { $tabWt[$ws] = $true }
                     }
                 }
-                $wtPids = @{}
+                # Map each tracked WtSession to its EXPLICIT ledger Label only (from 'gwt
+                # rename'). Display precedence is: explicit ledger Label -> the .tabs line's
+                # own label (what you set at 'tabs set' time) -> '(?)'. The bare Branch is
+                # NOT a fallback here -- it would wrongly show 'main' for every main-clone
+                # tab, clobbering the label you set (e.g. 'ziti-openwrt', 'main:dotfiles').
+                $wtPids  = @{}
+                $wtLabel = @{}
                 foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
                     try { $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
-                    if ($se.WtSession -and $tabWt.ContainsKey($se.WtSession) -and $se.Pid -and [int]$se.Pid -gt 0) {
+                    if (-not ($se.WtSession -and $tabWt.ContainsKey($se.WtSession))) { continue }
+                    if ($se.Label) { $wtLabel[$se.WtSession] = $se.Label }
+                    if ($se.Pid -and [int]$se.Pid -gt 0) {
                         if (-not $wtPids.ContainsKey($se.WtSession)) { $wtPids[$se.WtSession] = @() }
                         $wtPids[$se.WtSession] += [int]$se.Pid
                     }
@@ -2340,43 +2909,91 @@ switch ($Command) {
                             Write-Color ("[{0}] dropped {1} exited tab(s) before testing" -f $win, ($raw.Count - $liveOnly.Count)) DarkGray
                         }
                         if (-not $liveOnly.Count) { continue }
-                        # Correcting loop: focus each tab, ask if it landed right. On 'n',
-                        # ask whether the tab is even open (no -> drop the ghost line), else
-                        # ask its real index and move the line there. Any fix re-reads the
-                        # file and restarts this window so the indexes stay consistent.
+                        # Correcting loop: focus each tab, ask if it landed right. Advance
+                        # only on 'y'. Any fix stays at the SAME index and re-reads, so the
+                        # tab that shifts into this slot gets verified next (no restart at 0,
+                        # and after moving a branch away we ask what's actually here now).
                         Write-Color ("[{0}] verifying tab order..." -f $win) Cyan
-                        $again = $true
-                        while ($again) {
-                            $again  = $false
-                            $tlines = [System.Collections.ArrayList]@(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
-                            for ($i = 0; $i -lt $tlines.Count; $i++) {
-                                $parts = $tlines[$i] -split "`t"
-                                $br    = if ($parts.Count -ge 2) { $parts[1] } else { '(?)' }
-                                & runas /user:claude /savecred "wt.exe -w `"$win`" focus-tab -t $i" 2>&1 | Out-Null
-                                $r = (Read-Host "    -t $i should be '$br'. correct? (y/n/s=stop)").Trim().ToLower()
-                                if ($r -eq 's') { Write-Color "  test stopped" DarkGray; return }
-                                if ($r -eq 'y' -or [string]::IsNullOrWhiteSpace($r)) { continue }
-                                # 'n' -- diagnose
-                                $open = (Read-Host "      is '$br' even open in [$win]? (y/N)").Trim().ToLower()
-                                if ($open -ne 'y') {
-                                    $tlines.RemoveAt($i)
+                        $tlines = [System.Collections.ArrayList]@(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
+                        $i = 0
+                        $skipped = $false
+                        while ($i -lt $tlines.Count) {
+                            $parts = $tlines[$i] -split "`t"
+                            $ws    = $parts[0]
+                            # Prefer the CURRENT label from the ledger (picks up 'gwt rename'
+                            # and tangent-style names) over the possibly-stale .tabs label.
+                            $br    = if ($wtLabel.ContainsKey($ws)) { $wtLabel[$ws] }
+                                     elseif ($parts.Count -ge 2)    { $parts[1] }
+                                     else                           { '(?)' }
+                            & runas /user:claude /savecred "wt.exe -w `"$win`" focus-tab -t $i" 2>&1 | Out-Null
+                            Start-Sleep -Milliseconds 200   # let wt raise the tab
+                            _RefocusSelfWindow               # then take focus back so input lands here
+                            $r = (Read-Host "    -t $i should be '$br'. correct? (y/n/s=stop/x=skip window/r=rename)").Trim().ToLower()
+                            if ($r -eq 's') { Write-Color "  test stopped" DarkGray; return }
+                            if ($r -eq 'x') { Write-Color "  [$win] skipped -- moving on" DarkGray; $skipped = $true; break }
+                            if ($r -eq 'r') {
+                                # Rename the session at this tab: set the ledger Label on every
+                                # entry for this WtSession, refresh the in-memory label, and
+                                # rewrite the .tabs line so all views agree.
+                                $nl = (Read-Host "      new label for '$br' (blank = cancel)").Trim()
+                                if ($nl) {
+                                    foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+                                        try { $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+                                        if ($se.WtSession -ne $ws) { continue }
+                                        if ($se.PSObject.Properties.Match('Label').Count) { $se.Label = $nl }
+                                        else { Add-Member -InputObject $se -NotePropertyName Label -NotePropertyValue $nl -Force }
+                                        ($se | ConvertTo-Json -Depth 5) | Set-Content -Path $sf.FullName -Encoding UTF8
+                                    }
+                                    $wtLabel[$ws] = $nl
+                                    $p2   = $tlines[$i] -split "`t"
+                                    $rest = if ($p2.Count -ge 3) { $p2[2] } else { '' }
+                                    $tlines[$i] = "{0}`t{1}`t{2}" -f $ws, $nl, $rest
                                     Set-Content -Path $wf.FullName -Value @($tlines) -Encoding UTF8
-                                    Write-Color "      dropped '$br' (not open) -- re-checking $win" DarkGray
-                                    $again = $true; break
+                                    Write-Color "      renamed to '$nl' -- re-checking tab $i" Green
                                 }
-                                $real = (Read-Host "      what tab index IS '$br' at? (0-based)").Trim()
-                                $ri = 0
-                                if (-not [int]::TryParse($real, [ref]$ri)) { Write-Color "      not a number -- leaving as-is" Yellow; continue }
-                                $line = $tlines[$i]
-                                $tlines.RemoveAt($i)
-                                $ri = [Math]::Max(0, [Math]::Min($ri, $tlines.Count))
-                                $tlines.Insert($ri, $line)
-                                Set-Content -Path $wf.FullName -Value @($tlines) -Encoding UTF8
-                                Write-Color "      moved '$br' to -t $ri -- re-checking $win" DarkGray
-                                $again = $true; break
+                                continue   # stay at $i, re-show with the new label
                             }
+                            if ($r -eq 'y' -or [string]::IsNullOrWhiteSpace($r)) { $i++; continue }
+                            # 'n' -- the line at $i is wrong for this tab. Ask what IS here,
+                            # then resolve that name against the ledger so an untracked-but-
+                            # known session (a worktree tab that never self-registered, or whose
+                            # order drifted) gets adopted into the correct slot.
+                            $name = (Read-Host "      what IS on tab ${i}? (branch/label; blank if this tab is closed/empty)").Trim()
+                            if (-not $name) {
+                                $tlines.RemoveAt($i)
+                                Set-Content -Path $wf.FullName -Value @($tlines) -Encoding UTF8
+                                Write-Color "      dropped '$br' -- re-checking tab $i" DarkGray
+                                continue   # stay at $i: whatever shifts into this slot is next
+                            }
+                            # Find a session whose label or branch matches, preferring one in
+                            # THIS window (handles the same branch open in two windows).
+                            $hit = $null
+                            foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+                                try { $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+                                if (-not $se.WtSession) { continue }
+                                $lbl = if ($se.Label) { $se.Label } else { $se.Branch }
+                                if (($lbl -ieq $name) -or ($se.Branch -ieq $name)) {
+                                    if (-not $hit -or ($se.WindowName -ieq $win)) { $hit = $se }
+                                }
+                            }
+                            if (-not $hit) {
+                                Write-Color "      '$name' isn't a known gwt session -- run 'gwt sessions tabs set' from that tab to track it." Yellow
+                                Write-Color "      leaving tab $i as-is and moving on." DarkGray
+                                $i++; continue
+                            }
+                            $hlbl  = if ($hit.Label) { $hit.Label } else { $hit.Branch }
+                            $hpath = ($hit.WorktreePath -replace '/', '\')
+                            # If this session already has a line elsewhere, move it; else insert.
+                            $j = -1
+                            for ($k = 0; $k -lt $tlines.Count; $k++) { if ((($tlines[$k] -split "`t")[0]) -eq $hit.WtSession) { $j = $k; break } }
+                            if ($j -ge 0) { $mv = $tlines[$j]; $tlines.RemoveAt($j) }
+                            else          { $mv = "{0}`t{1}`t{2}" -f $hit.WtSession, $hlbl, $hpath }
+                            $tlines.Insert([Math]::Min($i, $tlines.Count), $mv)
+                            Set-Content -Path $wf.FullName -Value @($tlines) -Encoding UTF8
+                            Write-Color "      set tab $i = '$hlbl'" Green
+                            $i++; continue   # you named it, so advance -- don't re-ask the same tab
                         }
-                        Write-Color ("[{0}] order confirmed" -f $win) Green
+                        if (-not $skipped) { Write-Color ("[{0}] order confirmed" -f $win) Green }
                         continue
                     }
 
@@ -2407,6 +3024,47 @@ switch ($Command) {
                         Write-Host ('    -t {0,-2}  {1,-30} {2}' -f $i, $br, $path)
                     }
                 }
+                if ($mode -eq 'test') {
+                    # Audit: any ALIVE session that no .tabs file tracks is an OPEN tab 'test'
+                    # never saw. Rebuild the tracked set from the CURRENT .tabs (the loop may
+                    # have added lines), then flag alive sessions missing from it.
+                    $trackedWs = @{}
+                    foreach ($tf in (Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue)) {
+                        foreach ($ln in @(Get-Content $tf.FullName -ErrorAction SilentlyContinue)) {
+                            $ws0 = ($ln -split "`t")[0]; if ($ws0) { $trackedWs[$ws0] = $true }
+                        }
+                    }
+                    $seenWs = @{}; $untracked = @()
+                    foreach ($e in @($entriesAllRepos | Where-Object { $_.Alive -and $_.WtSession })) {
+                        if ($trackedWs.ContainsKey($e.WtSession) -or $seenWs.ContainsKey($e.WtSession)) { continue }
+                        $seenWs[$e.WtSession] = $true; $untracked += $e
+                    }
+                    Write-Host ""
+                    if (-not $untracked.Count) {
+                        Write-Color "audit: every alive session is tracked -- no open tab is missing" Green
+                    } else {
+                        Write-Color ("audit: {0} OPEN session(s) are NOT in any .tabs (never verified above):" -f $untracked.Count) Yellow
+                        foreach ($e in $untracked) {
+                            $lbl = if ($e.Label) { $e.Label } else { $e.Branch }
+                            $w   = if ($e.WindowName) { $e.WindowName } else { '(no window)' }
+                            Write-Color ("    [{0}] {1} @ {2}" -f $w, $lbl, $e.WorktreePath) DarkGray
+                        }
+                        $ans = (Read-Host "  register these into their windows now? (appended; re-run 'tabs test' to order) (y/N)").Trim()
+                        if ($ans -match '^[Yy]') {
+                            $added = 0
+                            foreach ($e in $untracked) {
+                                if (-not $e.WindowName) { Write-Color ("    skip (no window recorded): {0}" -f $e.Branch) Yellow; continue }
+                                $lbl  = if ($e.Label) { $e.Label } else { $e.Branch }
+                                $safe = ($e.WindowName -replace '[^A-Za-z0-9._-]', '_')
+                                $line = "{0}`t{1}`t{2}" -f $e.WtSession, $lbl, ($e.WorktreePath -replace '/', '\')
+                                Add-Content -Path (Join-Path $winDir "$safe.tabs") -Value $line -Encoding UTF8
+                                Write-Color ("    registered '{0}' -> [{1}]" -f $lbl, $e.WindowName) Green
+                                $added++
+                            }
+                            if ($added) { Write-Color "  added $added -- re-run 'gwt sessions tabs test' to place them in order" DarkGray }
+                        }
+                    }
+                }
                 if ($mode -eq 'show') {
                     if ($removedDead.Count) {
                         Write-Host ""
@@ -2415,42 +3073,89 @@ switch ($Command) {
                             Write-Host ('    [{0,-13}] {1,-30} {2}' -f $d.Window, $d.Branch, $d.Path)
                         }
                     }
-                    Write-Color "modes: tabs set (register this tab) | tabs test (verify+fix) | tabs clear (reset)" DarkGray
+                    Write-Color "modes: tabs set (register this tab) | tabs test (verify+fix) | tabs status (reconcile) | tabs prune | tabs clear (reset)" DarkGray
+                    Write-Color "  tabs test: -Window <name> narrows to one window; per-tab 'x' skips window, 'r' renames" DarkGray
+                    Write-Color "  tabs status: reports ghost lines + ALIVE sessions missing from the registry (offers to register them)" DarkGray
                 }
                 return
             }
             'restore' {
-                # Idempotency: only consider STALE entries -- alive ones are already up.
-                $allStale = @($entries | Where-Object { -not $_.Alive })
+                # Include EVERYTHING by default (alive + non-alive) so the set/preview shows
+                # the full layout you'll get back -- alive sessions become ABORTED on reboot.
+                # A real restore still skips anything actually running (checked at spawn), so
+                # this never double-opens. -ExcludeActive drops the running ones from the set.
+                # Restore is inherently GLOBAL -- you want every session back, not just this
+                # repo's -- so always work across all repos, ignoring the cwd scope.
+                $allStale = @($entriesAllRepos | Where-Object { (-not $ExcludeActive) -or (-not $_.Alive) })
                 # A discriminator ($Match/$Name) may match a session in ANOTHER repo, so
                 # don't bail early on an empty scoped set when one is passed -- fall through
                 # to the filter, which widens to all repos and offers to jump.
                 $hasFilter = [bool]($Match -or $Name)
                 if (-not $allStale.Count -and -not $hasFilter) { Write-Color "no paused sessions to restore (everything is ACTIVE)" DarkGray; return }
 
-                # By default skip ENDED entries. The user closed those deliberately;
-                # restoring them is annoying. Pass -IncludeEnded to opt back in.
-                if (-not $IncludeEnded) {
-                    $beforeEnded = $allStale.Count
-                    $allStale    = @($allStale | Where-Object { $_.State -ne 'ended' })
-                    $droppedEnded = $beforeEnded - $allStale.Count
-                    if ($droppedEnded -gt 0) {
-                        Write-Color "skipping $droppedEnded ENDED session(s) -- pass -IncludeEnded to restore them" DarkGray
-                    }
-                    if (-not $allStale.Count -and -not $hasFilter) { Write-Color "no paused sessions to restore (all not-alive were ENDED)" DarkGray; return }
-                }
-
-                # dedupe by WorktreePath (keeps newest by LastSpawnedAt) -- protects against
-                # accumulated leftover entries from failed prior launches blowing up the count.
-                # Then sort ASC by FirstSpawnedAt so restore replays in original-add order.
+                # Dedupe by WorktreePath to ONE representative per path FIRST, so the ENDED
+                # filter below sees each path's CURRENT state -- not a stale ABORTED duplicate
+                # that would otherwise resurrect a session you actually closed. Representative
+                # = the alive entry if any, else newest by LastStateChange (true current
+                # state). Also flag whether ANY entry for the path is Saved.
                 $stale = $allStale |
                          Group-Object WorktreePath |
                          ForEach-Object {
-                             $_.Group |
-                             Sort-Object @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} -Descending |
-                             Select-Object -First 1
-                         } |
-                         Sort-Object @{Expression={ if ($_.FirstSpawnedAt) { $_.FirstSpawnedAt } else { $_.SpawnedAt } }}
+                             $rep = $_.Group | Where-Object Alive | Select-Object -First 1
+                             if (-not $rep) {
+                                 $rep = $_.Group | Sort-Object `
+                                     @{Expression={ try { [datetime]$_.LastStateChange } catch { [datetime]::MinValue } }}, `
+                                     @{Expression={ if ($_.LastSpawnedAt) { $_.LastSpawnedAt } else { $_.SpawnedAt } }} `
+                                     -Descending | Select-Object -First 1
+                             }
+                             $rep | Add-Member -NotePropertyName _AnySaved -NotePropertyValue ([bool]($_.Group | Where-Object Saved)) -Force
+                             $rep
+                         }
+                $dedupCount = @($stale).Count
+
+                # Skip ENDED (you closed those deliberately) unless -IncludeEnded. SAVED always
+                # survives -- 'gwt sessions save <match>' is the explicit "keep in restore" hatch.
+                if (-not $IncludeEnded) {
+                    $before = @($stale).Count
+                    $stale  = @($stale | Where-Object { $_.State -ne 'ended' -or $_._AnySaved })
+                    $droppedEnded = $before - @($stale).Count
+                    if ($droppedEnded -gt 0) {
+                        Write-Color "skipping $droppedEnded ENDED session(s) -- pass -IncludeEnded, or 'gwt sessions save' to keep one" DarkGray
+                    }
+                    if (-not @($stale).Count -and -not $hasFilter) { Write-Color "no recoverable sessions to restore (all closed / filtered)" DarkGray; return }
+                }
+
+                # If ANY session is Saved (e.g. after 'gwt sessions save -All' before a reboot),
+                # treat that as the intended set: restore ONLY Saved + still-running, and drop
+                # every unsaved dead session -- the stale aborteds you never asked for. With no
+                # saves at all, fall back to the aborted-recovery heuristic below (crash case).
+                if (@($stale | Where-Object { $_._AnySaved }).Count) {
+                    $before = @($stale).Count
+                    $stale  = @($stale | Where-Object { $_._AnySaved -or $_.Alive })
+                    $droppedUnsaved = $before - @($stale).Count
+                    if ($droppedUnsaved -gt 0) {
+                        Write-Color "restricting to Saved + running -- dropped $droppedUnsaved unsaved session(s) (you have Saved sessions)" DarkGray
+                    }
+                }
+
+                # Replay in original-add order.
+                $stale = @($stale | Sort-Object @{Expression={ if ($_.FirstSpawnedAt) { $_.FirstSpawnedAt } else { $_.SpawnedAt } }})
+
+                # Recency + transcript guard. A session is only restorable if its transcript
+                # jsonl exists ('claude --resume' has nothing to replay otherwise) and it was
+                # active recently. Saved sessions bypass the age cutoff (you asked to keep them);
+                # the transcript check always applies. -MaxAgeDays 0 disables the age cutoff.
+                $cut  = if ($MaxAgeDays -gt 0) { (Get-Date).AddDays(-$MaxAgeDays) } else { $null }
+                $noTx = 0; $tooOld = 0
+                $stale = @($stale | Where-Object {
+                    $j = _SessionJournal $_.ClaudeSessionId
+                    if (-not $j) { $noTx++; return $false }
+                    if ($cut -and $j.LastActive -lt $cut -and -not $_._AnySaved) { $tooOld++; return $false }
+                    $true
+                })
+                if ($noTx  -gt 0) { Write-Color "skipping $noTx session(s) with no transcript (nothing to replay)" DarkGray }
+                if ($tooOld -gt 0) { Write-Color "skipping $tooOld session(s) last active > $MaxAgeDays day(s) ago -- pass -MaxAgeDays 0 to include" DarkGray }
+                if (-not $stale.Count -and -not $hasFilter) { Write-Color "no recoverable sessions to restore (recent + has-transcript)" DarkGray; return }
 
                 # Optional filters: $Match (substring), $Name (exact branch), $Window (exact window).
                 # Note: $Window on restore also serves as the destination override -- here we treat
@@ -2529,21 +3234,149 @@ switch ($Command) {
                     }
                 }
 
-                $dupes = $allStale.Count - @($stale).Count
+                $dupes = $allStale.Count - $dedupCount
                 if (-not $Match -and $dupes -gt 0) {
                     Write-Color "skipping $dupes duplicate(s) -- run 'gwt sessions clean' to clean them" DarkGray
+                }
+
+                $autoWinFor   = { param($s) if ($s.Repo) { $s.Repo } else { $s.WindowName } }
+                $pickedWindow = $null
+                $restoreMode  = 'auto'
+
+                # Restore mode: 'tabs' (rebuild the exact .tabs layout -- the default) or
+                # 'sessions' (open order + auto/previous window prompt). A flag forces it;
+                # otherwise a picker asks with 'by tabs' pre-selected. -y or a non-
+                # interactive shell takes the default without prompting. Either way the
+                # chosen mode is announced so it's never a mystery.
+                if     ($ByTabs)     { $modeChoice = 'tabs' }
+                elseif ($BySessions) { $modeChoice = 'sessions' }
+                elseif ($y -or [Console]::IsInputRedirected) { $modeChoice = 'tabs' }
+                else {
+                    $mItems = @('by tabs -- rebuild the exact .tabs layout (recommended)',
+                                'by sessions -- open order, auto/previous windows')
+                    $mPick = _TuiSelect -Items $mItems -Prompt 'restore mode:' -DefaultIndex 0
+                    if (-not $mPick) { Write-Color 'aborted' DarkGray; return }
+                    $modeChoice = if ($mPick -like 'by tabs*') { 'tabs' } else { 'sessions' }
+                }
+                Write-Color ("restore mode: {0}" -f $(if ($modeChoice -eq 'tabs') { 'by tabs (rebuild the .tabs layout)' } else { 'by sessions (open order + window prompt)' })) Cyan
+
+                # tabs mode: reopen into each session's audited .tabs window, in .tabs order,
+                # so a restart reconstructs the exact layout you verified. Sessions in no
+                # .tabs fall back to their auto (repo) window, appended after the tracked
+                # ones. Done BEFORE the dry-run preview so the preview shows the real order.
+                $tabsOrder = @{}
+                if ($modeChoice -eq 'tabs') {
+                    $tabsWinDir = Join-Path $script:WtRoot 'windows'
+                    # Live .tabs first, then the .snapshot (from 'save -All') fills any line a
+                    # clean shutdown stripped via SessionEnd. Live wins; snapshot only adds
+                    # cwds not already present.
+                    $tabsSrcs = @($tabsWinDir)
+                    $snapDir  = Join-Path $tabsWinDir '.snapshot'
+                    if (Test-Path $snapDir) { $tabsSrcs += $snapDir }
+                    foreach ($src in $tabsSrcs) {
+                        foreach ($tf in (Get-ChildItem $src -Filter '*.tabs' -ErrorAction SilentlyContinue)) {
+                            $w = [IO.Path]::GetFileNameWithoutExtension($tf.Name); $idx = 0
+                            foreach ($ln in @(Get-Content $tf.FullName -ErrorAction SilentlyContinue)) {
+                                $p = $ln -split "`t"
+                                if ($p.Count -ge 3) {
+                                    $cwd = ($p[2] -replace '/', '\').TrimEnd('\').ToLower()
+                                    if ($cwd -and -not $tabsOrder.ContainsKey($cwd)) { $tabsOrder[$cwd] = @{ Window = $w; Index = $idx } }
+                                }
+                                $idx++
+                            }
+                        }
+                    }
+                    if (-not $tabsOrder.Count) {
+                        Write-Color "  -ByTabs: no .tabs registry found -- falling back to auto ordering" Yellow
+                    } else {
+                        $restoreMode = 'tabs'
+                        # -ByTabs restores EXACTLY the tab registry. Drop anything not in .tabs
+                        # so the list is ONLY your tabs -- never a 'tab -' row.
+                        $before = @($stale).Count
+                        $stale  = @($stale | Where-Object { $tabsOrder.ContainsKey((($_.WorktreePath -replace '/','\').TrimEnd('\').ToLower())) })
+                        $droppedUntracked = $before - @($stale).Count
+                        if ($droppedUntracked -gt 0) {
+                            Write-Color "  dropped $droppedUntracked session(s) not in any .tabs -- -ByTabs restores only tabbed sessions" DarkGray
+                        }
+                        $keyFor = {
+                            param($s)
+                            $k = ($s.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+                            [pscustomobject]@{ W = $tabsOrder[$k].Window; I = [int]$tabsOrder[$k].Index }
+                        }
+                        # Sort by window, then tab index within that window -- but always
+                        # restore the 'tangent' window FIRST (it holds the driver session).
+                        $stale = @($stale | Sort-Object `
+                            @{ Expression = { if ((& $keyFor $_).W -ieq 'tangent') { 0 } else { 1 } } }, `
+                            @{ Expression = { (& $keyFor $_).W } }, `
+                            @{ Expression = { (& $keyFor $_).I } })
+                    }
+                }
+
+                # -DryRun: show the ordered set restore WOULD open and stop before any
+                # prompt or spawn. Order is .tabs layout under -ByTabs, else open order.
+                if ($DryRun) {
+                    if (-not @($stale).Count) { Write-Color "nothing to restore" DarkGray; return }
+                    function script:_RstCell($v, $w) { if ($null -eq $v) { $v = '' }; $v = "$v"; if ($v.Length -gt $w) { $v = $v.Substring(0, $w - 2) + '..' }; $v.PadRight($w) }
+                    $dirOf = {
+                        param($s)
+                        $d = ($s.WorktreePath -replace '/','\')
+                        $d = $d -replace '^.*\\worktrees\\github\\(openziti|netfoundry)\\','' -replace '^.*\\worktrees\\github\\','' -replace '^.*\\git\\github\\','' -replace '^.*\\worktrees\\',''
+                        if (-not $d) { $d = if ($s.Label) { $s.Label } else { $s.Branch } }
+                        $d
+                    }
+                    Write-Color ""
+                    if ($restoreMode -eq 'tabs') {
+                        # Grouped by wt window, then tab index (that's how $stale is already
+                        # sorted), so the preview reads exactly like the layout it rebuilds.
+                        Write-Color ("  DRY RUN -- would restore $(@($stale).Count) session(s), by wt window then tab index:") Cyan
+                        $wW = 16; $wT = 3; $wL = 11; $wD = 30; $wM = 40
+                        $rbar = "+{0}+{1}+{2}+{3}+{4}+" -f ('-'*($wW+2)), ('-'*($wT+2)), ('-'*($wL+2)), ('-'*($wD+2)), ('-'*($wM+2))
+                        Write-Color $rbar
+                        Write-Color ("| {0} | {1} | {2} | {3} | {4} |" -f (_RstCell 'wt window' $wW), (_RstCell 'tab' $wT), (_RstCell 'Last active' $wL), (_RstCell 'Directory' $wD), (_RstCell 'Where you left off' $wM))
+                        Write-Color $rbar
+                        foreach ($s in $stale) {
+                            $k   = ($s.WorktreePath -replace '/','\').TrimEnd('\').ToLower()
+                            $win = if ($tabsOrder.ContainsKey($k)) { $tabsOrder[$k].Window } else { (& $autoWinFor $s) }
+                            $tab = if ($tabsOrder.ContainsKey($k)) { [string]$tabsOrder[$k].Index } else { '-' }
+                            $j   = _SessionJournal $s.ClaudeSessionId
+                            $la  = if ($j -and $j.LastActive) { $j.LastActive.ToString('MM-dd HH:mm') } else { '?' }
+                            $mg  = if ($j) { $j.LastMsg } else { $null }
+                            Write-Color ("| {0} | {1} | {2} | {3} | {4} |" -f (_RstCell $win $wW), (_RstCell $tab $wT), (_RstCell $la $wL), (_RstCell (& $dirOf $s) $wD), (_RstCell $mg $wM))
+                        }
+                        Write-Color $rbar
+                    } else {
+                        Write-Color ("  DRY RUN -- would restore $(@($stale).Count) session(s) in open order:") Cyan
+                        $wN = 3; $wL = 11; $wD = 34; $wM = 48
+                        $rbar = "+{0}+{1}+{2}+{3}+" -f ('-'*($wN+2)), ('-'*($wL+2)), ('-'*($wD+2)), ('-'*($wM+2))
+                        Write-Color $rbar
+                        Write-Color ("| {0} | {1} | {2} | {3} |" -f (_RstCell '#' $wN), (_RstCell 'Last active' $wL), (_RstCell 'Directory' $wD), (_RstCell 'Where you left off' $wM))
+                        Write-Color $rbar
+                        $i = 0
+                        foreach ($s in $stale) {
+                            $i++
+                            $j   = _SessionJournal $s.ClaudeSessionId
+                            $la  = if ($j -and $j.LastActive) { $j.LastActive.ToString('MM-dd HH:mm') } else { '?' }
+                            $mg  = if ($j) { $j.LastMsg } else { $null }
+                            Write-Color ("| {0} | {1} | {2} | {3} |" -f (_RstCell $i $wN), (_RstCell $la $wL), (_RstCell (& $dirOf $s) $wD), (_RstCell $mg $wM))
+                        }
+                        Write-Color $rbar
+                    }
+                    $aliveN = @($stale | Where-Object Alive).Count
+                    if ($aliveN -gt 0) {
+                        Write-Color "  note: $aliveN of these are running NOW. A live restore skips them; they reopen only" Yellow
+                        Write-Color "        once not running -- e.g. after the reboot. Pass -ExcludeActive to hide them." DarkGray
+                    }
+                    Write-Color "  -- preview only; re-run without -DryRun to open them" Cyan
+                    return
                 }
 
                 # Destination per entry, chosen by the bulk prompt below:
                 #   auto     -> a window named after the repo, theme auto-picked (default)
                 #   previous -> each entry's own saved window (reuse the previous choice)
                 #   perentry -> open the picker for each so you can change individual ones
+                #   tabs     -> each session's audited .tabs window (set above by -ByTabs)
                 # -Window forces one window for all and skips the prompt.
-                $autoWinFor = { param($s) if ($s.Repo) { $s.Repo } else { $s.WindowName } }
-                $pickedWindow = $null
-                $restoreMode  = 'auto'
-
-                if (@($stale).Count -eq 1 -and -not $Window) {
+                if (@($stale).Count -eq 1 -and -not $Window -and $restoreMode -ne 'tabs') {
                     $one     = $stale[0]
                     $autoWin = (& $autoWinFor $one)
                     Write-Color ("  $($one.Branch) @ $($one.WorktreePath)") DarkGray
@@ -2571,7 +3404,7 @@ switch ($Command) {
                         if ($pickedWindow -eq '__auto__') { $pickedWindow = $autoWin }
                         if ($pickedWindow -eq '__new__')  { $pickedWindow = $null }
                     }
-                } elseif (-not $Window) {
+                } elseif (-not $Window -and $restoreMode -ne 'tabs') {
                     Write-Host ""
                     foreach ($s in $stale) {
                         $note = if ((& $autoWinFor $s) -ne $s.WindowName) { "  (was '$($s.WindowName)')" } else { '' }
@@ -2586,6 +3419,11 @@ switch ($Command) {
                 }
 
                 foreach ($s in $stale) {
+                    if ($s.Alive) {
+                        # In the set for previewing, but never re-open something already running.
+                        Write-Color "  skip (already running): $($s.Branch) @ $($s.WorktreePath)" DarkGray
+                        continue
+                    }
                     if (-not (Test-Path $s.WorktreePath)) {
                         Write-Color "  skip (worktree gone): $($s.Branch) @ $($s.WorktreePath)" Yellow
                         continue
@@ -2594,6 +3432,10 @@ switch ($Command) {
                     # choice, then the bulk mode (auto repo window, or the saved one).
                     $effWindow = if ($Window)          { $Window }
                                  elseif ($pickedWindow) { $pickedWindow }
+                                 elseif ($restoreMode -eq 'tabs') {
+                                     $k = ($s.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+                                     if ($tabsOrder.ContainsKey($k)) { $tabsOrder[$k].Window } else { (& $autoWinFor $s) }
+                                 }
                                  elseif ($restoreMode -eq 'previous') { $s.WindowName }
                                  else                   { (& $autoWinFor $s) }
                     if ($restoreMode -eq 'perentry') {
@@ -2750,11 +3592,30 @@ switch ($Command) {
 
             { $_ -in 'save','unsave' } {
                 $val = ($Target -eq 'save')
+                $didSaveAll = $false
                 if (-not ($Match -or $Name -or $Window)) {
-                    Write-Color "usage: gwt sessions $Target <substring> [-Name <branch>] [-Window <name>]" Yellow
-                    return
+                    if ($val -and $All) {
+                        $didSaveAll = $true
+                        # 'gwt sessions save -All' = mark every RUNNING session Saved: the
+                        # pre-reboot snapshot. Saved survives the ENDED skip, so restore
+                        # brings them back even if a clean shutdown marks them ended.
+                        # Use the pre-scope set so it catches running sessions in every repo.
+                        $targets = @($entriesAllRepos | Where-Object Alive)
+                        if (-not $targets.Count) { Write-Color "no running sessions to save" DarkGray; return }
+                        if ($DryRun) {
+                            Write-Color "DRY RUN -- would mark $($targets.Count) running session(s) Saved and merge them into the layout snapshot (nothing written):" Cyan
+                            foreach ($m in ($targets | Sort-Object WindowName, Branch)) { Write-Color "  $($m.Branch) @ $($m.WorktreePath)" DarkGray }
+                            return
+                        }
+                        Write-Color "saving $($targets.Count) running session(s) so they survive a reboot..." Cyan
+                    } else {
+                        Write-Color "usage: gwt sessions $Target <substring> [-Name <branch>] [-Window <name>]" Yellow
+                        Write-Color "  or:  gwt sessions save -All   # save EVERY running session (pre-reboot snapshot)" DarkGray
+                        return
+                    }
+                } else {
+                    $targets = _ResolveSessionTargets -Pool $entries -Verb $Target
                 }
-                $targets = _ResolveSessionTargets -Pool $entries -Verb $Target
                 if (-not $targets) { return }
                 foreach ($m in $targets) {
                     # Ad-hoc entries (registered when claude was launched outside any
@@ -2776,6 +3637,45 @@ switch ($Command) {
                     $word = if ($val) { 'saved' } else { 'unsaved' }
                     $col  = if ($val) { 'Green' } else { 'Yellow' }
                     Write-Color "  $word : $($m.Branch) @ $($m.WorktreePath)" $col
+                }
+                if ($didSaveAll) {
+                    # Freeze the tab layout so 'restore -ByTabs' rebuilds it even after a clean
+                    # shutdown strips the live .tabs lines. MERGE, don't overwrite: keep prior
+                    # snapshot lines for sessions that are STILL Saved (so re-snapshotting when
+                    # fewer are running never drops a Saved-but-not-running session), then add
+                    # current live lines for anything new. Unsave a session to drop it.
+                    $winDir  = Join-Path $script:WtRoot 'windows'
+                    $snapDir = Join-Path $winDir '.snapshot'
+                    [System.IO.Directory]::CreateDirectory($snapDir) | Out-Null
+
+                    $savedCwd = @{}
+                    foreach ($en in $entriesAllRepos) {
+                        if ($en.Saved -and $en.WorktreePath) { $savedCwd[($en.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()] = $true }
+                    }
+                    $cwdOf = { param($ln) $c = ($ln -split "`t")[2]; if ($c) { ($c -replace '/', '\').TrimEnd('\').ToLower() } else { $null } }
+
+                    $winFiles = @(@(Get-ChildItem $winDir -Filter '*.tabs' -EA SilentlyContinue | Select-Object -ExpandProperty Name) +
+                                  @(Get-ChildItem $snapDir -Filter '*.tabs' -EA SilentlyContinue | Select-Object -ExpandProperty Name)) |
+                                Sort-Object -Unique
+                    $snapN = 0
+                    foreach ($fn in $winFiles) {
+                        $livePath  = Join-Path $winDir $fn
+                        $priorPath = Join-Path $snapDir $fn
+                        $live  = @(if (Test-Path $livePath)  { Get-Content $livePath  -EA SilentlyContinue } else { @() })
+                        $prior = @(if (Test-Path $priorPath) { Get-Content $priorPath -EA SilentlyContinue } else { @() })
+                        $seen = @{}; $out = @()
+                        foreach ($ln in $prior) {                    # prior order, only still-Saved
+                            $ck = & $cwdOf $ln
+                            if ($ck -and $savedCwd.ContainsKey($ck) -and -not $seen.ContainsKey($ck)) { $out += $ln; $seen[$ck] = $true }
+                        }
+                        foreach ($ln in $live) {                     # then any new live tabs
+                            $ck = & $cwdOf $ln
+                            if ($ck -and -not $seen.ContainsKey($ck)) { $out += $ln; $seen[$ck] = $true }
+                        }
+                        if ($out.Count) { Set-Content -Path $priorPath -Value $out -Encoding UTF8; $snapN++ }
+                        elseif (Test-Path $priorPath) { Remove-Item $priorPath -Force -EA SilentlyContinue }
+                    }
+                    Write-Color "  layout snapshot saved ($snapN window file(s)) -- 'restore -ByTabs' rebuilds from it" DarkGray
                 }
                 return
             }
@@ -3102,82 +4002,58 @@ switch ($Command) {
                 #            main-clone paths (under $env:GIT_ROOT) stay PAUSED so a
                 #            temporary unmount or path move never gets called cruft.
                 $wtRootRegex = "^$([regex]::Escape($script:WtRoot))\\"
-                $byWindow = $deduped | Sort-Object @{e='Alive';desc=$true}, WindowName, Branch | Group-Object WindowName
-                $abortedCount = 0
-                $staleCount   = 0
-                $endedCount   = 0
-                foreach ($g in $byWindow) {
-                    Write-Host ""
-                    # Empty WindowName means the entry never got assigned a wt
-                    # window (old entries pre-window-detection, or main-clone
-                    # launches before ad-hoc routing). Label them explicitly
-                    # instead of rendering as an empty bracket.
-                    $groupLabel = if ([string]::IsNullOrEmpty($g.Name)) { 'unassociated' } else { $g.Name }
-                    Write-Color "[$groupLabel]" Cyan
-                    foreach ($s in $g.Group) {
-                        if ($s.Alive) {
-                            $tag = 'ACTIVE'; $col = 'Green'
-                        } elseif ($s.State -eq 'ended') {
-                            # Human closed the session cleanly (SessionEnd hook fired).
-                            # Distinct from ABORTED (died without clean shutdown) and STALE
-                            # (worktree dir is gone).
-                            $tag = 'ENDED';   $col = 'DarkGray'; $endedCount++
-                        } elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath)) {
-                            # Process gone but SessionEnd never fired: Windows restart,
-                            # crash, hard kill. THESE are the priority for restore.
-                            $tag = 'ABORTED'; $col = 'Yellow';   $abortedCount++
-                        } elseif ($s.WorktreePath -and $s.WorktreePath -match $wtRootRegex) {
-                            $tag = 'STALE';   $col = 'Red';      $staleCount++
-                        } else {
-                            $tag = 'ABORTED'; $col = 'Yellow';   $abortedCount++
-                        }
-                        # Saved entries get a distinct SAVED tag (overrides the lifecycle
-                        # label so they pop visually). Color still reflects underlying state.
-                        if ($s.Saved) { $tag = 'SAVED' }
-                        $displayName = if ($s.Label) { $s.Label } else { $s.Branch }
-                        # State sub-tag (thinking / idle / needs-input) is set by the
-                        # claude-code hooks via set-session-state.ps1. Only meaningful
-                        # for ALIVE entries; suppress otherwise.
-                        $stateTag = ''
-                        if ($s.Alive -and $s.State) {
-                            $stateTag = switch ($s.State) {
-                                'thinking'    { '[THINK]' }
-                                'idle'        { '[ idle]' }
-                                'needs-input' { '[INPUT]' }
-                                default       { "[$($s.State)]" }
-                            }
-                            if ($s.State -eq 'needs-input') { $col = 'Magenta' }
-                        }
-                        Write-Color ("  [{0,-7}] {1,-7} {2,-30} @ {3}" -f $tag, $stateTag, $displayName, $s.WorktreePath) $col
-                        # -Verbose: print the session's start time on a sub-line. Uses
-                        # LastSpawnedAt (when the current incarnation began) and falls back
-                        # to FirstSpawnedAt or SpawnedAt for older entries.
-                        if ($VerbosePreference -eq 'Continue') {
-                            $when = $s.LastSpawnedAt
-                            if (-not $when) { $when = $s.FirstSpawnedAt }
-                            if (-not $when) { $when = $s.SpawnedAt }
-                            if ($when) {
-                                try {
-                                    $whenDT  = [datetime]::Parse($when)
-                                    $whenStr = $whenDT.ToString('yyyy-MM-dd HH:mm')
-                                    $age     = [datetime]::Now - $whenDT
-                                    $ageStr  = if ($age.TotalDays   -ge 1) { '{0:N0}d ago' -f $age.TotalDays }
-                                               elseif ($age.TotalHours -ge 1) { '{0:N0}h ago' -f $age.TotalHours }
-                                               else                          { '{0:N0}m ago' -f $age.TotalMinutes }
-                                    Write-Color ("              started: $whenStr  ($ageStr)") DarkGray
-                                } catch {
-                                    Write-Color ("              started: $when") DarkGray
-                                }
-                            }
-                        }
-                    }
+                # Flat table (the tabular view), newest activity first. Compute tag +
+                # last-active + last user message per session, then render one box table.
+                $abortedCount = 0; $staleCount = 0; $endedCount = 0
+                $tableRows = foreach ($s in $deduped) {
+                    if     ($s.Alive)                                                { $tag = 'ACTIVE' }
+                    elseif ($s.State -eq 'ended')                                    { $tag = 'ENDED';   $endedCount++ }
+                    elseif ($s.WorktreePath -and (Test-Path $s.WorktreePath))        { $tag = 'ABORTED'; $abortedCount++ }
+                    elseif ($s.WorktreePath -and $s.WorktreePath -match $wtRootRegex){ $tag = 'STALE';   $staleCount++ }
+                    else                                                            { $tag = 'ABORTED'; $abortedCount++ }
+                    if ($s.Saved)               { $tag = 'SAVED' }
+                    if ($s.Alive -and $s.State) { $tag = "$tag/$($s.State)" }
+                    $j  = _SessionJournal $s.ClaudeSessionId
+                    $la = if ($j -and $j.LastActive) { $j.LastActive }
+                          elseif ($s.LastStateChange) { try { [datetime]$s.LastStateChange } catch { $null } }
+                          elseif ($s.LastSpawnedAt)   { try { [datetime]$s.LastSpawnedAt } catch { $null } }
+                          else { $null }
+                    $dir = ($s.WorktreePath -replace '/','\')
+                    $dir = $dir -replace '^.*\\worktrees\\github\\(openziti|netfoundry)\\','' -replace '^.*\\worktrees\\github\\','' -replace '^.*\\git\\github\\','' -replace '^.*\\worktrees\\',''
+                    if (-not $dir) { $dir = if ($s.Label) { $s.Label } else { $s.Branch } }
+                    $mg = if ($j) { $j.LastMsg } else { $null }
+                    [pscustomobject]@{ Tag = $tag; Last = $la; Dir = $dir; Msg = $mg }
                 }
-                Write-Host ""
+                $tableRows = @($tableRows | Sort-Object @{Expression={ if ($_.Last) { $_.Last } else { [datetime]::MinValue } }} -Descending)
+
+                # ENDED sessions closed cleanly and are rarely what you're looking for, so
+                # hide them by default. -IncludeEnded shows the full history. SAVED entries
+                # keep their own tag (never counted as ENDED) so they always stay visible.
+                $hiddenEnded = 0
+                if (-not $IncludeEnded) {
+                    $before      = @($tableRows).Count
+                    $tableRows   = @($tableRows | Where-Object { $_.Tag -notlike 'ENDED*' })
+                    $hiddenEnded = $before - @($tableRows).Count
+                }
+
+                $wL = 11; $wS = 13; $wD = 34; $wM = 50
+                function script:_TblCell($v, $w) { if ($null -eq $v) { $v = '' }; $v = "$v"; if ($v.Length -gt $w) { $v = $v.Substring(0, $w - 2) + '..' }; $v.PadRight($w) }
+                $bar = "+{0}+{1}+{2}+{3}+" -f ('-'*($wL+2)), ('-'*($wS+2)), ('-'*($wD+2)), ('-'*($wM+2))
+                Write-Color ""
+                Write-Color $bar
+                Write-Color ("| {0} | {1} | {2} | {3} |" -f (_TblCell 'Last active' $wL), (_TblCell 'State' $wS), (_TblCell 'Directory' $wD), (_TblCell 'Where you left off' $wM))
+                Write-Color $bar
+                foreach ($r in $tableRows) {
+                    $laStr = if ($r.Last) { $r.Last.ToString('MM-dd HH:mm') } else { '?' }
+                    Write-Color ("| {0} | {1} | {2} | {3} |" -f (_TblCell $laStr $wL), (_TblCell $r.Tag $wS), (_TblCell $r.Dir $wD), (_TblCell $r.Msg $wM))
+                }
+                Write-Color $bar
+                Write-Color ""
                 $noShellCount = $abortedCount + $staleCount + $endedCount
                 $totalRows    = @($deduped).Count
                 Write-Color ("  - $totalRows entries: $($totalRows - $noShellCount) live, $noShellCount with no live shell ($abortedCount aborted, $endedCount ended, $staleCount stale)") DarkGray
                 if ($abortedCount -gt 0) {
-                    Write-Color "  - ABORTED = died without clean SessionEnd (crash / restart / kill). 'gwt sessions restore' brings them back; skips ENDED by default." Yellow
+                    Write-Color "  - ABORTED = died without clean SessionEnd (crash / restart / kill). 'gwt sessions restore -DryRun' previews the recoverable set (recent + has-transcript)." Yellow
                 }
                 if ($noShellCount -gt 10) {
                     Write-Color "  - $noShellCount sessions with no live shell: 'gwt sessions clean -Aborted' to drop (preview with -DryRun)" DarkGray
@@ -3185,10 +4061,16 @@ switch ($Command) {
                 if ($dupes -gt 0) {
                     Write-Color "  - $dupes duplicate entrie(s) hidden: 'gwt sessions clean -IncludeDuplicates' to drop them" DarkGray
                 }
+                if ($hiddenEnded -gt 0) {
+                    Write-Color "  - $hiddenEnded ended session(s) hidden (closed cleanly): pass -IncludeEnded to show them" DarkGray
+                }
                 if ($Usage) {
                     Write-Color "  # all 'sessions' subcommands default to THIS REPO when cwd is inside one." DarkGray
                     Write-Color "  # pass -All to act across every repo's sessions." DarkGray
                     Write-Host ""
+                    Write-Color "  # snapshot EVERYTHING running now (mark Saved + freeze the tab layout) before a reboot;" DarkGray
+                    Write-Color "  # then 'gwt sessions restore -ByTabs' rebuilds exactly this, whatever you close after." DarkGray
+                    Write-Color "  gwt sessions snapshot" DarkGray
                     Write-Color "  # mark a session as Saved (protected from every clean) -- shown as [SAVED]" DarkGray
                     Write-Color "  gwt sessions save   <substring> [-Name <branch>] [-Window <name>]" DarkGray
                     Write-Color "  gwt sessions unsave <substring> [-Name <branch>] [-Window <name>]" DarkGray
@@ -3197,8 +4079,12 @@ switch ($Command) {
                     Write-Color "  # relabel a session's display name (does not rename the git branch)" DarkGray
                     Write-Color "  gwt rename <match> <new-label> [-Name <branch>] [-Window <name>]" DarkGray
                     Write-Host ""
-                    Write-Color "  # relaunch ABORTED sessions (skips ENDED; pass -IncludeEnded to include)" DarkGray
-                    Write-Color "  gwt sessions restore" DarkGray
+                    Write-Color "  # relaunch ABORTED sessions (recent + has-transcript only). Prompts by-tabs / by-sessions." DarkGray
+                    Write-Color "  gwt sessions restore -DryRun                    # preview (by-tabs: grouped by window then tab index)" DarkGray
+                    Write-Color "  gwt sessions restore                            # pick mode (by-tabs default); skips ENDED / > 7 days" DarkGray
+                    Write-Color "  gwt sessions restore -ByTabs                    # force .tabs-layout mode, no picker" DarkGray
+                    Write-Color "  gwt sessions restore -BySessions                # force open-order + window prompt" DarkGray
+                    Write-Color "  gwt sessions restore -MaxAgeDays 0 -IncludeEnded # no age cutoff, include cleanly-ended" DarkGray
                     Write-Host ""
                     Write-Color "  # clean tiers (this-repo by default; add -All for cross-repo):" DarkGray
                     Write-Color "  gwt sessions clean                              # STALE + ENDED" DarkGray
@@ -3302,15 +4188,26 @@ switch ($Command) {
 
         # -Force here suppresses _OpenClaudeShell's redundant alive-session guard;
         # we already prompted at the top of this block.
-        _OpenClaudeShell -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptText $promptText -WindowName $window -Force
+        # When opening the MAIN CLONE (not a worktree), qualify the recorded branch as
+        # '<branch>:<repo>' (e.g. main:ziti) so it isn't an ambiguous bare 'main' across
+        # repos -- mirrors how a tangent records 'tangent:<leaf>'. 'gwt rename' / the
+        # tabs 'r' key still let you change it after.
+        $srcNorm = ($ctx.Src -replace '/', '\').TrimEnd('\').ToLower()
+        $wtNorm  = ($wtPath  -replace '/', '\').TrimEnd('\').ToLower()
+        $dispBranch = if ($wtNorm -eq $srcNorm) { "$($Target):$($ctx.Repo)" } else { $Target }
+        _OpenClaudeShell -Path $wtPath -Repo $ctx.Repo -Branch $dispBranch -PromptText $promptText -WindowName $window -Force
     }
 
     'cd' {
         if (-not $Target) { throw "'cd' requires a branch or worktree dir name" }
-        $ctx    = Resolve-RepoContext
+        # Pure navigate: the destination is resolved from repo + branch, so the
+        # current dir's layout is irrelevant -- don't nag about it.
+        $ctx    = Resolve-RepoContext -QuietLayout
 
-        # Special case: 'gwt cd current' resolves to whatever <WtRoot>\current
-        # points at. Useful for IDE-pinned setups: cd straight to the active wt.
+        # Special case: 'gwt cd current' lands on the STABLE <WtRoot>\current junction
+        # itself, not its resolved target. That's the point of the IDE-pinned link:
+        # the shell (and IDE) stay on one path while 'current' repoints underneath.
+        # We still validate the target exists so we never cd into a broken junction.
         if ($Target -ieq 'current') {
             $link = Join-Path $ctx.WtRoot 'current'
             if (-not (Test-Path $link)) {
@@ -3319,10 +4216,10 @@ switch ($Command) {
             try {
                 $li = Get-Item $link -Force
                 if ($li.LinkType -notin 'SymbolicLink','Junction') { throw "'current' exists but is not a link (LinkType=$($li.LinkType))" }
-                $wtPath = ($li.Target | Select-Object -First 1)
-            } catch { throw "could not resolve 'current' symlink: $($_.Exception.Message)" }
-            if (-not (Test-Path $wtPath)) { throw "'current' points at '$wtPath' which is missing" }
-            Write-Output $wtPath
+                $tgt = ($li.Target | Select-Object -First 1)
+            } catch { throw "could not resolve 'current' link: $($_.Exception.Message)" }
+            if (-not (Test-Path $tgt)) { throw "'current' points at '$tgt' which is missing -- repoint with 'gwt current <branch>'" }
+            Write-Output $link
             return
         }
 
@@ -4392,6 +5289,27 @@ switch ($Command) {
             Write-Color "  renamed: '$($entry.Branch)' -> '$newLabel'  @ $($entry.WorktreePath)" Green
         }
         ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $entry._File -Encoding UTF8
+
+        # Keep the per-window .tabs registry in sync so 'gwt sessions tabs' (show and
+        # the label captured at 'set' time) reflect the rename, not just the ledger.
+        $wsKey = $e.WtSession
+        if ($wsKey) {
+            $tabLabel = if ([string]::IsNullOrEmpty($newLabel)) { $e.Branch } else { $newLabel }
+            $winDir2  = Join-Path $script:WtRoot 'windows'
+            foreach ($tf in (Get-ChildItem $winDir2 -Filter '*.tabs' -ErrorAction SilentlyContinue)) {
+                $lines   = @(Get-Content $tf.FullName -ErrorAction SilentlyContinue)
+                $changed = $false
+                $out = foreach ($ln in $lines) {
+                    $p = $ln -split "`t"
+                    if ($p.Count -ge 2 -and $p[0] -eq $wsKey) {
+                        $changed = $true
+                        $rest = if ($p.Count -ge 3) { $p[2] } else { '' }
+                        "{0}`t{1}`t{2}" -f $p[0], $tabLabel, $rest
+                    } else { $ln }
+                }
+                if ($changed) { Set-Content -Path $tf.FullName -Value @($out) -Encoding UTF8 }
+            }
+        }
     }
 
     { $_ -in 'help','-h','--help' } {
@@ -4419,13 +5337,13 @@ switch ($Command) {
         Write-Host "    gwt discourse " -NoNewline -ForegroundColor Cyan
         Write-Host "<discourse-url> [-Prompt <str>] [-y]"
         Write-Host "        create a worktree to investigate a discourse topic" -ForegroundColor DarkGray
-        Write-Host "        prompts for target repo (default github, accepts 'host:org/repo')" -ForegroundColor DarkGray
+        Write-Host "        picks target repo (most-likely list + custom; default openziti/ziti)" -ForegroundColor DarkGray
         Write-Host "        branch name: discourse-<topic-id>" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt zendesk " -NoNewline -ForegroundColor Cyan
         Write-Host "<zendesk-ticket-url|id> [-Prompt <str>] [-y]"
         Write-Host "        create a worktree to investigate a Zendesk ticket (mirrors discourse)" -ForegroundColor DarkGray
-        Write-Host "        prompts for target repo (default github, accepts 'host:org/repo')" -ForegroundColor DarkGray
+        Write-Host "        picks target repo (most-likely list + custom; default openziti/ziti)" -ForegroundColor DarkGray
         Write-Host "        branch name: zendesk-<ticket-id>" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt pr " -NoNewline -ForegroundColor Cyan
@@ -4433,11 +5351,19 @@ switch ($Command) {
         Write-Host "        create (or reopen) a worktree for a PR" -ForegroundColor DarkGray
         Write-Host "        accepts a full GitHub PR URL or a bare PR number" -ForegroundColor DarkGray
         Write-Host ""
+        Write-Host "    gwt backport " -NoNewline -ForegroundColor Cyan
+        Write-Host "<pr-url-or-number> [-Lts active|maint] [-y]"
+        Write-Host "        branch a worktree off an LTS release line (not main) and cherry-pick" -ForegroundColor DarkGray
+        Write-Host "        the PR's commits (-x) into it. branch: backport.<vX.Y.x>.<pr-source-branch>" -ForegroundColor DarkGray
+        Write-Host "        -Lts  active = newest release-v*.x, maint = next down (or a release-vN.M.x); prompts if omitted" -ForegroundColor DarkGray
+        Write-Host "        conflicts are left in the worktree for you to resolve" -ForegroundColor DarkGray
+        Write-Host ""
         Write-Host "    gwt <url> " -NoNewline -ForegroundColor Cyan
         Write-Host "[-y]"
         Write-Host "        shorthand -- bare URL auto-routes:" -ForegroundColor DarkGray
         Write-Host "          .../pull/<num>          -> 'pr' (worktree for that PR)" -ForegroundColor DarkGray
         Write-Host "          .../issues/<num>        -> 'issue' (worktree branched off main, named issue-<num>)" -ForegroundColor DarkGray
+        Write-Host "          .../security/advisories/GHSA-... -> 'advisory' (worktree off main, named advisory-<GHSA>)" -ForegroundColor DarkGray
         Write-Host "          .../<org>/<repo>        -> 'clone' (clone if missing, open main)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt update-registry" -ForegroundColor Cyan
@@ -4451,6 +5377,10 @@ switch ($Command) {
         Write-Host "        .         repoint to whatever worktree contains cwd" -ForegroundColor DarkGray
         Write-Host "        <branch>  repoint to that branch's worktree" -ForegroundColor DarkGray
         Write-Host "        also: 'gwt cd current' to cd into whatever it points at" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt close" -ForegroundColor Cyan
+        Write-Host "        close THIS tab: drop its tab-registry line (reorders the rest)," -ForegroundColor DarkGray
+        Write-Host "        mark its session ended, then exit the shell so wt closes the tab" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt focus " -NoNewline -ForegroundColor Cyan
         Write-Host "[<match>]"
@@ -4536,6 +5466,7 @@ switch ($Command) {
 }
 } catch {
     Write-Host "error: $($_.Exception.Message)" -ForegroundColor Red
+    if ($env:GWT_DEBUG_STACK) { Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray }
     Write-Host "run 'gwt help' for usage" -ForegroundColor DarkGray
     exit 1
 }

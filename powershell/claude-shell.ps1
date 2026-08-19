@@ -375,6 +375,11 @@ function _ConfirmOpenOrCd {
     param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen,
           [switch]$ByProject)   # group the tab into a per-project window named after $Repo
 
+    # The trailing _SetGwtCwdHint (in the caller) writes the cwd-hint the profile
+    # wrapper follows. Default to letting it run; set this true only when the user
+    # explicitly declines to move, so 'cd there? n' actually leaves the shell put.
+    $global:_GwtSuppressCd = $false
+
     # Short-circuit: if an alive session already exists for this path, show the
     # same heads-up _OpenClaudeShell would print -- but do it BEFORE running
     # through the window/prompt picker. Saves the user a bunch of dead clicks.
@@ -402,9 +407,11 @@ function _ConfirmOpenOrCd {
         _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window -Force
     } else {
         $cd = Read-Host "cd there? (Y/n)"
-        if ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$') {
-            Set-Clipboard $Path
-            Write-Color "path copied to clipboard -- just paste after 'cd '" Cyan
+        if (-not ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$')) {
+            # Declined -- tell the trailing _SetGwtCwdHint to skip so the wrapper
+            # leaves the shell where it is. (Yes falls through: the hint is written
+            # and the wrapper cds you there.)
+            $global:_GwtSuppressCd = $true
         }
     }
 }
@@ -758,6 +765,22 @@ function _UnregisterClaudeSession {
                 ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $_.FullName -Encoding UTF8
             }
         } catch {}
+    }
+    # Also drop this session's line from the per-window tab-order registry, so a
+    # CLEAN exit never leaves a ghost .tabs line. (A crash/reboot skips SessionEnd,
+    # so those still get swept lazily by 'gwt sessions tabs status'/'test'.)
+    $winDir = "$script:WtRoot\windows"
+    if (Test-Path $winDir) {
+        Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $lines = @(Get-Content $_.FullName -ErrorAction SilentlyContinue)
+                $keep  = @($lines | Where-Object { (($_ -split "`t")[0]) -ne $wtSess })
+                if ($keep.Count -ne $lines.Count) {
+                    if ($keep.Count) { Set-Content -Path $_.FullName -Value $keep -Encoding UTF8 }
+                    else { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+                }
+            } catch {}
+        }
     }
 }
 

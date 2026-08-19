@@ -15,6 +15,9 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
 * Multiple shell commands: ONE fenced block, commands back-to-back, no interleaved prose. Explain via
   `# ...` comments, or put prose before or after the block.
 * Cut filler from replies: hedges, throat-clearing, editorializing adjectives, reflexive sign-offs.
+* Reply in a Simplified-Technical-English register: active voice, present tense, one meaning per word,
+  plain approved words over jargon, sentences under ~20 words, one instruction per sentence. Prefer this,
+  but do not contort meaning to obey it.
 
 # Always (authored content and tooling, every project)
 
@@ -26,3 +29,5 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
   /d/work/test.txt). In PowerShell keep them Windows-style.
 * Prefer PowerShell unless clearly in a linux environment. PowerShell commands over 120 chars should use
   line continuations.
+* When clint changes how I behave (a chat directive, a hook, a permission, or config meant to make me work
+  better), append a dated one-line entry to `claude/tuning-changelog.md` with a short why.

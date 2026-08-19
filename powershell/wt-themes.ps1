@@ -34,6 +34,8 @@ $script:OriginalPSReadLineColors = $null
 # Map repo name (last segment of origin URL, no .git) -> theme name.
 # use-repotheme reads this to snap to the right palette for the current repo.
 $script:RepoThemes = @{
+    'ziti-openwrt' = 'ocean-deep'
+    'appetizer' = 'active-work'
     'zrok' = 'electric-purple'
     'sterling' = 'orange-coral'
     'ziti-tv' = 'mauve-purple'

@@ -743,6 +743,12 @@ function gwt {
         Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
         if ($newCwd -and (Test-Path $newCwd)) { Set-Location $newCwd; [Environment]::CurrentDirectory = $newCwd }
     }
+    # 'gwt close' drops a <hint>.close marker to ask us to exit this shell, which
+    # closes the wt tab. Done last, after any cleanup above.
+    if (Test-Path "$hintFile.close") {
+        Remove-Item "$hintFile.close" -Force -ErrorAction SilentlyContinue
+        exit
+    }
 }
 
 # Bitbucket read-only API helper. GET-only by design; the real guardrail is the
@@ -816,6 +822,39 @@ function cdo ()   { cd $env:OZ_ROOT }
 function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
 function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
+
+# MCP server launchers (shared). Each speaks stdio; run when you want the server
+# standalone. Paths resolve per-account: the zendesk launcher lives in the repo,
+# the discourse profile (holds the API key) sits under the running user's home.
+function mcp-start-zendesk {
+    & "$env:GH_ROOT\netfoundry\mcp-zendesk\start-zendesk.ps1" @args
+}
+function mcp-start-discourse {
+    # Call npx.cmd explicitly: PATH also holds an extensionless 'npx' (a Unix
+    # script) that pwsh would otherwise try to ShellExecute, popping the Windows
+    # "how do you want to open this file" dialog. One line -- no backtick
+    # continuations, which break on a trailing space and shell-execute the fragment.
+    npx.cmd -y '@discourse/mcp@latest' --profile "$env:USERPROFILE\discourse\.discourse.profile" --site 'https://openziti.discourse.group/' @args
+}
+function mcp-start-mercurius {
+    & "$env:GH_ROOT\michaelquigley\mercurius\build.claude\mercurius.exe" --http 127.0.0.1:7337 --config "$env:GH_ROOT\michaelquigley\mercurius\mercurius.yaml" @args
+}
+function mcp-start-mcp-gateway {
+    # Serve the aggregated tools over plain local HTTP (no zrok). Prompts for the
+    # listen address every run (Enter takes the default). Anything after gets passed
+    # straight to 'run'. Points at build.claude for now -- the only binary carrying
+    # the --listen flag until the PR merges and you rebuild build\ (or make build -> GOBIN).
+    $exe = "$env:OZ_ROOT\mcp-gateway\build.claude\mcp-gateway.exe"
+    $cfg = "$env:USERPROFILE\.mcp-gateway\config.yml"
+    Write-Host "mcp-gateway -- serve aggregated MCP tools over plain local HTTP (no zrok)" -ForegroundColor Cyan
+    Write-Host "  config: $cfg" -ForegroundColor DarkGray
+    Write-Host "  passthrough: --network agora | --agora-integration-file <path> | any 'run' flag" -ForegroundColor DarkGray
+    $default = '127.0.0.1:8088'
+    $addr = Read-Host "listen address [$default]"
+    if ([string]::IsNullOrWhiteSpace($addr)) { $addr = $default }
+    Write-Host "  -> http://$addr   (register: claude mcp add --transport http mcp-gateway http://$addr)" -ForegroundColor DarkGray
+    & $exe run $cfg --listen $addr @args
+}
 
 # Alias hygiene: drop the built-in aliases that shadow the real unix tools both
 # users expect (curl, mv, cp, rm, ls, diff, find), and map vi -> vim. Per-user

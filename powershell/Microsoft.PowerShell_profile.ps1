@@ -52,7 +52,9 @@ function cdop () { cd $env:ON_PATH }
 function cdds() { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
 
 function StartMcpGateway {
-    & "$env:OZ_ROOT\mcp-gateway\build\mcp-gateway.exe" run "$env:USERPROFILE\.mcp-gateway\config.yml" @args
+    # forwards to the shared launcher in common-tools.ps1 (both accounts have it)
+    Write-Host "fyi: running mcp-start-mcp-gateway (shared launcher)" -ForegroundColor DarkGray
+    mcp-start-mcp-gateway @args
 }
 
 function editsettings() {
@@ -196,6 +198,7 @@ add-dotnet
 add-linux_commands
 add-dotagents
 add-python
+add-docker
 dedupe-path
 
 
@@ -203,6 +206,13 @@ dedupe-path
 . $env:DOTFILES\powershell\wt-themes-rainbow.ps1
 . $env:DOTFILES\powershell\gwt-session-registry.ps1
 . $env:DOTFILES\powershell\claude-shell.ps1
+
+# startup nudge: warn if the local MCP gateway isn't running. Process-name check
+# (port-agnostic, ~ms). clint-only -- the claude account can't see a gateway
+# clint started, so this lives here, not in shared common-tools.
+if (-not (Get-Process -Name mcp-gateway -ErrorAction SilentlyContinue)) {
+    Write-Host "mcp-gateway not running -- run 'mcp-start-mcp-gateway' to serve MCP tools locally" -ForegroundColor DarkYellow
+}
 
 
 # comment
