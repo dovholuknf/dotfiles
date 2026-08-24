@@ -147,6 +147,28 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/log-subagent.ps1 -Phase start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/log-subagent.ps1 -Phase stop",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Notification": [
@@ -202,6 +224,11 @@
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/filler-guard.ps1",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/snapshot-layout.ps1",
+            "timeout": 10
           }
         ]
       }

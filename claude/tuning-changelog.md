@@ -5,6 +5,29 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 
 ## 2026
 
+- **2026-08-21** Tab-registry reliability pass, after a wt tab-drag repeatedly nuked the layout. (1) `gwt tabs`
+  show is now READ-ONLY -- it never rewrites or deletes `.tabs`; dead-pid tabs are shown marked `dead`, not
+  stripped. Only `prune`/`clean` may remove entries. (2) The SessionEnd hook (`_UnregisterClaudeSession`) no
+  longer strips the `.tabs` line on clean exit -- it just zeroes the ledger PID, so the layout stays
+  restorable. (3) New `gwt tabs rebuild` reconstructs `.tabs` from the ledger (newest session per existing
+  worktree, active in the last 18h, grouped by window) and marks them Saved so `restore` keeps them. (4) New
+  hook `claude/hooks/snapshot-layout.ps1` on UserPromptSubmit: every ~10 min it appends the current
+  window->tabs layout to a rolling 1-day history at `D:\worktrees\watch\layout-history.jsonl` (throttled via a
+  stamp file), so the layout is restorable to any recent point even after the live registry churns. Why: the
+  registry self-destructed on read and on every clean exit, so a drag-kill lost everything.
+
+- **2026-08-19** Subagent activity now shows in `agent-log`. New hook `claude/hooks/log-subagent.ps1` writes
+  a `subagent` line on PreToolUse(Task) and a `sub-done` line on SubagentStop into the same `state.log`,
+  under the parent session's terminal group. `agent-log` learned the two states (magenta `SUBAGENT` /
+  `sub done`). Why: subagents fire no SessionStart/Stop, so a spawned agent's work was invisible and the
+  parent just sat on `thinking` until it returned.
+
+- **2026-08-19** Added a `/recap` skill (`claude/skills/recap/`, symlinked into `~/.claude/skills/`). Writes
+  a session after-action into `D:\worktrees\history\`, led by a FALSE FINISHES section (every time claude
+  said "done" and it reopened) and tagging the filename `--REOPENED` when there were any. Why: clint wanted
+  a "you thought this shit was done" marker for sessions, invoked on demand before exit, not auto-run on end
+  (a restart looks identical to a real exit, so auto-capture would fire on every restart).
+
 - **2026-08-19** Installed a `Terse Engineer` output style (fetched from CLBRITTON2/windows-dev), real file in
   `claude/output-styles/`, symlinked into `~/.claude/output-styles/`. Testing whether an output style is a
   cleaner home for the terse/no-filler register than the CLAUDE.md chat directives.

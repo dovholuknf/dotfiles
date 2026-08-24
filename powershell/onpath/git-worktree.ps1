@@ -992,6 +992,17 @@ function _DropCurrentSymlinkIfPointsAt {
     } catch {}
 }
 
+function _ShellIsInside {
+    # True when the invoking shell's current directory is AT or UNDER the given
+    # path. Used to skip destructive prompts (e.g. 'remove this worktree?') that
+    # would fail anyway because the process cwd holds an open handle on the dir.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $Path) { return $false }
+    $target = ($Path -replace '/', '\').TrimEnd('\').ToLower()
+    $cwd    = ((Get-Location).Path -replace '/', '\').TrimEnd('\').ToLower()
+    return ($cwd -eq $target) -or $cwd.StartsWith($target + '\')
+}
+
 function _SetGwtCwdHint {
     # Drop a hint file the gwt profile wrapper reads after the script exits, so it
     # can Set-Location the parent shell into the newly-created worktree. Keyed on
@@ -1429,8 +1440,15 @@ try {
 # Alias: 'gwt tabs <mode>' == 'gwt sessions tabs <mode>'. Shift the mode into $Match
 # (where the sessions/tabs handler reads it) and route through 'sessions'.
 if ($Command -eq 'tabs') {
-    $Match   = $Target
-    $Target  = 'tabs'
+    # 'gwt tabs snapshot' is not a tabs sub-mode -- snapshot is a sessions-level
+    # op (save -All: freeze the layout). Route it there instead of silently
+    # falling through to the plain 'tabs' show, which looked like a no-op.
+    if ($Target -eq 'snapshot') {
+        $Target = 'snapshot'
+    } else {
+        $Match   = $Target
+        $Target  = 'tabs'
+    }
     $Command = 'sessions'
 }
 switch ($Command) {
@@ -1502,6 +1520,14 @@ switch ($Command) {
 
         $existingWt = Get-WorktreePathForBranch $ctx.Src $Target
         if ($existingWt) {
+            if (_ShellIsInside $existingWt) {
+                # Standing in the target worktree: removal would fail on the cwd
+                # lock, so skip the remove prompt and go straight to the open flow.
+                Write-Color "already in this worktree: $existingWt" DarkGray
+                _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject
+                _SetGwtCwdHint $existingWt
+                return
+            }
             $resp = Read-Host "worktree already exists at '$existingWt'. remove it? (y/N)"
             if ($resp -match '^[Yy]$') {
                 Remove-Worktree -Src $ctx.Src -WtPath $existingWt -AutoConfirm
@@ -1947,6 +1973,14 @@ switch ($Command) {
                         return
                     }
                 }
+            }
+            if (_ShellIsInside $existingWt) {
+                # Standing in the target worktree: removal would fail on the cwd
+                # lock, so skip the remove prompt and go straight to the open flow.
+                Write-Color "already in this worktree: $existingWt" DarkGray
+                _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+                _SetGwtCwdHint $existingWt
+                return
             }
             $resp = Read-Host "worktree already exists at '$existingWt'. remove it? (y/N)"
             if ($resp -match '^[Yy]$') {
@@ -2509,20 +2543,176 @@ switch ($Command) {
                     }
                 }
 
-                # Dedupe LIVE by worktree path: duplicate ledger rows for one running
-                # session (same path, both PIDs alive) should show once, not twice.
-                $live = @(@($auditEntries | Where-Object Alive) | Group-Object PathNorm | ForEach-Object {
-                    $_.Group | Sort-Object { "$($_.Last)" } -Descending | Select-Object -First 1
-                })
+                # Live sessions are OMITTED from this audit -- it is about what can be
+                # cleaned up, not what is running. Keep only a count for the header (dedupe
+                # by path so a double-registered running session counts once), and a path
+                # set so a not-live entry sharing a path with a live one is skipped.
+                $liveCount = @(@($auditEntries | Where-Object Alive) | Group-Object PathNorm).Count
                 $livePaths = @{}
-                foreach ($l in $live) { if ($l.PathNorm) { $livePaths[$l.PathNorm] = $true } }
+                foreach ($l in @($auditEntries | Where-Object Alive)) { if ($l.PathNorm) { $livePaths[$l.PathNorm] = $true } }
 
-                # Not reopened: not-live, worktree dir still exists, and no live session
-                # already covers that path. Dedup by path (newest), newest first.
+                # Candidates: not-live, worktree dir still exists, not covered by a live
+                # session. Dedup by path (newest), newest first.
                 $notLive = @($auditEntries | Where-Object { -not $_.Alive -and $_.Path -and (Test-Path $_.Path) -and -not $livePaths.ContainsKey($_.PathNorm) })
-                $notReopened = @($notLive | Group-Object PathNorm | ForEach-Object {
+                $candidates = @($notLive | Group-Object PathNorm | ForEach-Object {
                     $_.Group | Sort-Object { "$($_.Last)" } -Descending | Select-Object -First 1
                 } | Sort-Object { "$($_.Last)" } -Descending)
+
+                # Merged-to-main verdict. Among the not-reopened entries (not live,
+                # worktree dir present), flag the ones whose branch is already an
+                # ancestor of the repo's origin default branch. A merged worktree is
+                # DONE -- both the ledger entry and the worktree dir can go. This is
+                # "merged as of your last fetch": audit does not fetch, it reads the
+                # local origin/<default> ref. Main-clone and branchless entries are
+                # never merged-flagged. Per-repo default-branch resolution is cached.
+                $defRefCache = @{}
+                function script:_AuditMainClone([string]$p) {
+                    if (-not $p) { return $null }
+                    $pfx = $script:WtRoot.TrimEnd('\')
+                    if (-not $p.ToLower().StartsWith($pfx.ToLower() + '\')) { return $null }
+                    $parts = $p.Substring($pfx.Length).TrimStart('\') -split '\\'
+                    if ($parts.Count -lt 4) { return $null }   # need host\org\repo\branch
+                    return (Join-Path (Join-Path (Join-Path $script:GitRoot $parts[0]) $parts[1]) $parts[2])
+                }
+                function script:_AuditDefaultRef([string]$main) {
+                    if ($defRefCache.ContainsKey($main)) { return $defRefCache[$main] }
+                    $ref = $null
+                    $h = (& git -C $main symbolic-ref --quiet refs/remotes/origin/HEAD 2>$null | Out-String).Trim()
+                    if ($h) { $ref = ($h -replace '^refs/remotes/', '') }
+                    if (-not $ref) {
+                        foreach ($c in @('origin/main','origin/master')) {
+                            & git -C $main rev-parse --verify --quiet $c *> $null
+                            if ($LASTEXITCODE -eq 0) { $ref = $c; break }
+                        }
+                    }
+                    $defRefCache[$main] = $ref
+                    return $ref
+                }
+                # Classify each candidate into one factual bucket:
+                #   REMOVABLE -- merged (to main, or a merged PR), 0 commits past the
+                #                merge, working tree clean. Nothing local to lose.
+                #   REVIEW    -- merged, but there ARE commits past the merge and/or
+                #                uncommitted changes. Removing loses local work.
+                #   KEEP      -- not merged: open PR, commits not in main, a main clone,
+                #                or a non-worktree tangent.
+                # merged = branch is an ancestor of origin/<default> (fast, local) OR the
+                # pr-<n> worktree's PR is MERGED per gh (catches squash/rebase merges the
+                # ancestor test misses). Dirty + commits-past are computed ONLY for merged
+                # rows, to bound git calls. gh is called only for pr-<n> leaves.
+                $removable = @(); $review = @(); $keep = @()
+                foreach ($n in $candidates) {
+                    $main = script:_AuditMainClone $n.Path
+                    $n | Add-Member -NotePropertyName MainClone -NotePropertyValue $main -Force
+                    $branchRef = if ($n.Branch -and $n.Branch -notin @('(none)','')) { 'refs/heads/' + $n.Branch } else { $null }
+
+                    # PR worktree? resolve its PR once (state + head oid).
+                    $prNum = $null; $pr = $null
+                    $leaf = Split-Path $n.Path -Leaf
+                    if ($leaf -match '^pr-(\d+)$') {
+                        $prNum = $Matches[1]
+                        $pfx   = $script:WtRoot.TrimEnd('\')
+                        $parts = $n.Path.Substring($pfx.Length).TrimStart('\') -split '\\'
+                        if ($parts.Count -ge 3) {
+                            $slug = '{0}/{1}' -f $parts[1], $parts[2]
+                            try {
+                                $j = (& gh pr view $prNum -R $slug --json state,headRefOid 2>$null | Out-String).Trim()
+                                if ($j) { $pr = $j | ConvertFrom-Json -ErrorAction SilentlyContinue }
+                            } catch {}
+                        }
+                        $n | Add-Member -NotePropertyName PrNum -NotePropertyValue $prNum -Force
+                        if ($pr -and $pr.state) { $n | Add-Member -NotePropertyName PrState -NotePropertyValue $pr.state -Force }
+                    }
+
+                    # Merged? ancestor-of-default first, then merged-PR.
+                    $mergedVia = $null; $ahead = 0
+                    if ($main -and (Test-Path $main) -and $branchRef -and $n.Branch -notin @('main','master')) {
+                        $ref = script:_AuditDefaultRef $main
+                        if ($ref) {
+                            & git -C $main rev-parse --verify --quiet $branchRef *> $null
+                            if ($LASTEXITCODE -eq 0) {
+                                & git -C $main merge-base --is-ancestor $branchRef $ref *> $null
+                                if ($LASTEXITCODE -eq 0) { $mergedVia = 'main' }
+                            }
+                        }
+                    }
+                    if (-not $mergedVia -and $pr -and $pr.state -eq 'MERGED') {
+                        $mergedVia = "PR#$prNum"
+                        $localTip = $null
+                        if ($main -and (Test-Path $main) -and $branchRef) {
+                            $localTip = (& git -C $main rev-parse --verify --quiet $branchRef 2>$null | Out-String).Trim()
+                        }
+                        if (-not $localTip) {
+                            $localTip = (& git -C $n.Path rev-parse --verify --quiet HEAD 2>$null | Out-String).Trim()
+                        }
+                        if ($localTip -and $pr.headRefOid -and $localTip -ne $pr.headRefOid -and $main -and (Test-Path $main)) {
+                            & git -C $main merge-base --is-ancestor $pr.headRefOid $localTip *> $null
+                            if ($LASTEXITCODE -eq 0) {
+                                $c = (& git -C $main rev-list --count ("$($pr.headRefOid)..$localTip") 2>$null | Out-String).Trim()
+                                if ($c -match '^\d+$') { $ahead = [int]$c }
+                            }
+                        }
+                    }
+
+                    if ($mergedVia) {
+                        # Dirty = uncommitted edits to TRACKED files (real work you would
+                        # lose). --untracked-files=no drops the noise every worktree carries:
+                        # the hook-injected CLAUDE.md / CMakeUserPresets.json symlinks, a
+                        # stray .claude/ or handoff.md, build output. Those are not work, so
+                        # they must not push a merged worktree out of REMOVABLE. (prune still
+                        # runs its own full-status DIRTY guard when you actually remove it.)
+                        $dirty = $false
+                        $st = (& git -C $n.Path status --porcelain --untracked-files=no 2>$null | Out-String)
+                        if (-not [string]::IsNullOrWhiteSpace($st)) { $dirty = $true }
+                        $base  = if ($mergedVia -eq 'main') { 'merged to main' } else { "merged via $mergedVia" }
+                        $extra = @()
+                        if ($ahead -gt 0) { $extra += "+$ahead commits past merge" }
+                        if ($dirty)       { $extra += 'uncommitted changes' }
+                        $status = if ($extra.Count) { "$base, " + ($extra -join ' and ') } else { $base }
+                        $n | Add-Member -NotePropertyName Status -NotePropertyValue $status -Force
+                        if ($extra.Count) { $review += $n } else { $removable += $n }
+                        continue
+                    }
+
+                    # Ended non-worktree session (tangent, adhoc, or a main-clone session):
+                    # nothing to merge and no gwt-managed worktree to prune. The dir is the
+                    # user's own and stays; the stale ledger entry is safe to drop. 'clean'
+                    # skips these (off the canonical layout), so fold them into REMOVABLE
+                    # here as ledger-only removals. Only ENDED ones -- an ABORTED/idle
+                    # tangent may still be worth restoring, so those stay in KEEP.
+                    if (-not $main -and $n.State -eq 'ended') {
+                        $kind = if ($n.Branch -in @('main','master')) { 'main-clone session' } else { 'non-worktree session' }
+                        $n | Add-Member -NotePropertyName Status -NotePropertyValue "$kind ended -- ledger entry only (dir kept)" -Force
+                        $removable += $n
+                        continue
+                    }
+
+                    # Not merged -- factual KEEP reason.
+                    $reason = $null
+                    if (-not $main) {
+                        $reason = if ($n.Branch -in @('main','master')) { 'main clone' } else { 'not a gwt worktree' }
+                    } elseif ($prNum -and $pr -and $pr.state) {
+                        $reason = "PR#$prNum $($pr.state.ToLower())"
+                    } elseif ($prNum) {
+                        $reason = "PR#$prNum (state unknown)"
+                    } elseif ($branchRef) {
+                        $ref = script:_AuditDefaultRef $main
+                        $aheadMain = $null
+                        if ($ref) {
+                            & git -C $main rev-parse --verify --quiet $branchRef *> $null
+                            if ($LASTEXITCODE -eq 0) {
+                                $c = (& git -C $main rev-list --count ("$ref..$branchRef") 2>$null | Out-String).Trim()
+                                if ($c -match '^\d+$') { $aheadMain = [int]$c }
+                            } else { $reason = 'branch not found locally' }
+                        }
+                        if (-not $reason) {
+                            $reason = if ($null -ne $aheadMain -and $aheadMain -gt 0) { "not merged, +$aheadMain commits not in main" } else { 'not merged' }
+                        }
+                    } else {
+                        $reason = 'not merged'
+                    }
+                    $n | Add-Member -NotePropertyName Status -NotePropertyValue $reason -Force
+                    $keep += $n
+                }
 
                 $autoWin   = @($auditEntries | Where-Object { $_.Window -eq '__auto__' })
                 $gonePath  = @($auditEntries | Where-Object { $_.Path -and -not (Test-Path $_.Path) })
@@ -2534,29 +2724,60 @@ switch ($Command) {
                 $dupGroups = @($auditEntries | Where-Object { $_.PathNorm } | Group-Object PathNorm | Where-Object { $_.Count -gt 1 })
                 $reasons   = @($auditEntries | Where-Object { $_.EndReason } | Group-Object EndReason | Sort-Object Count -Descending)
 
-                Write-Color ("gwt sessions audit -- {0} entries, {1} live, {2} not reopened" -f $auditEntries.Count, $live.Count, $notReopened.Count) Cyan
+                Write-Color ("gwt sessions audit -- {0} entries, {1} live (omitted), {2} not-live below" -f $auditEntries.Count, $liveCount, $candidates.Count) Cyan
                 Write-Host ""
-                Write-Color "LIVE ($($live.Count)):" Green
-                Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f 'last-seen','started','window','branch','path') -ForegroundColor DarkGray
-                foreach ($l in ($live | Sort-Object Window, Branch)) {
-                    $ls = if ($l.Started) { try { [datetime]::Parse($l.Started).ToString('MM-dd HH:mm:ss') } catch { "$($l.Started)" } } else { '?' }
-                    $ll = if ($l.Last)    { try { [datetime]::Parse($l.Last).ToString('MM-dd HH:mm:ss') } catch { "$($l.Last)" } } else { '?' }
-                    Write-Host ('  {0,-16} {1,-16} {2,-13} {3,-26} {4}' -f $ll, $ls, $l.Window, $l.Branch, $l.Path)
+
+                Write-Color "REMOVABLE ($($removable.Count)) -- nothing to lose (merged worktree, or an ended non-worktree session):" Green
+                if ($removable.Count) {
+                    Write-Host ('  {0,-28} {1,-34} {2}' -f 'branch','status','path') -ForegroundColor DarkGray
+                    foreach ($m in ($removable | Sort-Object { "$($_.MainClone)" }, Branch)) {
+                        Write-Host ('  {0,-28} {1,-34} {2}' -f $m.Branch, $m.Status, $m.Path) -ForegroundColor Green
+                    }
                 }
                 Write-Host ""
-                Write-Color "NOT REOPENED ($($notReopened.Count)) -- dir present, no live session, restorable:" Yellow
-                # started = when the session first opened. last-seen = last interaction
-                # (LastStateChange): for an ENDED row that is the exit time, for a crashed
-                # one it is the last activity before the reboot. state + how together are
-                # the last-interaction type (state = thinking/idle/ended, how = exit reason).
-                Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f 'last-seen','started','state','how','branch','path') -ForegroundColor DarkGray
-                foreach ($n in $notReopened) {
-                    $started = if ($n.Started) { try { [datetime]::Parse($n.Started).ToString('MM-dd HH:mm:ss') } catch { "$($n.Started)" } } else { '?' }
-                    $when    = if ($n.Last)    { try { [datetime]::Parse($n.Last).ToString('MM-dd HH:mm:ss') } catch { "$($n.Last)" } } else { '?' }
-                    $how     = if ($n.EndReason) { $n.EndReason } else { '-' }
-                    Write-Host ('  {0,-16} {1,-16} {2,-11} {3,-18} {4,-26} {5}' -f $when, $started, $n.State, $how, $n.Branch, $n.Path)
+
+                # Ask about the REMOVABLE set right here, before the rest of the report,
+                # so the decision is made while the list is on screen. Opt-in (default N).
+                # On yes, drop the ledger entries and hand over per-repo prune commands for
+                # the worktree dirs. REVIEW and KEEP are never touched.
+                if ($removable.Count) {
+                    $resp = Read-Host ("drop {0} REMOVABLE session entr(ies) from the ledger now? (y/N)" -f $removable.Count)
+                    if ($resp -match '^[Yy]') {
+                        $removed = 0
+                        foreach ($m in $removable) { try { Remove-Item $m.File -Force -ErrorAction Stop; $removed++ } catch {} }
+                        Write-Color "  removed $removed entr(ies)" Green
+                    } else {
+                        Write-Color "  left as-is" DarkGray
+                    }
+                    $withWorktree = @($removable | Where-Object { $_.MainClone })
+                    if ($withWorktree.Count) {
+                        Write-Color "  worktree dirs are still on disk -- remove them per repo (prune keeps its guards):" DarkGray
+                        foreach ($g in ($withWorktree | Group-Object MainClone)) {
+                            Write-Color "    cd $($g.Name)" DarkGray
+                            foreach ($m in $g.Group) { Write-Color "    gwt prune $($m.Branch)" DarkGray }
+                        }
+                    }
+                    Write-Host ""
+                }
+
+                if ($review.Count) {
+                    Write-Color "REVIEW FIRST ($($review.Count)) -- merged, but removing loses local work:" Yellow
+                    Write-Host ('  {0,-28} {1,-42} {2}' -f 'branch','status','path') -ForegroundColor DarkGray
+                    foreach ($m in ($review | Sort-Object { "$($_.MainClone)" }, Branch)) {
+                        Write-Host ('  {0,-28} {1,-42} {2}' -f $m.Branch, $m.Status, $m.Path) -ForegroundColor Yellow
+                    }
+                    Write-Host ""
+                }
+
+                Write-Color "KEEP ($($keep.Count)) -- not merged:" Cyan
+                if ($keep.Count) {
+                    Write-Host ('  {0,-28} {1,-34} {2}' -f 'branch','status','path') -ForegroundColor DarkGray
+                    foreach ($m in ($keep | Sort-Object { "$($_.Status)" }, Branch)) {
+                        Write-Host ('  {0,-28} {1,-34} {2}' -f $m.Branch, $m.Status, $m.Path)
+                    }
                 }
                 Write-Host ""
+
                 if ($autoWin.Count -or $gonePath.Count -or $dupGroups.Count) {
                     Write-Color "INTEGRITY:" Magenta
                     if ($autoWin.Count)   { Write-Host ("  {0} entry(ies) with window '__auto__' (legacy data bug)" -f $autoWin.Count) }
@@ -2590,7 +2811,7 @@ switch ($Command) {
                     Write-Host ""
                 }
                 Write-Color "next:" DarkGray
-                if ($notReopened.Count) {
+                if ($keep.Count) {
                     Write-Color "  gwt sessions restore -All -DryRun         # preview the ordered set first (recent + has-transcript)" DarkGray
                     Write-Color "  gwt sessions restore -All                 # reopen crash victims (ABORTED); skips cleanly-ended" DarkGray
                     Write-Color "  gwt sessions restore -All -IncludeEnded   # also reopen sessions you closed cleanly (all rows above)" DarkGray
@@ -2717,6 +2938,95 @@ switch ($Command) {
                     return
                 }
 
+                if ($mode -eq 'rebuild') {
+                    # Reconstruct every window's .tabs registry from the LEDGER -- the
+                    # reliable source after a drag-kill / restore churn corrupts the live
+                    # registry (a mass claude-death leaves the shells but kills the claude
+                    # processes, so liveness is useless here). One line per worktree PATH
+                    # (newest session wins), grouped by that session's recorded window, and
+                    # restricted to worktrees whose dir still EXISTS -- that filters out
+                    # historical/pruned paths and lands on the current working set. Order
+                    # within a window follows last activity (wt can't report tab index).
+                    # Authoritative: this OVERWRITES the .tabs files. Reopen the rebuilt set
+                    # with 'gwt sessions restore -ByTabs -IncludeEnded'.
+                    $onlyWin = if ($Window) { $Window } else { $null }
+                    # Recency window: the tabs you had OPEN are the recently-active ones, not
+                    # every worktree that still exists on disk. Default 18h (a work day);
+                    # -MaxAgeDays widens it. Without this, rebuild resurrects hundreds of old
+                    # worktrees and 'show' immediately strips them as dead.
+                    $cutoffHours = if ($PSBoundParameters.ContainsKey('MaxAgeDays') -and $MaxAgeDays -gt 0) { $MaxAgeDays * 24 } else { 18 }
+                    $cutoff = (Get-Date).AddHours(-$cutoffHours)
+                    $sessions = @()
+                    foreach ($sf in (Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+                        try { $se = Get-Content $sf.FullName -Raw | ConvertFrom-Json } catch { continue }
+                        if (-not ($se.WtSession -and $se.WindowName -and $se.WorktreePath)) { continue }
+                        $p = ($se.WorktreePath -replace '/','\').TrimEnd('\')
+                        if (-not (Test-Path $p)) { continue }   # current worktrees only
+                        if ($onlyWin -and ($se.WindowName -notlike "*$onlyWin*")) { continue }
+                        $last = if ($se.LastStateChange) { $se.LastStateChange } elseif ($se.LastSpawnedAt) { $se.LastSpawnedAt } else { $se.SpawnedAt }
+                        $lastDt = $null; try { $lastDt = [datetime]::Parse($last) } catch {}
+                        if (-not $lastDt -or $lastDt -lt $cutoff) { continue }   # recently active only
+                        $sessions += [pscustomobject]@{
+                            Ws=$se.WtSession; Window=$se.WindowName; Path=$p; Label=$se.Label; Branch=$se.Branch; Last=$last; File=$sf.FullName
+                        }
+                    }
+                    # Newest session per worktree path.
+                    $byPath = @($sessions | Group-Object { $_.Path.ToLower() } | ForEach-Object {
+                        $_.Group | Sort-Object { "$($_.Last)" } -Descending | Select-Object -First 1
+                    })
+                    if (-not $byPath.Count) { Write-Color "no ledger sessions with an existing worktree to rebuild from" Yellow; return }
+
+                    # Mark each selected session Saved, so 'restore' keeps them: with any
+                    # Saved sessions present, restore restricts to Saved+running and would
+                    # otherwise drop these ended sessions BEFORE the -ByTabs filter runs
+                    # (which is how a rebuild reopened only the handful already Saved).
+                    $savedN = 0
+                    foreach ($m in $byPath) {
+                        if (-not $m.File) { continue }
+                        try {
+                            $j = Get-Content $m.File -Raw | ConvertFrom-Json
+                            $j | Add-Member -NotePropertyName Saved -NotePropertyValue $true -Force
+                            ($j | ConvertTo-Json -Depth 6) | Set-Content -Path $m.File -Encoding UTF8
+                            $savedN++
+                        } catch {}
+                    }
+
+                    $byWin = @{}
+                    foreach ($m in ($byPath | Sort-Object { "$($_.Last)" })) {
+                        if (-not $byWin.ContainsKey($m.Window)) { $byWin[$m.Window] = @() }
+                        $byWin[$m.Window] += $m
+                    }
+
+                    [System.IO.Directory]::CreateDirectory($winDir) | Out-Null
+                    # Wipe the windows we are about to rebuild (all, unless -Window narrows).
+                    foreach ($wf in (Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue)) {
+                        $w = [IO.Path]::GetFileNameWithoutExtension($wf.Name)
+                        if ($onlyWin -and ($w -notlike "*$onlyWin*")) { continue }
+                        Remove-Item $wf.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                    $wins = 0; $total = 0
+                    foreach ($win in ($byWin.Keys | Sort-Object)) {
+                        $safe  = ($win -replace '[^A-Za-z0-9._-]', '_')
+                        $tf    = Join-Path $winDir "$safe.tabs"
+                        $lines = @()
+                        foreach ($m in $byWin[$win]) {
+                            $lbl = if ($m.Label) { $m.Label } elseif ($m.Branch -and $m.Branch -notin @('main','master')) { $m.Branch } else { Split-Path $m.Path -Leaf }
+                            $lines += ("{0}`t{1}`t{2}" -f $m.Ws, $lbl, $m.Path)
+                        }
+                        Set-Content -Path $tf -Value $lines -Encoding UTF8
+                        $wins++; $total += $lines.Count
+                        Write-Color ("  [{0}] {1} tab(s)" -f $win, $lines.Count) Green
+                        foreach ($m in $byWin[$win]) {
+                            $lbl = if ($m.Label) { $m.Label } elseif ($m.Branch) { $m.Branch } else { Split-Path $m.Path -Leaf }
+                            Write-Host ('        {0,-28} {1}' -f $lbl, $m.Path) -ForegroundColor DarkGray
+                        }
+                    }
+                    Write-Color ("rebuilt {0} window(s), {1} tab(s) from the ledger (existing worktrees)" -f $wins, $total) Cyan
+                    Write-Color "  reopen them:  gwt sessions restore -ByTabs -IncludeEnded" DarkGray
+                    Write-Color "  then freeze:  gwt sessions snapshot" DarkGray
+                    return
+                }
+
                 $files = @(Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue | Sort-Object Name)
                 if (-not $files.Count) { Write-Color "no windows tracked yet (start a session to populate)" DarkGray; return }
 
@@ -2785,7 +3095,7 @@ switch ($Command) {
                         foreach ($g in $ghosts) { Write-Color ("    [{0}] {1}" -f $g.Window, $g.Label) DarkGray }
                         # Fold prune in: default-yes so 'status' both reports AND cleans,
                         # and you never need a separate 'tabs prune' pass.
-                        $dropAns = (Read-Host "  drop these $($ghosts.Count) ghost line(s) now? (Y/n)").Trim()
+                        $dropAns = ("" + (Read-Host "  drop these $($ghosts.Count) ghost line(s) now? (Y/n)")).Trim()
                         if ([string]::IsNullOrWhiteSpace($dropAns) -or $dropAns -match '^[Yy]') {
                             $dropped = 0
                             foreach ($wf in $files) {
@@ -2812,7 +3122,7 @@ switch ($Command) {
                         $win = if ($m.Window) { $m.Window } else { '(no window recorded)' }
                         Write-Color ("    [{0}] {1} @ {2}" -f $win, $lbl, $m.Path) DarkGray
                     }
-                    $ans = (Read-Host "  register these into their windows' tab order? (appended; run 'tabs test' to place) (y/N)").Trim()
+                    $ans = ("" + (Read-Host "  register these into their windows' tab order? (appended; run 'tabs test' to place) (y/N)")).Trim()
                     if ($ans -notmatch '^[Yy]') { Write-Color "  left as-is" DarkGray; return }
                     $added = 0
                     foreach ($m in $untracked) {
@@ -2997,31 +3307,26 @@ switch ($Command) {
                         continue
                     }
 
-                    # show: dead tabs are KNOWABLE (their pwsh PID is gone), so strip them
-                    # from the file up front, list only the live ones renumbered 0..n, and
-                    # stash the removed lines to report at the end.
+                    # show is READ-ONLY. It NEVER rewrites or deletes the registry -- only
+                    # 'prune' and 'clean' remove entries. Dead-pid tabs are shown marked
+                    # 'dead', not stripped, so a churn (drag-kill) never erases your layout
+                    # just because you looked at it.
                     $tlines = @(Get-Content $wf.FullName -ErrorAction SilentlyContinue)
-                    $liveLines = @($tlines | Where-Object { $liveWt.ContainsKey(($_ -split "`t")[0]) })
-                    $deadLines = @($tlines | Where-Object { -not $liveWt.ContainsKey(($_ -split "`t")[0]) })
-                    if ($deadLines.Count) {
-                        if ($liveLines.Count) { Set-Content -Path $wf.FullName -Value $liveLines -Encoding UTF8 }
-                        else { Remove-Item $wf.FullName -Force -ErrorAction SilentlyContinue }
-                        foreach ($d in $deadLines) {
-                            $dp = $d -split "`t"
-                            $removedDead += [pscustomobject]@{
-                                Window = $win
-                                Branch = if ($dp.Count -ge 2) { $dp[1] } else { '(?)' }
-                                Path   = if ($dp.Count -ge 3) { $dp[2] } else { '' }
-                            }
-                        }
-                    }
-                    if (-not $liveLines.Count) { continue }
-                    Write-Color ("[{0}]  {1} tab(s)" -f $win, $liveLines.Count) Cyan
-                    for ($i = 0; $i -lt $liveLines.Count; $i++) {
-                        $parts = $liveLines[$i] -split "`t"
+                    if (-not $tlines.Count) { continue }
+                    $liveN = @($tlines | Where-Object { $liveWt.ContainsKey(($_ -split "`t")[0]) }).Count
+                    Write-Color ("[{0}]  {1} tab(s) ({2} live)" -f $win, $tlines.Count, $liveN) Cyan
+                    for ($i = 0; $i -lt $tlines.Count; $i++) {
+                        $parts = $tlines[$i] -split "`t"
+                        $ws    = $parts[0]
                         $br    = if ($parts.Count -ge 2) { $parts[1] } else { '(?)' }
                         $path  = if ($parts.Count -ge 3) { $parts[2] } else { '' }
-                        Write-Host ('    -t {0,-2}  {1,-30} {2}' -f $i, $br, $path)
+                        $live  = $liveWt.ContainsKey($ws)
+                        # Live PID(s) from the ledger, so you can match a locked worktree to
+                        # its tab. A dead-pid line is shown 'dead', kept in the registry.
+                        $tabPids = if ($aliveP -and $wtPids.ContainsKey($ws)) { @($wtPids[$ws] | Where-Object { $aliveP.ContainsKey($_) } | Sort-Object -Unique) } else { @() }
+                        $pidTag  = if ($tabPids.Count) { 'pid ' + ($tabPids -join ',') } elseif ($live) { 'pid ?' } else { 'dead' }
+                        $color   = if ($live) { 'Gray' } else { 'DarkGray' }
+                        Write-Host ('    -t {0,-2}  {1,-12} {2,-28} {3}' -f $i, $pidTag, $br, $path) -ForegroundColor $color
                     }
                 }
                 if ($mode -eq 'test') {
@@ -3755,15 +4060,24 @@ switch ($Command) {
                 # Anything shallower (the WORKTREE_ROOT itself, a drive root, arbitrary
                 # paths) gets protected -- even -All won't touch it. This is the safety
                 # net for the case where a registration somehow points at a dangerous root.
+                # This guard only matters for UNFILTERED bulk cleans (so -All can't wipe
+                # records for entries at odd/dangerous roots). clean removes only the ledger
+                # JSON, never the dir, so when you NAME an entry explicitly the off-layout
+                # protection is dropped -- that is how you clear a tangent's stale entry
+                # (e.g. gwt sessions clean local-llm).
                 $wtEsc  = [regex]::Escape($script:WtRoot)
                 $gitEsc = [regex]::Escape($script:GitRoot)
                 $canonicalRegex = "^($wtEsc\\[^\\]+\\[^\\]+\\[^\\]+\\[^\\]+|$gitEsc\\[^\\]+\\[^\\]+\\[^\\]+)(\\|$)"
-                $offLayoutSkipped = @($toDrop | Where-Object {
-                    -not $_.WorktreePath -or ($_.WorktreePath -notmatch $canonicalRegex)
-                })
-                $toDrop = @($toDrop | Where-Object {
-                    $_.WorktreePath -and ($_.WorktreePath -match $canonicalRegex)
-                })
+                $hasFilter = [bool]($Match -or $Name -or $Window)
+                $offLayoutSkipped = @()
+                if (-not $hasFilter) {
+                    $offLayoutSkipped = @($toDrop | Where-Object {
+                        -not $_.WorktreePath -or ($_.WorktreePath -notmatch $canonicalRegex)
+                    })
+                    $toDrop = @($toDrop | Where-Object {
+                        $_.WorktreePath -and ($_.WorktreePath -match $canonicalRegex)
+                    })
+                }
 
                 # Protect Saved entries from ALL clean operations -- with one
                 # exception: when -IncludeDuplicates is set, Saved duplicate
@@ -3774,7 +4088,7 @@ switch ($Command) {
 
                 # Optional filters: substring $Match plus exact $Name/$Window. With
                 # any filter, multi-match prompts to disambiguate (pick / 'a' / 'q').
-                if ($Match -or $Name -or $Window) {
+                if ($hasFilter) {
                     $resolved = _ResolveSessionTargets -Pool $toDrop -Verb 'clean'
                     if (-not $resolved) { return }
                     $toDrop = $resolved
@@ -3798,6 +4112,9 @@ switch ($Command) {
                     Write-Color "  -> $savedDupeCount Saved duplicate(s) above can be dropped with 'gwt sessions clean -IncludeDuplicates'" Yellow
                     Write-Color "     (the winner of each path keeps its Saved protection; only redundant copies go)" DarkGray
                 }
+                # Drop any phantom/blank elements (null or File-less) the dedupe/resolve
+                # step can emit -- clean can only act on a real entry with a backing file.
+                $toDrop = @($toDrop | Where-Object { $_ -and $_.File })
                 $mode = "$($dropTags -join ' + ')"
                 $verb = if ($DryRun) { 'would clean' } else { 'cleaning' }
                 Write-Color "${verb}: $mode" DarkGray
@@ -4830,6 +5147,22 @@ switch ($Command) {
                 if (Test-WorktreeIsSaved $wt.Path) {
                     Write-Color "  [SAVED   ] $($wt.Branch) @ $($wt.Path)" Cyan
                     Write-Color "                    protected -- run 'gwt sessions unsave $($wt.Branch)' first" DarkGray
+                    continue
+                }
+
+                # Live-session guard: a claude session (and its pwsh) running IN this
+                # worktree holds an open handle on the dir, so NO delete can succeed --
+                # -Force included, because a running process is not a permissions problem.
+                # Refuse and name it up front, rather than dropping the ledger entry and
+                # then crying "still exists" via a File Locksmith that (run in the other
+                # account's non-elevated session) can't even see the claude-account holder.
+                # The ledger PID-liveness check IS cross-session, so it names the holder
+                # regardless of which account owns it.
+                $aliveHere = Get-AliveSessionForPath $wt.Path
+                if ($aliveHere) {
+                    Write-Color "  [LIVE    ] $($wt.Branch) @ $($wt.Path)" Yellow
+                    Write-Color "                    a claude session is running here (pid $($aliveHere.Pid), window '$($aliveHere.WindowName)') -- it holds the folder open" Yellow
+                    Write-Color "                    close that tab (or 'gwt focus $($aliveHere.Branch)' then exit), then re-run prune" DarkGray
                     continue
                 }
 

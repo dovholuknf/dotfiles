@@ -766,22 +766,11 @@ function _UnregisterClaudeSession {
             }
         } catch {}
     }
-    # Also drop this session's line from the per-window tab-order registry, so a
-    # CLEAN exit never leaves a ghost .tabs line. (A crash/reboot skips SessionEnd,
-    # so those still get swept lazily by 'gwt sessions tabs status'/'test'.)
-    $winDir = "$script:WtRoot\windows"
-    if (Test-Path $winDir) {
-        Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue | ForEach-Object {
-            try {
-                $lines = @(Get-Content $_.FullName -ErrorAction SilentlyContinue)
-                $keep  = @($lines | Where-Object { (($_ -split "`t")[0]) -ne $wtSess })
-                if ($keep.Count -ne $lines.Count) {
-                    if ($keep.Count) { Set-Content -Path $_.FullName -Value $keep -Encoding UTF8 }
-                    else { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
-                }
-            } catch {}
-        }
-    }
+    # Deliberately does NOT touch the per-window .tabs registry. Only 'gwt prune'
+    # and 'gwt sessions clean' may remove tab lines. A clean exit just zeroes the
+    # ledger PID above (marks it stale); the tab line persists so the layout stays
+    # restorable. (This used to strip the line on SessionEnd, which erased tabs you
+    # wanted back.)
 }
 
 function _RestoreAllClaudeShells {

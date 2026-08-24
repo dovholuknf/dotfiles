@@ -899,7 +899,7 @@ function agent-log {
     Get-Content $log -Wait -Tail 50 | ForEach-Object {
         if ($_ -notmatch '^(?<ts>\S+)\s+(?<state>\S+)\s+(?<branch>.+?)\s+@\s+(?<path>.+)$') { return }
         $state = $Matches.state
-        if ($state -notin @('needs-input','idle','thinking')) { return }
+        if ($state -notin @('needs-input','idle','thinking','subagent','sub-done')) { return }
         $time   = try { [datetime]::Parse($Matches.ts).ToString('HH:mm:ss') } catch { $Matches.ts }
         $branch = $Matches.branch.Trim()
         $path   = $Matches.path.Trim()
@@ -912,11 +912,15 @@ function agent-log {
         $tag    = switch ($state) {
             'needs-input' { 'NEEDS YOU' }
             'thinking'    { 'thinking ' }
+            'subagent'    { 'SUBAGENT ' }
+            'sub-done'    { 'sub done ' }
             default       { 'done     ' }
         }
         $color  = switch ($state) {
             'needs-input' { 'Yellow' }
             'thinking'    { 'Cyan' }
+            'subagent'    { 'Magenta' }
+            'sub-done'    { 'DarkMagenta' }
             default       { 'Green' }
         }
         Write-Host ("{0}  {1}  {2}  {3}  @ {4}" -f `
