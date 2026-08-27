@@ -127,7 +127,9 @@
       "Read(./secrets/**)",
       "Read(~/.encrypted/**)",
       "Read(~/.aws/**)",
-      "Read(/e/**)"
+      "Read(/e/**)",
+      "Artifact",
+      "Artifact(*)"
     ]
   },
   "hooks": {
@@ -299,7 +301,6 @@
     "type": "command",
     "command": "bash /c/Users/claude/.claude/statusline-command.sh"
   },
-  "outputStyle": "Terse Engineer",
   "feedbackSurveyRate": 0,
   "effortLevel": "medium",
   "autoUpdatesChannel": "latest",

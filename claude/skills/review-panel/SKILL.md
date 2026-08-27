@@ -115,6 +115,10 @@ concurrently in isolated contexts. Give every agent the same shared context:
   -convention, and so on)
 - instructions to read whatever surrounding files or dependency source they need, NOT just the diff
 - review only, do NOT modify files
+- **do NOT build, compile, `go vet`, `go build`, `go test`, `make`, or run any tests.** This is a PR: CI
+  already builds and vets it. Answer any "does it still build / compile / are imports/callers satisfied"
+  question by READING and `grep`-ing the code (find the callers, check the signatures), never by invoking
+  a build. A reviewer that shells out to a compiler is wasting minutes on something already verified.
 - the Severity scale and Finding schema from the Shared definitions above, verbatim -- they MUST return
   the ```json array in that shape, with real `evidence`
 
@@ -149,6 +153,8 @@ When verification is done, consolidate into ONE report. Do not just concatenate.
 - Coverage check: spawn one final `general-purpose` completeness critic. Hand it the diff and the merged
   finding list and ask what dimension NO reviewer covered (thread-safety, error paths, tests, i18n,
   perf, docs, backward compat). Its output is a short "possible gaps" list, not new confirmed findings.
+  Do NOT list "does it build / compile / vet" as a candidate gap and do NOT let it run a build -- CI owns
+  that; it reasons from reading the code only.
 
 ## 7. Report
 

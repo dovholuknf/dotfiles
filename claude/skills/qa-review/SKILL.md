@@ -53,6 +53,10 @@ Launch the chosen agent(s) with the `Agent` tool. For a full review, launch both
   attributes (performance, resilience, resource use, observability) only
 - instructions to read whatever surrounding files or dependency source they need, not just the diff
 - review only, do NOT modify files
+- **do NOT build, compile, `go vet`, `go build`, `go test`, `make`, or run any existing tests.** This is a PR:
+  CI already builds and vets it. Reason about behavior and coverage by READING and `grep`-ing the code; the
+  deliverable is the tests to ADD, described, not executed. A tester that shells out to a compiler or test
+  runner is burning minutes on something CI already did.
 - return findings as a list, each with: severity, file:line, the gap or risk in one sentence, and the concrete
   test to add
 

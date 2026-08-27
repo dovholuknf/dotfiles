@@ -94,6 +94,12 @@ function _TuiSelect {
     #   -DefaultIndex <int>       0-based row to highlight on open. Clamped to range.
     #   -AllowAll                 Enable 'a' = return full list. Caller can distinguish
     #                             single-item vs all by checking @($picked).Count.
+    #   -MultiSelect              Checkbox mode. Space toggles the current row, 'a'
+    #                             toggles all, Enter returns the checked items as an
+    #                             array (possibly empty). Esc/q returns $null. So the
+    #                             caller MUST test for $null (cancelled) BEFORE .Count
+    #                             (an empty array is a real "nothing checked" answer).
+    #   -Preselected <int[]>      0-based indices checked on open (MultiSelect only).
     #
     # Behaviors that MUST keep working when this function is edited (see the
     # "List pickers" section in CLAUDE.md for the full contract).
@@ -103,6 +109,8 @@ function _TuiSelect {
         [string]$DisplayProperty,
         [scriptblock]$DisplayScript,
         [switch]$AllowAll,
+        [switch]$MultiSelect,
+        [int[]]$Preselected = @(),
         # 0-based row to highlight on open. Callers wanting a default of "row N"
         # in 1-based reasoning pass N-1. Clamped to a valid range.
         [int]$DefaultIndex = 0,
@@ -116,11 +124,19 @@ function _TuiSelect {
     )
     if (-not $Items.Count) { return $null }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+        # Non-interactive: single-select passes through with $Items[0]; multi-select
+        # honors the remembered set (the preselected indices), or empty if none.
+        if ($MultiSelect) {
+            return ,@($Preselected | Where-Object { $_ -ge 0 -and $_ -lt $Items.Count } | ForEach-Object { $Items[$_] })
+        }
         return $Items[0]
     }
 
     $ESC = [char]27
     $idx = if ($DefaultIndex -ge 0 -and $DefaultIndex -lt $Items.Count) { $DefaultIndex } else { 0 }
+    # Checkbox state for MultiSelect, seeded from -Preselected indices.
+    $checked = New-Object 'bool[]' $Items.Count
+    foreach ($p in $Preselected) { if ($p -ge 0 -and $p -lt $Items.Count) { $checked[$p] = $true } }
     $cursorWasVisible = [Console]::CursorVisible
     $ctrlCWas = [Console]::TreatControlCAsInput
     [Console]::CursorVisible = $false
@@ -144,7 +160,7 @@ function _TuiSelect {
     # terminalFit is the hard cap so a tiny window still works.
     # Reserve = blank line + prompt + footer (+ allow-all row) + 2 lines safety.
     $winH = try { [Console]::WindowHeight } catch { 24 }
-    $reserved = if ($AllowAll) { 5 } else { 4 }
+    $reserved = if ($AllowAll -or $MultiSelect) { 5 } else { 4 }
     $fit  = $winH - $reserved
     $cap  = if ($PageSize -gt 0) { $PageSize } else { [int]::MaxValue }
     $viewport = [Math]::Max(1, [Math]::Min($Items.Count, [Math]::Min($cap, $fit)))
@@ -186,7 +202,8 @@ function _TuiSelect {
             $label = & $labelFor $Items[$i]
             $num   = "[{0,$idxWidth}] " -f ($i + 1)
             $arrow = if ($i -eq $idx) { '> ' } else { '  ' }
-            $line  = "$arrow$num$label"
+            $box   = if ($MultiSelect) { if ($checked[$i]) { '[x] ' } else { '[ ] ' } } else { '' }
+            $line  = "$arrow$box$num$label"
             if ($i -eq $idx) {
                 [void]$sb.Append("$ESC[36m$line$ESC[0m$ESC[K`r`n")    # cyan
             } else {
@@ -200,11 +217,17 @@ function _TuiSelect {
         } else { '' }
         if ($numBuf) {
             [void]$sb.Append("$ESC[33m  pick: ${numBuf}_  (Enter to confirm, Esc to clear)${scroll}$ESC[0m$ESC[K`r`n")
+        } elseif ($MultiSelect) {
+            $nChecked = @($checked | Where-Object { $_ }).Count
+            [void]$sb.Append("$ESC[90m  (Space toggles, Up-Down to move, Enter confirms $nChecked selected, Esc/q cancels)${scroll}$ESC[0m$ESC[K`r`n")
         } else {
             [void]$sb.Append("$ESC[90m  (type digits / Up-Down to move, Enter to pick, Esc/q to cancel)${scroll}$ESC[0m$ESC[K`r`n")
         }
         $linesThisFrame++
-        if ($AllowAll) {
+        if ($MultiSelect) {
+            [void]$sb.Append("$ESC[90m  (press 'a' to toggle all)$ESC[0m$ESC[K`r`n")
+            $linesThisFrame++
+        } elseif ($AllowAll) {
             [void]$sb.Append("$ESC[90m  (press 'a' to select all)$ESC[0m$ESC[K`r`n")
             $linesThisFrame++
         }
@@ -228,7 +251,7 @@ function _TuiSelect {
 
         while ($true) {
             $k = [Console]::ReadKey($true)
-            $sel = $null; $cancel = $false; $all = $false
+            $sel = $null; $cancel = $false; $all = $false; $commitMulti = $false
 
             # Digits build up a numBuf and just move the cursor; commit on Enter.
             # Non-digit keys clear the buffer.
@@ -254,7 +277,8 @@ function _TuiSelect {
                 'PageDown'  { $idx = [Math]::Min($Items.Count - 1, $idx + $viewport); $numBuf = '' }
                 'Home'      { $idx = 0; $numBuf = '' }
                 'End'       { $idx = $Items.Count - 1; $numBuf = '' }
-                'Enter'     { $sel = $Items[$idx]; $numBuf = '' }
+                'Enter'     { if ($MultiSelect) { $commitMulti = $true } else { $sel = $Items[$idx] }; $numBuf = '' }
+                'Spacebar'  { if ($MultiSelect) { $checked[$idx] = -not $checked[$idx] }; $numBuf = '' }
                 'C'         {
                     if ($k.Modifiers -band [ConsoleModifiers]::Control) { $cancel = $true }
                 }
@@ -274,9 +298,21 @@ function _TuiSelect {
                         'k' { $idx = if ($idx -gt 0) { $idx - 1 } else { $Items.Count - 1 }; $numBuf = '' }
                         'j' { $idx = if ($idx -lt $Items.Count - 1) { $idx + 1 } else { 0 };               $numBuf = '' }
                         'q' { $cancel = $true }
-                        'a' { if ($AllowAll) { $all = $true } }
+                        'a' {
+                            if ($MultiSelect) {
+                                # Toggle all: if every row is already checked, clear;
+                                # otherwise check every row.
+                                $allChecked = -not (@(0..($Items.Count - 1) | Where-Object { -not $checked[$_] }).Count)
+                                for ($z = 0; $z -lt $Items.Count; $z++) { $checked[$z] = -not $allChecked }
+                            } elseif ($AllowAll) { $all = $true }
+                        }
                     }
                 }
+            }
+            if ($commitMulti) {
+                # Return the checked items in $Items order. Unary comma preserves an
+                # empty array (a real "nothing checked" answer, distinct from $null).
+                return ,@(for ($z = 0; $z -lt $Items.Count; $z++) { if ($checked[$z]) { $Items[$z] } })
             }
             if ($sel)    { return $sel }
             if ($all)    { return ,@($Items) }
@@ -822,6 +858,7 @@ function cdo ()   { cd $env:OZ_ROOT }
 function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
 function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
+function cdcsdk () { cd $env:OZ_ROOT\ziti-sdk-c }
 
 # MCP server launchers (shared). Each speaks stdio; run when you want the server
 # standalone. Paths resolve per-account: the zendesk launcher lives in the repo,
@@ -839,21 +876,121 @@ function mcp-start-discourse {
 function mcp-start-mercurius {
     & "$env:GH_ROOT\michaelquigley\mercurius\build.claude\mercurius.exe" --http 127.0.0.1:7337 --config "$env:GH_ROOT\michaelquigley\mercurius\mercurius.yaml" @args
 }
+function _ParseMcpGatewayConfig {
+    # Split an mcp-gateway config.yml into (Head, Entries, Tail) so a caller can
+    # rebuild it with only SOME backends enabled. Head is every line up to and
+    # including the top-level 'backends:' key. Each entry is one backend list item
+    # captured VERBATIM (its exact lines), with Id/Name pulled out for display.
+    # Tail is any top-level section that follows the backends block. No YAML library
+    # needed: the split keys off indentation, which this machine-written file keeps
+    # regular. A new entry is a '- ' at the SAME indent as the first one; deeper
+    # '- ' lines (a nested block list inside an entry) stay part of that entry.
+    param([Parameter(Mandatory)][string]$Path)
+    $lines = [System.IO.File]::ReadAllLines($Path)
+    $head    = New-Object System.Collections.Generic.List[string]
+    $tail    = New-Object System.Collections.Generic.List[string]
+    $entries = @()
+
+    $i = 0
+    $found = $false
+    while ($i -lt $lines.Count) {
+        $head.Add($lines[$i])
+        if ($lines[$i] -match '^backends:\s*(#.*)?$') { $i++; $found = $true; break }
+        $i++
+    }
+    if (-not $found) { return $null }
+
+    $cur = $null
+    $entryIndent = $null
+    for (; $i -lt $lines.Count; $i++) {
+        $ln = $lines[$i]
+        # A non-blank, non-comment line at column 0 ends the backends block.
+        if ($ln -match '^\S' -and $ln -notmatch '^\s*#') { break }
+
+        $isEntryStart = $false
+        if ($ln -match '^(\s+)-\s') {
+            $ind = $Matches[1].Length
+            if ($null -eq $entryIndent) { $entryIndent = $ind }
+            if ($ind -eq $entryIndent) { $isEntryStart = $true }
+        }
+        if ($isEntryStart) {
+            if ($cur) { $entries += ,$cur }
+            $cur = [pscustomobject]@{
+                Id = $null; Name = $null
+                Lines = (New-Object System.Collections.Generic.List[string])
+            }
+        }
+        if ($cur) {
+            $cur.Lines.Add($ln)
+            $bare = $ln -replace '^\s*-\s*', ''
+            if (-not $cur.Id   -and $bare -match '^\s*id:\s*["'']?([^"''#]+?)["'']?\s*(#.*)?$')   { $cur.Id   = $Matches[1].Trim() }
+            if (-not $cur.Name -and $bare -match '^\s*name:\s*["'']?([^"''#]+?)["'']?\s*(#.*)?$') { $cur.Name = $Matches[1].Trim() }
+        } else {
+            # blank/comment lines between 'backends:' and the first entry -> head
+            $head.Add($ln)
+        }
+    }
+    if ($cur) { $entries += ,$cur }
+    for (; $i -lt $lines.Count; $i++) { $tail.Add($lines[$i]) }
+
+    return [pscustomobject]@{ Head = $head; Entries = @($entries); Tail = $tail }
+}
+
 function mcp-start-mcp-gateway {
-    # Serve the aggregated tools over plain local HTTP (no zrok). Prompts for the
-    # listen address every run (Enter takes the default). Anything after gets passed
-    # straight to 'run'. Points at build.claude for now -- the only binary carrying
-    # the --listen flag until the PR merges and you rebuild build\ (or make build -> GOBIN).
-    $exe = "$env:OZ_ROOT\mcp-gateway\build.claude\mcp-gateway.exe"
-    $cfg = "$env:USERPROFILE\.mcp-gateway\config.yml"
-    Write-Host "mcp-gateway -- serve aggregated MCP tools over plain local HTTP (no zrok)" -ForegroundColor Cyan
-    Write-Host "  config: $cfg" -ForegroundColor DarkGray
+    # Serve a chosen subset of the aggregated MCP tools over plain local HTTP.
+    # Multi-select picker over the backends in config.yml, remembers the last
+    # selection, then writes a filtered config.active.yml and serves only those.
+    # Anything after the address prompt is passed straight to 'run'. Points at
+    # build.claude for now (the only binary carrying --listen until the PR merges).
+    $exe    = "$env:OZ_ROOT\mcp-gateway\build.claude\mcp-gateway.exe"
+    $cfgDir = "$env:USERPROFILE\.mcp-gateway"
+    $cfg    = Join-Path $cfgDir 'config.yml'
+    $active = Join-Path $cfgDir 'config.active.yml'
+    $selF   = Join-Path $cfgDir 'selection.json'
+
+    if (-not (Test-Path $cfg)) { Write-Host "no config at $cfg" -ForegroundColor Red; return }
+
+    $parsed = _ParseMcpGatewayConfig -Path $cfg
+    if (-not $parsed -or -not $parsed.Entries.Count) {
+        Write-Host "no 'backends:' entries found in $cfg" -ForegroundColor Red; return
+    }
+    $entries = $parsed.Entries
+
+    # Remembered ids -> preselected indices in this run's entry order.
+    $remembered = @()
+    if (Test-Path $selF) { try { $remembered = @(Get-Content $selF -Raw | ConvertFrom-Json) } catch {} }
+    $preIdx = @()
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        if ($remembered -contains $entries[$i].Id) { $preIdx += $i }
+    }
+
+    Write-Host "mcp-gateway -- pick which backends to serve (remembered from last run):" -ForegroundColor Cyan
+    $picked = _TuiSelect -Items $entries -MultiSelect -Preselected $preIdx `
+        -Prompt "backends -- Space toggles, 'a' all, Enter starts, Esc cancels:" `
+        -DisplayScript { param($e) '{0,-16} {1}' -f $e.Id, $e.Name }
+
+    if ($null -eq $picked) { Write-Host "  cancelled -- gateway not started" -ForegroundColor DarkGray; return }
+    $picked = @($picked)
+    if (-not $picked.Count) { Write-Host "  nothing selected -- gateway not started" -ForegroundColor Yellow; return }
+
+    # Persist the selection (ids, in entry order) for next run.
+    @($picked.Id) | ConvertTo-Json | Set-Content -Path $selF -Encoding UTF8
+
+    # Rebuild the config with only the selected backend blocks, kept verbatim.
+    $out = New-Object System.Collections.Generic.List[string]
+    $parsed.Head | ForEach-Object { $out.Add($_) }
+    foreach ($e in $picked) { $e.Lines | ForEach-Object { $out.Add($_) } }
+    $parsed.Tail | ForEach-Object { $out.Add($_) }
+    [System.IO.File]::WriteAllLines($active, $out)
+
+    Write-Host "  serving $($picked.Count) backend(s): $(@($picked.Id) -join ', ')" -ForegroundColor Green
+    Write-Host "  active config: $active" -ForegroundColor DarkGray
     Write-Host "  passthrough: --network agora | --agora-integration-file <path> | any 'run' flag" -ForegroundColor DarkGray
     $default = '127.0.0.1:8088'
     $addr = Read-Host "listen address [$default]"
     if ([string]::IsNullOrWhiteSpace($addr)) { $addr = $default }
     Write-Host "  -> http://$addr   (register: claude mcp add --transport http mcp-gateway http://$addr)" -ForegroundColor DarkGray
-    & $exe run $cfg --listen $addr @args
+    & $exe run $active --listen $addr @args
 }
 
 # Alias hygiene: drop the built-in aliases that shadow the real unix tools both

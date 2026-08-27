@@ -1132,6 +1132,31 @@ function Test-WorktreeIsSaved {
     return $false
 }
 
+function Clear-WorktreeSavedFlag {
+    # Flip Saved=$false on every session-registry entry for this worktree path.
+    # Used by 'gwt prune' when the user opts in to unsave-and-prune inline, so the
+    # Saved guard below lets the removal through. Returns the count cleared.
+    param([string]$WorktreePath)
+    $sessionDir = $script:SessionDir
+    if (-not (Test-Path $sessionDir)) { return 0 }
+    $norm = $WorktreePath.Replace('/', '\').TrimEnd('\').ToLower()
+    $n = 0
+    foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
+            if (-not $e.WorktreePath) { continue }
+            $epath = ($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+            if ($epath -ne $norm) { continue }
+            if ($e.PSObject.Properties['Saved'] -and $e.Saved) {
+                $e.Saved = $false
+                ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $f.FullName -Encoding UTF8
+                $n++
+            }
+        } catch {}
+    }
+    return $n
+}
+
 function Get-WorktreeStatuses {
     param([string]$Src)
     # Parse `git worktree list --porcelain` into (path, branch) pairs.
@@ -1315,6 +1340,24 @@ if ($Command -match '^https?://') {
         $script:Repo       = $Matches.repo
         $Target  = $Matches.ghsa
         $Command = 'advisory'
+    } elseif ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<base>[^/]+)-ghsa-(?<ghsa>[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})/tree/(?<branch>.+?)/?\s*$') {
+        # GitHub security-advisory TEMPORARY PRIVATE FORK. GitHub names the fork
+        # <base>-ghsa-xxxx-xxxx-xxxx and develops the fix on a branch inside it. This
+        # matches the fork's own /tree/<branch> URL (distinct from the
+        # .../security/advisories/GHSA-... page that drives the 'advisory' flow). The
+        # fork is just <base> plus a branch, so we treat it as <org>/<base>: 'ghsa'
+        # reuses the real clone, adds the fork as a remote, and lays a worktree on the
+        # fix branch -- no fat duplicate clone. The repo-name suffix (a real GHSA id:
+        # three groups of four) is the reliable signal, so a normal repo whose BRANCH
+        # merely mentions a GHSA won't match.
+        $script:RemoteHost   = $Matches.host
+        $script:Org          = $Matches.org
+        $script:Repo         = $Matches.base                                  # base repo, e.g. ziti
+        $script:GhsaForkRepo = "$($Matches.base)-ghsa-$($Matches.ghsa)"       # the temp fork repo name
+        $script:GhsaId       = $Matches.ghsa                                  # e.g. p6gx-g438-rjc8
+        $script:CloneBranch  = $Matches.branch                               # the fix branch on the fork
+        $Target  = $Command
+        $Command = 'ghsa'
     } elseif ($Command -match '^https?://[^/]+\.zendesk\.com/.*?/tickets/\d+') {
         $Target  = $Command
         $Command = 'zendesk'
@@ -1879,6 +1922,83 @@ switch ($Command) {
         }
         if ($y) { $pass.y = $true }
         & $PSCommandPath new $branch @pass
+    }
+
+    'ghsa' {
+        # Triggered by a security-advisory TEMP-FORK tree URL:
+        #   github.com/<org>/<base>-ghsa-xxxx-xxxx-xxxx/tree/<branch>
+        # The temp fork is <base> plus a fix branch, so we DON'T clone it as a separate
+        # repo (that duplicates the whole base repo). Instead: reuse the real <org>/<base>
+        # clone, add the fork as a remote, fetch the fix branch, and lay a worktree
+        # 'advisory-<ghsa>' on it -- reusing the base clone's objects (small fetch) and
+        # landing beside the other advisory-* worktrees.
+        $forkRepo = $script:GhsaForkRepo
+        $ghsa     = $script:GhsaId
+        $branch   = $script:CloneBranch
+        if (-not ($forkRepo -and $ghsa -and $branch)) {
+            throw "'ghsa' is URL-driven -- paste a github temp-fork tree URL (.../<repo>-ghsa-xxxx-xxxx-xxxx/tree/<branch>)"
+        }
+        $ctx    = Resolve-RepoContext          # Org + base Repo were set by URL parsing
+        [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
+        Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
+
+        # Add (or refresh) the temp fork as a remote, then fetch just the fix branch and
+        # point a local branch of the same name at it (so a push goes back to the fork).
+        $remote  = "ghsa-$ghsa"
+        $forkUrl = "https://$($ctx.RemoteHost)/$($ctx.Org)/$forkRepo.git"
+        if ((& git -C $ctx.Src remote 2>$null) -contains $remote) {
+            & git -C $ctx.Src remote set-url $remote $forkUrl 2>&1 | Out-Null
+        } else {
+            & git -C $ctx.Src remote add $remote $forkUrl 2>&1 | Out-Null
+        }
+        Write-Color "advisory temp fork: $($ctx.Org)/$forkRepo" Cyan
+        Write-Color "  remote '$remote' -> $forkUrl" DarkGray
+        & git -C $ctx.Src fetch $remote $branch 2>&1 | Out-Null
+        if (-not (& git -C $ctx.Src rev-parse --verify --quiet "$remote/$branch" 2>$null)) {
+            throw "couldn't fetch '$branch' from $remote ($forkUrl) -- auth? (private fork needs your gh/git credentials) or wrong branch name"
+        }
+        & git -C $ctx.Src branch -f $branch "$remote/$branch" 2>&1 | Out-Null
+
+        # Seed the spawned claude with how to READ this fix, so it doesn't repeat the
+        # dead end of querying the github API for the temp fork (a fine-grained PAT
+        # can't resolve <repo>-ghsa-* forks and 404s). The branch is already local.
+        $ghsaFull = "GHSA-$ghsa"
+        if (-not $Prompt) {
+            $lines = @(
+                "review security advisory $ghsaFull in $($ctx.Org)/$($ctx.Repo). the proposed fix is the branch checked out in THIS worktree ($branch); its tip commit is the fix."
+                "read the change LOCALLY -- do NOT query the github API for the temp fork: a fine-grained PAT cannot resolve <repo>-ghsa-* forks and will 404. git over ssh already fetched it."
+                "  the fix commit:   git show HEAD"
+                "  the branch delta: git log --oneline origin/main..HEAD   (or diff against the base release line the backport targets)"
+                "  the temp fork is remote 'ghsa-$ghsa' here if you need more of its branches."
+                "read the diff, then assess whether the fix fully closes the vulnerability and whether any code path it should cover is missed. propose findings before changing anything."
+            )
+            # Best-effort advisory body. Draft advisories need a classic PAT with repo
+            # admin; if the token can't read it, proceed -- the branch is enough.
+            try {
+                $raw = (& gh api "repos/$($ctx.Org)/$($ctx.Repo)/security-advisories/$ghsaFull" 2>$null | Out-String).Trim()
+                if ($raw) {
+                    $adv = $raw | ConvertFrom-Json
+                    if ($adv.severity)    { $lines += "severity: $($adv.severity)" }
+                    if ($adv.summary)     { $lines += "summary: $($adv.summary)" }
+                    if ($adv.description) { $lines += "details:`n$($adv.description)" }
+                }
+            } catch {}
+            $Prompt = $lines -join "`n`n"
+        }
+
+        $wtPath = Join-Path $ctx.WtRoot "advisory-$ghsa"
+        $existingWt = Get-WorktreePathForBranch $ctx.Src $branch
+        if ($existingWt) {
+            Write-Color "ready: $existingWt (branch $branch)" Green
+            _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+            _SetGwtCwdHint $existingWt
+            return
+        }
+        Ensure-Worktree $ctx.Src $wtPath $branch
+        Write-Color "ready: $wtPath (branch $branch, from $remote)" Green
+        _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
+        _SetGwtCwdHint $wtPath
     }
 
     'clone' {
@@ -5138,16 +5258,37 @@ switch ($Command) {
                     Write-Color "    -> gwt rm $branchFilter   (deletes regardless of state)" DarkGray
                 }
             }
+            # Paths we deliberately DID NOT try to remove (SAVED / LIVE). The
+            # survivor-verification below must skip these -- their dir surviving is
+            # by design, not a stuck delete, so crying "still exists" + running File
+            # Locksmith on them is a false alarm (they aren't even locked).
+            $skippedPaths = @()
             foreach ($wt in $prunable) {
                 $raw   = if ($wt.Reason) { "PRUNE $($wt.Reason)" } else { $wt.Status }
                 $label = $raw.PadRight(16)
+                # Set when the user answers the inline unsave prompt with yes -- that IS
+                # consent to remove this row, so the per-status switch below skips its
+                # own redundant remove? prompt for this worktree only.
+                $rowConsented = $false
 
                 # Saved guard: refuse to prune any worktree marked Saved in the session
                 # registry, even with -Force. User must `gwt sessions unsave <branch>` first.
                 if (Test-WorktreeIsSaved $wt.Path) {
                     Write-Color "  [SAVED   ] $($wt.Branch) @ $($wt.Path)" Cyan
-                    Write-Color "                    protected -- run 'gwt sessions unsave $($wt.Branch)' first" DarkGray
-                    continue
+                    Write-Color "                    protected by the Saved flag" DarkGray
+                    # Saved outranks -Force by design, so the unsave decision stays a
+                    # deliberate interactive Y/n even under -y. Answer no and we skip it
+                    # (and exclude it from the survivor check -- it isn't locked, just held).
+                    $r = Read-Host "                    unsave and prune it now? (y/N)"
+                    if ($r -notmatch '^[Yy]$') {
+                        Write-Color "                    left protected -- 'gwt sessions unsave $($wt.Branch)' to lift it yourself" DarkGray
+                        $skippedPaths += $wt.Path
+                        continue
+                    }
+                    $cleared = Clear-WorktreeSavedFlag $wt.Path
+                    Write-Color "                    unsaved ($cleared entr$(if ($cleared -eq 1){'y'}else{'ies'})) -- proceeding to prune" Yellow
+                    $rowConsented = $true
+                    # fall through to the removal switch below
                 }
 
                 # Live-session guard: a claude session (and its pwsh) running IN this
@@ -5163,13 +5304,14 @@ switch ($Command) {
                     Write-Color "  [LIVE    ] $($wt.Branch) @ $($wt.Path)" Yellow
                     Write-Color "                    a claude session is running here (pid $($aliveHere.Pid), window '$($aliveHere.WindowName)') -- it holds the folder open" Yellow
                     Write-Color "                    close that tab (or 'gwt focus $($aliveHere.Branch)' then exit), then re-run prune" DarkGray
+                    $skippedPaths += $wt.Path
                     continue
                 }
 
                 switch ($wt.Status) {
                     'PRUNE'            {
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Red
-                        $ok = $y -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
+                        $ok = $y -or $rowConsented -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "  remove? (Y/n)")) -or $r -match '^[Yy]$')
                         if ($ok) {
                             _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
@@ -5187,7 +5329,7 @@ switch ($Command) {
                         # and is otherwise healthy; default prompt to N because the user
                         # may have just typo'd the branch name.
                         Write-Color "  [$label] $($wt.Branch) @ $($wt.Path)" Yellow
-                        $ok = $y -or (($r = Read-Host "  -Force: delete ACTIVE worktree '$($wt.Branch)' (branch keeps its upstream; worktree dir is removed)? (y/N)") -match '^[Yy]$')
+                        $ok = $y -or $rowConsented -or (($r = Read-Host "  -Force: delete ACTIVE worktree '$($wt.Branch)' (branch keeps its upstream; worktree dir is removed)? (y/N)") -match '^[Yy]$')
                         if ($ok) {
                             _ChangeToMainFolder -Path $wt.Path -MainPath $repoPath
                             & git -C $repoPath worktree remove --force $wt.Path 2>&1 | Out-Null
@@ -5321,7 +5463,9 @@ switch ($Command) {
             # declined the force prompt, $prunable is empty and the dir surviving
             # is expected, not an error.
             if ($branchFilter -and $filterMatchedWorktree -and $prunable.Count -gt 0) {
-                $survivors = @($statuses | Where-Object { $_.Path -and (Test-Path $_.Path) })
+                $survivors = @($statuses | Where-Object {
+                    $_.Path -and ($skippedPaths -notcontains $_.Path) -and (Test-Path $_.Path)
+                })
                 if ($survivors.Count) {
                     foreach ($s in $survivors) {
                         Write-Color "  ERROR: '$($s.Path)' still exists -- prune did not remove it" Red
@@ -5697,6 +5841,7 @@ switch ($Command) {
         Write-Host "          .../pull/<num>          -> 'pr' (worktree for that PR)" -ForegroundColor DarkGray
         Write-Host "          .../issues/<num>        -> 'issue' (worktree branched off main, named issue-<num>)" -ForegroundColor DarkGray
         Write-Host "          .../security/advisories/GHSA-... -> 'advisory' (worktree off main, named advisory-<GHSA>)" -ForegroundColor DarkGray
+        Write-Host "          .../<repo>-ghsa-xxxx-xxxx-xxxx/tree/<branch> -> 'ghsa' (base clone + fork remote, worktree advisory-<ghsa> on the fix branch)" -ForegroundColor DarkGray
         Write-Host "          .../<org>/<repo>        -> 'clone' (clone if missing, open main)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt update-registry" -ForegroundColor Cyan

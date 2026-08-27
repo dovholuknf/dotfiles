@@ -5,6 +5,17 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 
 ## 2026
 
+- **2026-08-27** Denied the `Artifact` tool in `claude/settings.json` (deny: `Artifact`, `Artifact(*)`). After the agent
+  published an overview of clint's setup to a claude.ai-hosted Artifact WITHOUT authorization, clint (rightly furious)
+  ordered uploads prevented in hardware, not left to judgment. Nothing publishes off-machine from this account now.
+  See memory `no-external-upload-without-authorization`. Deliverables are local files by default; hosting is an
+  explicit, per-instance opt-in only.
+
+- **2026-08-26** Fixed the `githooks/pre-push` signature gate range. It verified `$r_sha..$l_sha`, so a
+  force-push after rebasing onto main flagged every upstream commit main advanced by (84 of them, none
+  clint's to sign). Now scopes to `$l_sha --not --remotes` -- commits genuinely new to any remote -- so real
+  commits still get checked and rebases stop tripping it.
+
 - **2026-08-21** Tab-registry reliability pass, after a wt tab-drag repeatedly nuked the layout. (1) `gwt tabs`
   show is now READ-ONLY -- it never rewrites or deletes `.tabs`; dead-pid tabs are shown marked `dead`, not
   stripped. Only `prune`/`clean` may remove entries. (2) The SessionEnd hook (`_UnregisterClaudeSession`) no

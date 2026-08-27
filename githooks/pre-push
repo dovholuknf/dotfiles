@@ -79,10 +79,12 @@ else
     while read -r l_ref l_sha r_ref r_sha; do
         case "$r_ref" in refs/heads/*) ;; *) continue ;; esac
         case "$l_sha" in *[!0]*) ;; *) continue ;; esac       # branch deletion, nothing to verify
-        case "$r_sha" in
-            *[!0]*) range="$r_sha..$l_sha" ;;                 # updating an existing branch
-            *)      range="$l_sha --not --remotes" ;;         # new branch, only its own commits
-        esac
+        # Verify only commits this push introduces that are not already on ANY
+        # remote-tracking ref. $r_sha..$l_sha looks tighter but breaks on a
+        # force-push after rebasing onto main: it then spans every upstream commit
+        # main advanced by, none of them yours to sign. --not --remotes scopes to
+        # what is genuinely new, which is all a client-side gate needs to vouch for.
+        range="$l_sha --not --remotes"
         for c in $(git rev-list $range 2>/dev/null); do
             if ! git verify-commit "$c" 2>/dev/null; then
                 bad="$bad $c"
