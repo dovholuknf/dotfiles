@@ -3,8 +3,8 @@
 I drive. The agent runs as its own Windows user. One box, two accounts, a worktree per task, and enough tooling
 around it that many agents stay useful and contained at the same time.
 
-This is an overview of the daily workflow. For the full rationale see [WHY.md](WHY.md), and for the reference docs
-see [CLAUDE.md](CLAUDE.md) and `powershell/docs/`.
+This is an overview of the daily workflow. For the full rationale see [../WHY.md](WHY.md), and for the reference docs
+see [../CLAUDE.md](CLAUDE.md) and `powershell/docs/`.
 
 ## The one idea: an agent is a user, not a chat window
 
