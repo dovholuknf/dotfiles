@@ -46,7 +46,8 @@ rule that the user runs every git and gh mutation. Never run `gh issue create` o
    - Otherwise propose one from context (the bug text, or the cwd's `origin` remote) and ask the user to confirm or
      correct it. Do not guess silently, and do not assume every bug targets the same repo. A bug list often spans
      repos.
-3. Build the issue body as clean markdown that preserves the experienced/expected content, with the labels bolded:
+3. Build the issue in clint's terse format. This is the part the skill exists to hold, so do not improvise a
+   writeup. The issue LEADS with the experienced/expected block and stays factual:
 
    ```
    **Experienced:** <what happened>
@@ -54,8 +55,24 @@ rule that the user runs every git and gh mutation. Never run `gh issue create` o
    **Expected:** <what should happen>
    ```
 
-   Keep it factual. Do not invent any detail the entry does not contain. If the entry has extra lines beyond
-   experienced/expected, carry them through verbatim.
+   - **Title:** short, aim ~10 words, hard cap under 20. Never a sentence-long title.
+   - **Lead:** the experienced/expected block above, terse, no exposition, no marketing adjectives. Keep it under
+     ~50 words when the source supports it.
+   - **Never invent.** Do not add any detail the entry does not contain. Keep the source's hedges.
+   - **Evidence goes under a fold, never as the lead.** When there IS real supporting material (a bisect table,
+     logs, controller output, proposed fixes, secondary observations), do NOT put it in the body proper. Put it in
+     a collapsed block after the lead, so the issue opens terse:
+
+     ```
+     <details><summary>Evidence</summary>
+
+     ...bisect table, logs, proposed fixes...
+
+     </details>
+     ```
+
+   The failure mode to avoid: an 81-line issue whose body is a bisect table and two proposed fixes. That buries the
+   experienced/expected lead clint wants and reads as exposition. Terse lead first, depth folded.
 4. Present, per bug, a short preview: target repo, title, body. Then the exact command. Put all the commands in ONE
    fenced block so the user can run them together:
 

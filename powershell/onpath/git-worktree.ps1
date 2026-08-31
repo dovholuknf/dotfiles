@@ -2335,7 +2335,7 @@ switch ($Command) {
         # The ticket id names the ZENDESK-<id>.md file, and the ticket URL is embedded
         # so claude can pull it (via the zendesk MCP). An explicit -Prompt overrides it.
         $ticketUrl     = "https://$zendeskHost/agent/tickets/$ticketId"
-        $zendeskPrompt = "read this zendesk ticket ($ticketUrl), summarize it here and in ZENDESK-$ticketId.md file. list any attachments on the ticket and tell me whether there are any, then ask me which to download (a Ziti Desktop Edge for Windows feedback bundle is usually a .zip -- the debug-ziti-desktop-edge-win skill analyzes those). then let's figure out how you and i can make a plan to answer the customer."
+        $zendeskPrompt = "read this zendesk ticket ($ticketUrl), summarize it here and in ZENDESK-$ticketId.md file. list any attachments on the ticket and tell me whether there are any, then ask me which to download (a Ziti Desktop Edge for Windows feedback bundle is usually a .zip -- the debug-ziti-desktop-edge-win skill analyzes those). download and extract any ticket attachments under C:\temp\support\nfsupport\$ticketId\ (NOT the session scratchpad -- support artifacts go in that durable tree). then let's figure out how you and i can make a plan to answer the customer."
 
         # Forward to 'new' with explicit host/org/repo so Resolve-RepoContext
         # doesn't need a cwd-based git remote.
@@ -4963,8 +4963,10 @@ switch ($Command) {
         if (Test-Path $ctx.WtRoot) {
             $registered = $statuses | ForEach-Object { $_.Path.Replace('\','/').ToLower() }
             Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
-                # Skip symlinks (e.g. our 'current' shortcut) -- they're not worktrees.
-                $_.LinkType -ne 'SymbolicLink'
+                # Skip the 'current' shortcut (symlink OR junction) -- not a worktree.
+                # Guard by name too: a junction with a missing target can report a
+                # null/odd LinkType, and must never show as an orphan worktree.
+                $_.LinkType -notin 'SymbolicLink','Junction' -and $_.Name -ne 'current'
             } | ForEach-Object {
                 $p     = $_.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
@@ -5051,8 +5053,10 @@ switch ($Command) {
         # definition aren't tied to a branch in git's view.
         if (-not $Target -and (Test-Path $ctx.WtRoot)) {
             Get-ChildItem $ctx.WtRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
-                # Skip symlinks (e.g. our 'current' shortcut) -- they're not worktrees.
-                $_.LinkType -ne 'SymbolicLink'
+                # Skip the 'current' shortcut (symlink OR junction) -- not a worktree.
+                # Guard by name too: a junction with a missing target can report a
+                # null/odd LinkType, and must never show as an orphan worktree.
+                $_.LinkType -notin 'SymbolicLink','Junction' -and $_.Name -ne 'current'
             } | ForEach-Object {
                 $p     = $_.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
@@ -5177,7 +5181,7 @@ switch ($Command) {
             $wtRootRepo = Join-Path (Join-Path (Join-Path $WorktreeRoot 'github') $orgPart) $repoPart
             if (Test-Path $wtRootRepo) {
                 foreach ($d in (Get-ChildItem $wtRootRepo -Directory -ErrorAction SilentlyContinue)) {
-                    if ($d.LinkType -eq 'SymbolicLink') { continue }                 # skip the 'current' link
+                    if ($d.LinkType -in 'SymbolicLink','Junction' -or $d.Name -eq 'current') { continue }  # skip the 'current' link (symlink or junction)
                     if ($registered -contains $d.FullName.Replace('\','/').ToLower()) { continue }  # real worktree
                     if (@(Get-ChildItem $d.FullName -Recurse -File -Force -ErrorAction SilentlyContinue).Count -gt 0) { continue }  # has files
                     if (Get-AliveSessionForPath $d.FullName) { continue }            # paranoia: live session
@@ -5402,7 +5406,7 @@ switch ($Command) {
 
             $orphanMatchFound = $false
             foreach ($d in (Get-ChildItem $wtRoot -Directory -ErrorAction SilentlyContinue)) {
-                if ($d.LinkType -eq 'SymbolicLink') { continue }   # skip 'current' and friends
+                if ($d.LinkType -in 'SymbolicLink','Junction' -or $d.Name -eq 'current') { continue }   # skip 'current' and friends (symlink or junction)
                 $p     = $d.FullName
                 $pNorm = $p.Replace('\','/').ToLower()
                 if ($registered -contains $pNorm) { continue }
@@ -5598,7 +5602,7 @@ switch ($Command) {
             foreach ($orgDir in (Get-ChildItem $hostDir.FullName -Directory -ErrorAction SilentlyContinue)) {
                 foreach ($repoDir in (Get-ChildItem $orgDir.FullName -Directory -ErrorAction SilentlyContinue)) {
                     foreach ($wtDir in (Get-ChildItem $repoDir.FullName -Directory -ErrorAction SilentlyContinue)) {
-                        if ($wtDir.LinkType -eq 'SymbolicLink') { continue }  # 'current' and other shortcuts
+                        if ($wtDir.LinkType -in 'SymbolicLink','Junction' -or $wtDir.Name -eq 'current') { continue }  # 'current' and other shortcuts (symlink or junction)
                         $rows += [PSCustomObject]@{
                             Host   = $hostDir.Name
                             Org    = $orgDir.Name

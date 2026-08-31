@@ -1,8 +1,9 @@
 # Throttled layout-history recorder. Wired into the UserPromptSubmit hook, so it
 # runs on every claude turn -- but does real work only once every ~10 minutes.
 # Each tick it appends the current window->tabs layout (from the ledger) to a
-# rolling 1-day JSONL history, so the tab layout is restorable to any recent point
-# even after the live registry churns (drag-kill, mass restart). Most invocations
+# rolling N-day JSONL history (default 7, so a week-plus vacation doesn't stomp it;
+# override with GWT_LAYOUT_HISTORY_DAYS), so the tab layout is restorable to any
+# recent point even after the live registry churns (drag-kill, mass restart). Most invocations
 # just read a stamp file and exit. Best-effort: never blocks claude, never throws.
 $ErrorActionPreference = 'SilentlyContinue'
 try {
@@ -12,6 +13,10 @@ try {
     $stamp  = Join-Path $watch '.layout-snap-stamp'
     $hist   = Join-Path $watch 'layout-history.jsonl'
     $now    = Get-Date
+
+    # How many days of history to retain. Rolling window: each capture drops lines
+    # older than this. Default 7 (survives a week-plus away); override via env.
+    $retainDays = if ($env:GWT_LAYOUT_HISTORY_DAYS) { [int]$env:GWT_LAYOUT_HISTORY_DAYS } else { 7 }
 
     # Throttle: do nothing unless 10 minutes have passed since the last capture.
     if (Test-Path $stamp) {
@@ -52,8 +57,8 @@ try {
     $line = ([ordered]@{ ts = $now.ToString('o'); tabs = $tabs } | ConvertTo-Json -Depth 5 -Compress)
     Add-Content -Path $hist -Value $line -Encoding UTF8
 
-    # Prune history older than 1 day (rewrite the small file each capture).
-    $cutoff = $now.AddDays(-1)
+    # Prune history older than the retention window (rewrite the file each capture).
+    $cutoff = $now.AddDays(-$retainDays)
     $kept = @(Get-Content $hist -ErrorAction SilentlyContinue | Where-Object {
         if ($_ -match '"ts":"([^"]+)"') { try { ([datetime]::Parse($Matches[1])) -ge $cutoff } catch { $true } } else { $false }
     })
