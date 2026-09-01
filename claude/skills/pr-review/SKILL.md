@@ -49,4 +49,9 @@ Render a single table using the `tabular` skill's rules (hard width cap, no over
 - One row per surviving finding.
 - Above the table, one verdict line only, for example `2 high, 3 medium (nits and low dropped)`. No other prose.
 
-End by offering to fix the agreed rows. Do not apply changes yourself.
+End with the table. Do NOT offer to fix the findings, and do NOT apply changes. This is a review only. If the
+user wants something fixed, they will ask for it in a separate request. No "want me to fix any of these?" line,
+no closing question, nothing after the table.
+
+The `Fix` column stays: it describes the suggested remediation as review content. That is not the same as offering
+to perform it. Describe the fix, do not propose to make it.

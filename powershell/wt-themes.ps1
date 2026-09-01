@@ -246,10 +246,35 @@ function Set-Theme {
         [Parameter(ParameterSetName='ByName')] [switch]$SetRepoTheme,
         # When set, suppresses the picker fallback and all output on no-match.
         # Used by the Prompt hook so auto-apply is silent when not in a mapped repo.
-        [Parameter(ParameterSetName='ByName')] [switch]$Quiet
+        [Parameter(ParameterSetName='ByName')] [switch]$Quiet,
+        # Internal: apply the theme WITHOUT pinning it. Used by the auto-apply paths
+        # (-UseRepoTheme and the tangent short-circuit) so only a MANUAL Set-Theme pins.
+        [Parameter(ParameterSetName='ByName')] [switch]$NoPin
     )
     process {
         if ($UseRepoTheme -or $SetRepoTheme) {
+            # A MANUAL Set-Theme <name> pins the theme (see the by-name apply below).
+            # The on-cd auto-apply fires as 'Set-Theme -UseRepoTheme -Quiet', so when a
+            # pin is set it leaves the theme alone. Running 'Set-Theme -UseRepoTheme'
+            # yourself (non-quiet) is the explicit "unpin and go back to auto".
+            if ($UseRepoTheme -and $Quiet -and $global:WtThemePinned) { return }
+            if ($UseRepoTheme -and -not $Quiet) { $global:WtThemePinned = $false }
+
+            # Any tangent dir (under <WtRoot>\tangents\) auto-themes as 'tangent', even a
+            # one-off not in the repo map. Short-circuit before the git/remote lookup.
+            if ($UseRepoTheme) {
+                $wtRootT = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
+                $tanRoot = (Join-Path $wtRootT 'tangents').TrimEnd('\')
+                $hereT   = $pwd.ProviderPath
+                if ($hereT.StartsWith("$tanRoot\", [System.StringComparison]::OrdinalIgnoreCase) -or $hereT -ieq $tanRoot) {
+                    $global:WtCurrentRepo = 'tangent'
+                    $global:WtThemeCanMap = $false
+                    if ($global:WtThemeName -ne 'tangent') { Set-Theme 'tangent' -NoPin }
+                    if (-not $Quiet) { Write-Host "  tangent -> 'tangent'" -ForegroundColor DarkGray }
+                    return
+                }
+            }
+
             $remote = git remote get-url origin 2>$null
             $repo   = $null
             if ($remote) {
@@ -288,7 +313,7 @@ function Set-Theme {
                     Write-Host "  no theme mapped for '$repo' -- pick one (Esc to skip)" -ForegroundColor DarkGray
                 }
                 while ($true) {
-                    Set-Theme
+                    Set-Theme -NoPin
                     $picked = $global:WtThemeName
                     if (-not $picked -or $picked -eq $mapped) { break }
                     $verb = if ($mapped) { "change '$repo' from '$mapped' to" } else { "save" }
@@ -308,7 +333,7 @@ function Set-Theme {
             # -UseRepoTheme: APPLY the mapped theme. -Quiet stays silent (prompt hook / spawn).
             if ($mapped) {
                 $global:WtThemeCanMap = $false
-                if ($global:WtThemeName -ne $mapped) { Set-Theme $mapped }
+                if ($global:WtThemeName -ne $mapped) { Set-Theme $mapped -NoPin }
                 if (-not $Quiet) {
                     Write-Host "  '$repo' -> '$mapped'  (Set-Theme -SetRepoTheme to change it)" -ForegroundColor DarkGray
                 }
@@ -445,6 +470,9 @@ function Set-Theme {
         }
         $script:_PendingThemeName = $Name
         Apply-Theme $script:WtThemes[$Name]
+        # A manual pick pins the theme so the on-cd auto-apply won't stomp it. Internal
+        # auto-apply callers pass -NoPin. Explicit 'Set-Theme -UseRepoTheme' unpins.
+        if (-not $NoPin) { $global:WtThemePinned = $true }
     }
 }
 

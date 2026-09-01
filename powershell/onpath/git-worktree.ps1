@@ -8,6 +8,9 @@
 #                                                # window named after the repo, themed
 #                                                # from the per-repo theme map
 #   gwt twig <branch>                 [-Prompt <str>] [-y]  # branch off current worktree's HEAD
+#   gwt tangent <name>                [-Prompt <str>] [-y]  # scratch dir under <WtRoot>\tangents\, opens claude
+#   gwt state                                              # where gwt keeps its state + cheap counts
+#   gwt status | gwt changes          [<branch>]           # show dirty/uncommitted worktrees
 #   gwt pr  <url-or-number>           [-Prompt <str>] [-y]
 #   gwt rm  <branch>                  [-y]
 #   gwt ls
@@ -66,6 +69,7 @@ param(
     [switch]$Fetch,         # 'prune': force a fresh fetch, ignoring the recent-fetch cache
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
+    [string]$Note,          # 'sessions save': attach a note to the saved session (re-save to rewrite it)
     [switch]$Usage,         # 'sessions list': show the verbose command-tips block
     [string]$SortBy,        # 'sessions usage': cost|tokens|recent (default: cost)
     [switch]$DryRun,        # 'sessions clean' / 'restore': preview targets without acting
@@ -76,6 +80,9 @@ param(
     [switch]$ExcludeActive, # 'sessions restore': drop currently-running sessions from the set (default: include them)
     [int]$Tail = 20,        # 'watch': how many lines of state.log to show before waiting
     [switch]$WithSize,      # 'summary': also walk each worktree for byte totals (slow)
+    [string]$Origin,        # internal: the original gwt command that started a worktree, threaded through
+                            # the 'new' forwards (advisory/zendesk/issue) so the durable history logs the
+                            # real origin instead of the internal 'new <branch>' call
     [switch]$Help
 )
 
@@ -494,7 +501,32 @@ function Ensure-Worktree {
         }
     }
     Invoke-Git $Src @('worktree','add',$WtPath,$Branch)
+    $srcNorm = $Src.Replace('/', '\').TrimEnd('\')
+    $repo    = '{0}/{1}' -f (Split-Path (Split-Path $srcNorm -Parent) -Leaf), (Split-Path $srcNorm -Leaf)
+    _AppendWorktreeHistory -Repo $repo -Branch $Branch -Path $WtPath
     Invoke-AgentSetup -Path $WtPath
+}
+
+function _AppendWorktreeHistory {
+    # Durable, append-only record of every worktree (and tangent) gwt creates. Lives
+    # OUTSIDE the repo and OUTSIDE the worktree tree (in $HOME\.gwt\), so a 'gwt prune',
+    # a bad rm, or a wiped worktree can never lose it. One JSON line each: when, repo,
+    # branch, path, and the gwt command that started it ($script:GwtOrigin, snapshotted
+    # before URL routing). Best-effort: never blocks or breaks creation.
+    param([string]$Repo, [string]$Branch, [string]$Path)
+    try {
+        $histDir = Join-Path $HOME '.gwt'
+        [System.IO.Directory]::CreateDirectory($histDir) | Out-Null
+        $rec = [ordered]@{
+            ts     = (Get-Date).ToString('o')
+            repo   = "$Repo"
+            branch = "$Branch"
+            path   = $Path.Replace('/', '\')
+            origin = "$script:GwtOrigin"
+        }
+        Add-Content -Path (Join-Path $histDir 'worktree-history.jsonl') `
+            -Value ($rec | ConvertTo-Json -Compress) -Encoding UTF8
+    } catch {}
 }
 
 function Invoke-AgentSetup {
@@ -912,6 +944,29 @@ function Get-AliveSessionForPath {
     return $null
 }
 
+function Get-AliveSessionForPathFast {
+    # Fast liveness pre-check: the ledger entry for this worktree path whose Pid is
+    # alive per _IsPidAlive (kernel32 OpenProcess, sub-millisecond). Unlike
+    # Get-AliveSessionForPath it does NOT build the CIM proc-map (~1.9s floor) and so
+    # skips the StartTime/CreationDate pid-reuse guard -- it can false-positive on a
+    # reused pid, which is fine for an early "is a claude open here?" warning. Returns
+    # the entry or $null. Callers wanting the precise answer still use the CIM one.
+    param([string]$WorktreePath)
+    $sessionDir = $script:SessionDir
+    if (-not $WorktreePath -or -not (Test-Path $sessionDir)) { return $null }
+    $norm = ($WorktreePath -replace '/', '\').TrimEnd('\').ToLower()
+    foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $e = Get-Content $f.FullName -Raw | ConvertFrom-Json
+            if (-not $e.WorktreePath) { continue }
+            if ((($e.WorktreePath -replace '/', '\').TrimEnd('\').ToLower()) -ne $norm) { continue }
+            if (-not ($e.Pid -and $e.Pid -ne 0)) { continue }
+            if (_IsPidAlive ([int]$e.Pid)) { return $e }
+        } catch {}
+    }
+    return $null
+}
+
 function _SetCurrentSymlink {
     # Maintain a stable "current" link at <WtRoot>\current -> $WorktreePath.
     # Uses a directory JUNCTION (reparse point) rather than a symlink: JetBrains
@@ -1316,6 +1371,13 @@ function Get-WorktreeStatuses {
 
 if ($Help -or -not $Command) { $Command = 'help' }
 
+# Snapshot the origin BEFORE the URL routing below rewrites $Command/$Target. This is
+# what the durable worktree-history logs as "the command I used to start the tree".
+# For 'gwt <url>' this captures the raw URL; for 'gwt new x' it captures 'new x'. An
+# explicit -Origin (passed by the internal 'new' forwards) wins, so a forwarded flow
+# records its real origin (e.g. 'advisory GHSA-...') not the internal 'new <branch>'.
+$script:GwtOrigin = if ($Origin) { $Origin } else { (@($Command, $Target) | Where-Object { $_ }) -join ' ' }
+
 if ($Command -match '^https?://') {
     # Two URL shapes get routed differently:
     #   1. <host>/<org>/<repo>/pull/<num>  -> 'pr' (existing behavior)
@@ -1508,7 +1570,7 @@ switch ($Command) {
             $script:RemoteHost = $Matches.host
             $script:Org        = $Matches.org
             $script:Repo       = $Matches.repo
-            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
+            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host; Origin = $script:GwtOrigin }
             if ($y) { $passArgs.y = $true }
             & $PSCommandPath issue $Matches.num @passArgs
             break
@@ -1517,7 +1579,7 @@ switch ($Command) {
             $script:RemoteHost = $Matches.host
             $script:Org        = $Matches.org
             $script:Repo       = $Matches.repo
-            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
+            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host; Origin = $script:GwtOrigin }
             if ($y) { $passArgs.y = $true }
             & $PSCommandPath advisory $Matches.ghsa @passArgs
             break
@@ -1530,7 +1592,7 @@ switch ($Command) {
             Write-Color "  detected $($Matches.host)/$($Matches.org)/$($Matches.repo) -- but no branch in that URL" Yellow
             $name = (Read-Host "  enter a worktree/branch name").Trim()
             if (-not $name) { throw "no name given -- aborted" }
-            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host }
+            $passArgs = @{ Org = $Matches.org; Repo = $Matches.repo; RemoteHost = $Matches.host; Origin = $script:GwtOrigin }
             if ($y) { $passArgs.y = $true }
             & $PSCommandPath new $name @passArgs
             break
@@ -1817,6 +1879,7 @@ switch ($Command) {
             Repo       = $ctx.Repo
             RemoteHost = $ctx.RemoteHost
             Prompt     = $Prompt
+            Origin     = $script:GwtOrigin
         }
         if ($y) { $pass.y = $true }
         & $PSCommandPath new $branch @pass
@@ -1919,6 +1982,7 @@ switch ($Command) {
             Repo       = $ctx.Repo
             RemoteHost = $ctx.RemoteHost
             Prompt     = $Prompt
+            Origin     = $script:GwtOrigin
         }
         if ($y) { $pass.y = $true }
         & $PSCommandPath new $branch @pass
@@ -2275,6 +2339,7 @@ switch ($Command) {
             Org        = $orgPart
             Repo       = $repoPart
             RemoteHost = $hostPart
+            Origin     = $script:GwtOrigin
         }
         $fwd.y       = $true   # discourse defaults to -y: auto-open claude in the auto (repo) window
         $fwd.Current = $true   # discourse defaults to -Current: point <WtRoot>\current at this worktree
@@ -2345,6 +2410,7 @@ switch ($Command) {
             Org        = $orgPart
             Repo       = $repoPart
             RemoteHost = $hostPart
+            Origin     = $script:GwtOrigin
         }
         $fwd.y       = $true   # zendesk defaults to -y: auto-open claude in the auto (repo) window
         $fwd.Current = $true   # zendesk defaults to -Current: point <WtRoot>\current at this worktree
@@ -4058,10 +4124,25 @@ switch ($Command) {
                     } else {
                         $e | Add-Member -NotePropertyName Saved -NotePropertyValue $val -Force
                     }
+                    # Note handling (save only). -Note overwrites; re-saving with a new
+                    # -Note rewrites it. A single interactive save with no -Note prompts,
+                    # showing any existing note in [brackets] and keeping it on empty input.
+                    $noteVal = if ($e.PSObject.Properties['Note']) { "$($e.Note)" } else { '' }
+                    if ($val) {
+                        if ($PSBoundParameters.ContainsKey('Note')) {
+                            $noteVal = $Note
+                        } elseif (-not $y -and -not $didSaveAll -and @($targets).Count -eq 1) {
+                            $hint  = if ($noteVal) { " [$noteVal]" } else { '' }
+                            $typed = Read-Host "  note for '$($m.Branch)'$hint (Enter to keep)"
+                            if (-not [string]::IsNullOrEmpty($typed)) { $noteVal = $typed }
+                        }
+                        if ($e.PSObject.Properties['Note']) { $e.Note = $noteVal } else { $e | Add-Member -NotePropertyName Note -NotePropertyValue $noteVal -Force }
+                    }
                     ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $m.File -Encoding UTF8
                     $word = if ($val) { 'saved' } else { 'unsaved' }
                     $col  = if ($val) { 'Green' } else { 'Yellow' }
                     Write-Color "  $word : $($m.Branch) @ $($m.WorktreePath)" $col
+                    if ($val -and $noteVal) { Write-Color "          note: $noteVal" DarkGray }
                 }
                 if ($didSaveAll) {
                     # Freeze the tab layout so 'restore -ByTabs' rebuilds it even after a clean
@@ -4459,7 +4540,8 @@ switch ($Command) {
                     $dir = $dir -replace '^.*\\worktrees\\github\\(openziti|netfoundry)\\','' -replace '^.*\\worktrees\\github\\','' -replace '^.*\\git\\github\\','' -replace '^.*\\worktrees\\',''
                     if (-not $dir) { $dir = if ($s.Label) { $s.Label } else { $s.Branch } }
                     $mg = if ($j) { $j.LastMsg } else { $null }
-                    [pscustomobject]@{ Tag = $tag; Last = $la; Dir = $dir; Msg = $mg }
+                    $nt = if ($s.PSObject.Properties['Note'] -and $s.Note) { "$($s.Note)" } else { $null }
+                    [pscustomobject]@{ Tag = $tag; Last = $la; Dir = $dir; Msg = $mg; Note = $nt }
                 }
                 $tableRows = @($tableRows | Sort-Object @{Expression={ if ($_.Last) { $_.Last } else { [datetime]::MinValue } }} -Descending)
 
@@ -4482,7 +4564,10 @@ switch ($Command) {
                 Write-Color $bar
                 foreach ($r in $tableRows) {
                     $laStr = if ($r.Last) { $r.Last.ToString('MM-dd HH:mm') } else { '?' }
-                    Write-Color ("| {0} | {1} | {2} | {3} |" -f (_TblCell $laStr $wL), (_TblCell $r.Tag $wS), (_TblCell $r.Dir $wD), (_TblCell $r.Msg $wM))
+                    # A saved note is a deliberate reminder, so it wins the last-column over
+                    # the auto-extracted last message. '* ' marks it as your note.
+                    $last  = if ($r.Note) { "* $($r.Note)" } else { $r.Msg }
+                    Write-Color ("| {0} | {1} | {2} | {3} |" -f (_TblCell $laStr $wL), (_TblCell $r.Tag $wS), (_TblCell $r.Dir $wD), (_TblCell $last $wM))
                 }
                 Write-Color $bar
                 Write-Color ""
@@ -4533,6 +4618,32 @@ switch ($Command) {
                 }
             }
         }
+    }
+
+    'tangent' {
+        # gwt tangent <name> [-Prompt <str>] [-y]
+        # Make a standalone scratch dir under <WorktreeRoot>\tangents\<name> (NOT a git
+        # checkout -- a tangent is throwaway/exploratory space) and open a claude session
+        # in it, grouped in the 'tangent' wt window. Example: gwt tangent worktree-pruning-help
+        if (-not $Target) { throw "'tangent' requires a name, e.g. gwt tangent worktree-pruning-help" }
+        # Sanitize to a safe dir leaf: keep word chars, dash, dot; collapse the rest to '-'.
+        $name = ($Target -replace '[^\w.\-]+', '-').Trim('-')
+        if (-not $name) { throw "couldn't derive a usable name from '$Target'" }
+
+        $tanPath = Join-Path (Join-Path $script:WtRoot 'tangents') $name
+        $fresh   = -not (Test-Path $tanPath)
+        [System.IO.Directory]::CreateDirectory($tanPath) | Out-Null
+        Write-Color "tangent: $tanPath$(if (-not $fresh) { '  (existing)' })" Cyan
+        if ($fresh) { _AppendWorktreeHistory -Repo 'tangents' -Branch $name -Path $tanPath }
+
+        # Active-session check before any picks, same as the other spawn flows.
+        if (-not (_ConfirmNoAliveSessionAt -Path $tanPath)) { return }
+        $promptText = if ($Prompt) { $Prompt } elseif ($y) { '' } else { Select-ClaudePrompt -Repo $name -Branch 'tangent' }
+        # Tangents always land in the 'tangent' window (grouped + themed), by design.
+        _OpenClaudeShell -Path $tanPath -Repo $name -Branch "tangent:$name" `
+                         -PromptText $promptText -WindowName 'tangent' -Force
+        _SetGwtCwdHint $tanPath
+        return
     }
 
     'claude' {
@@ -5154,6 +5265,22 @@ switch ($Command) {
         $orgExplicit  = $PSBoundParameters.ContainsKey('Org')
         $branchFilter = if (-not $orgExplicit -and $Target) { $Target } else { $null }
 
+        # FAST pre-check, before the fetch / scan / force-prompt: a live claude session
+        # in the named worktree blocks BOTH the removal (git can't delete an open dir)
+        # and deleting its branch (git refuses a checked-out branch). Bail in
+        # milliseconds and name it, instead of stringing the user through the slow path
+        # only to refuse at the end. Uses OpenProcess liveness (no CIM), so it adds no
+        # measurable time. The precise CIM-backed LIVE guard still runs later as a backstop.
+        if ($branchFilter -and $ctx) {
+            $liveEarly = Get-AliveSessionForPathFast (Join-Path $ctx.WtRoot $branchFilter)
+            if ($liveEarly) {
+                Write-Color "  [LIVE    ] $($liveEarly.Branch) @ $($liveEarly.WorktreePath)" Yellow
+                Write-Color "                    a claude session is running here (pid $($liveEarly.Pid), window '$($liveEarly.WindowName)') -- it holds the folder open" Yellow
+                Write-Color "                    close that tab (or 'gwt focus $branchFilter' then exit), then re-run prune" DarkGray
+                return
+            }
+        }
+
         foreach ($repoPath in $reposToProcess) {
             # In multi-repo mode (Org/Repo iteration), print a per-repo header;
             # in single-repo mode the 'detected:' line at the top already shows it.
@@ -5585,6 +5712,48 @@ switch ($Command) {
         & runas /user:claude /savecred "wt.exe -w `"$($h.WindowName)`" focus-tab$tabArg" 2>&1 | Out-Null
     }
 
+    'state' {
+        # Fast, read-only map of where gwt keeps its state and how much is there. No
+        # CIM, no per-worktree walks -- just existence + cheap counts. Split by tier:
+        # operational state under WORKTREE_ROOT (recoverable if lost) vs the durable
+        # record under HOME\.gwt (survives a prune / rm / wiped worktree).
+        function _StatRow {
+            param([string]$Label, [string]$Path, [scriptblock]$Metric)
+            $ok = Test-Path $Path
+            Write-Host ("  {0,-7}" -f $(if ($ok) { 'ok' } else { 'MISSING' })) -NoNewline -ForegroundColor $(if ($ok) { 'Green' } else { 'DarkYellow' })
+            Write-Host (" {0,-16} " -f $Label) -NoNewline -ForegroundColor Cyan
+            Write-Host $Path -NoNewline -ForegroundColor DarkGray
+            $m = if ($ok) { try { & $Metric } catch { '' } } else { '' }
+            if ($m) { Write-Host "   $m" -ForegroundColor White } else { Write-Host '' }
+        }
+        $watch  = Join-Path $script:WtRoot 'watch'
+        $winDir = Join-Path $script:WtRoot 'windows'
+        $histWt = Join-Path $script:WtRoot 'history'
+        $gwtDir = Join-Path $HOME '.gwt'
+        $whFile = Join-Path $gwtDir 'worktree-history.jsonl'
+
+        Write-Color "roots" Cyan
+        Write-Host ("  {0,-14} {1}" -f 'GIT_ROOT',      $SourceRoot)   -ForegroundColor DarkGray
+        Write-Host ("  {0,-14} {1}" -f 'WORKTREE_ROOT', $WorktreeRoot) -ForegroundColor DarkGray
+        Write-Host ("  {0,-14} {1}" -f 'HOME\.gwt',     $gwtDir)       -ForegroundColor DarkGray
+        Write-Host ""
+
+        Write-Color "operational state  (under WORKTREE_ROOT -- recoverable if lost)" Cyan
+        _StatRow 'sessions'    $script:SessionDir                    { '{0} ledger entries' -f @(Get-ChildItem $script:SessionDir -Filter '*.json' -ErrorAction SilentlyContinue).Count }
+        _StatRow 'windows'     $winDir                               { '{0} .tabs files'    -f @(Get-ChildItem $winDir -Filter '*.tabs' -ErrorAction SilentlyContinue).Count }
+        _StatRow 'state.log'   (Join-Path $watch 'state.log')        { '{0:N0} KB'          -f ((Get-Item (Join-Path $watch 'state.log')).Length / 1KB) }
+        _StatRow 'layout-hist' (Join-Path $watch 'layout-history.jsonl') { '{0} snapshots'  -f @(Get-Content (Join-Path $watch 'layout-history.jsonl') -ErrorAction SilentlyContinue).Count }
+        _StatRow 'recaps'      $histWt                               { '{0} recap files'    -f @(Get-ChildItem $histWt -Filter '*.md' -ErrorAction SilentlyContinue).Count }
+        Write-Host ""
+
+        Write-Color "durable state  (under HOME\.gwt -- survives prune / rm)" Cyan
+        _StatRow 'worktree-hist' $whFile                             { '{0} worktrees recorded' -f @(Get-Content $whFile -ErrorAction SilentlyContinue).Count }
+        _StatRow 'registry'      (Join-Path $gwtDir 'gwt-session-registry.ps1') { 'fallback copy (dotfiles copy normally wins)' }
+        Write-Host ""
+        Write-Color "live-session detail: gwt sessions   |   worktrees: gwt list / gwt summary" DarkGray
+        return
+    }
+
     'summary' {
         # Cross-repo worktree summary: count + optional on-disk size.
         # Walks $WorktreeRoot\<host>\<org>\<repo>\<branch>. Each branch dir is a
@@ -5814,6 +5983,14 @@ switch ($Command) {
         Write-Host "<branch> [-Prompt <str>] [-y]"
         Write-Host "        create a new worktree branched off the current worktree's HEAD" -ForegroundColor DarkGray
         Write-Host "        (shortcut for 'gwt new <branch> -From <current-branch>')" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt tangent " -NoNewline -ForegroundColor Cyan
+        Write-Host "<name> [-Prompt <str>] [-y]"
+        Write-Host "        make a scratch dir under <WtRoot>\tangents\<name> (not a git checkout)" -ForegroundColor DarkGray
+        Write-Host "        and open a claude session in it, grouped in the 'tangent' window" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    gwt state" -ForegroundColor Cyan
+        Write-Host "        show where gwt keeps its state (WORKTREE_ROOT vs HOME\.gwt) + cheap counts" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt discourse " -NoNewline -ForegroundColor Cyan
         Write-Host "<discourse-url> [-Prompt <str>] [-y]"

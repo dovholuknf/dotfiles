@@ -22,6 +22,15 @@
 # the universally-same ones below; per-user variations (PYTHON_HOME version
 # pin, ZITI_HOME base) are still declared in each profile.
 
+# ── Console encoding ─────────────────────────────────────────────────────────
+# Render UTF-8 correctly (em-dashes, arrows, box-drawing in gwt tables) instead of
+# CP437/CP850 mojibake like the classic ΓÇö for an em-dash. [Console]::OutputEncoding
+# fixes what the terminal displays; $OutputEncoding fixes what pwsh sends to native
+# tools, so the whole path is UTF-8. Guarded: a redirected / non-console host has no
+# console handle to set, and throwing there would break profile load for hooks.
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+$OutputEncoding = [Text.Encoding]::UTF8
+
 # ── PATH manipulation ────────────────────────────────────────────────────────
 
 function update-path {
@@ -859,6 +868,7 @@ function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
 function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 function cdcsdk () { cd $env:OZ_ROOT\ziti-sdk-c }
+function cdcs ()   { cd $env:OZ_ROOT\ziti-sdk-csharp }
 
 # MCP server launchers (shared). Each speaks stdio; run when you want the server
 # standalone. Paths resolve per-account: the zendesk launcher lives in the repo,

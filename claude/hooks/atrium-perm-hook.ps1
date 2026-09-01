@@ -13,8 +13,12 @@
 #   - reads the hook payload from stdin (JSON: tool_name, tool_input, ...)
 #   - for Bash calls it POSTs the command to the atrium hub at /permission
 #   - the POST blocks until the human at the hub types /approve N or /deny N
-#   - emits {decision:"approve"} or {decision:"block"} JSON to stdout, which
-#     claude-code obeys (skipping its own permission UI entirely)
+#   - emits a hookSpecificOutput block to stdout with permissionDecision set to
+#     allow or deny, which claude-code obeys (skipping its own permission UI)
+#   - when the human edited the request in the atrium board before approving it,
+#     the hub returns a `command` field and the hook passes it through as
+#     updatedInput, so what runs is what the human typed rather than what the
+#     agent asked for
 #
 # Pair with the existing pre-tool-use-hook.ps1: chain both into PreToolUse.
 # This script runs first; if it approves, the next hook still gets to refuse
@@ -102,7 +106,52 @@ try {
     $decision = if ($resp.decision -eq 'approve') { 'approve' } else { 'block' }
     $reason   = if ($resp.reason) { $resp.reason } else { "via atrium hub" }
 
-    @{ decision = $decision; reason = $reason } | ConvertTo-Json -Compress
+    # The hub returns a `command` field when the human edited the request before
+    # approving it. Map that display string back onto the tool's own input
+    # shape, mirroring how $cmd was built above. A rewrite only applies to an
+    # approval: a block already carries its guidance in $reason.
+    $updated = $null
+    if ($decision -eq 'approve' -and $resp.command -and "$($resp.command)" -ne $cmd) {
+        $edited = "$($resp.command)"
+        $updated = @{}
+        # Copy every original field first, then overwrite the edited one.
+        # Sending a partial tool_input would drop the other arguments.
+        if ($json.tool_input) {
+            foreach ($p in $json.tool_input.PSObject.Properties) { $updated[$p.Name] = $p.Value }
+        }
+        if ($json.tool_input.command) {
+            $updated['command'] = $edited
+        }
+        elseif ($json.tool_input.file_path) {
+            # File tools are shown as `<path> <- (what is happening)`. Only the
+            # path is real input, so drop the annotation before using it.
+            $sep = $edited.IndexOf(' <- ')
+            $updated['file_path'] = if ($sep -ge 0) { $edited.Substring(0, $sep).Trim() } else { $edited.Trim() }
+        }
+        elseif ($json.tool_input.url)     { $updated['url'] = $edited }
+        elseif ($json.tool_input.pattern) { $updated['pattern'] = $edited }
+        else {
+            # The fallback path showed raw JSON, so an edit has to parse back as
+            # JSON or there is nothing safe to do with it.
+            try {
+                $parsed = $edited | ConvertFrom-Json -ErrorAction Stop
+                $updated = @{}
+                foreach ($p in $parsed.PSObject.Properties) { $updated[$p.Name] = $p.Value }
+            } catch { $updated = $null }
+        }
+    }
+
+    # Current hook output shape. permissionDecision replaces the older
+    # decision/reason pair, and updatedInput is the only way to rewrite what
+    # actually runs.
+    $hookOut = @{
+        hookEventName            = 'PreToolUse'
+        permissionDecision       = $(if ($decision -eq 'approve') { 'allow' } else { 'deny' })
+        permissionDecisionReason = $reason
+    }
+    if ($updated) { $hookOut['updatedInput'] = $updated }
+
+    @{ hookSpecificOutput = $hookOut } | ConvertTo-Json -Compress -Depth 8
     exit 0
 } catch {
     # Hub unreachable / hook borked: fail OPEN (let claude's normal permission
