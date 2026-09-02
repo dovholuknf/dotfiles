@@ -869,6 +869,7 @@ function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }
 function cdcsdk () { cd $env:OZ_ROOT\ziti-sdk-c }
 function cdcs ()   { cd $env:OZ_ROOT\ziti-sdk-csharp }
+function cdds ()   { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
 
 # MCP server launchers (shared). Each speaks stdio; run when you want the server
 # standalone. Paths resolve per-account: the zendesk launcher lives in the repo,

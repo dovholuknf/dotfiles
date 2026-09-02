@@ -48,9 +48,35 @@ function _AtriumWired {
     return $false
 }
 
-if (-not $forceGate -and -not (_AtriumWired)) { exit 0 }
-
 $hubUrl = if ($env:ATRIUM_HUB_URL) { $env:ATRIUM_HUB_URL.TrimEnd('/') } else { 'http://localhost:7777' }
+
+# What this session calls itself. Resolved before the gate check, because the
+# daemon is asked about this exact name and `atrium join` uses the same rule.
+$agentName = if ($env:ATRIUM_AGENT_NAME) {
+    $env:ATRIUM_AGENT_NAME
+} else {
+    Split-Path -Leaf (Get-Location).Path
+}
+
+# Has this session joined atrium while running?
+#
+# Gating used to be decided once, here, from the environment, which fixed the
+# answer for the life of the session. Asking the daemon is what makes
+# `atrium join` and `atrium leave` take effect immediately. An unreachable
+# daemon means no gating, matching the fail-open posture of the rest of this
+# script.
+function _AtriumJoined {
+    param([string]$Name)
+    try {
+        $resp = Invoke-RestMethod -Uri "$hubUrl/gate?agent=$([uri]::EscapeDataString($Name))" `
+            -Method Get -TimeoutSec 2 -ErrorAction Stop
+        return [bool]$resp.gate
+    } catch {
+        return $false
+    }
+}
+
+if (-not $forceGate -and -not (_AtriumWired) -and -not (_AtriumJoined $agentName)) { exit 0 }
 
 try {
     $raw = [Console]::In.ReadToEnd()
@@ -89,7 +115,59 @@ try {
     }
     $agent = if ($env:ATRIUM_AGENT_NAME) { $env:ATRIUM_AGENT_NAME } else { Split-Path -Leaf (Get-Location).Path }
 
-    $body = @{ agent = $agent; tool = $toolName; command = $cmd } | ConvertTo-Json -Compress
+    # Report the runner's own process, not this hook's. Atrium uses it to tell a
+    # live session from a dead one by asking the operating system, which costs
+    # nothing, rather than asking the runner, which would cost a turn.
+    #
+    # This script runs as a grandchild of the runner, so walk up the parent
+    # chain until something that looks like the runner turns up. Best effort:
+    # a pid of 0 just means atrium cannot check liveness for this session.
+    $runnerPid = 0
+    try {
+        $walk = $PID
+        for ($i = 0; $i -lt 6 -and $walk -gt 0; $i++) {
+            $p = Get-CimInstance Win32_Process -Filter "ProcessId=$walk" -ErrorAction Stop
+            if (-not $p) { break }
+            if ($i -gt 0 -and $p.Name -match '^(claude|node)(\.exe)?$') { $runnerPid = [int]$p.ProcessId; break }
+            $walk = [int]$p.ParentProcessId
+        }
+    } catch {}
+
+    # What is actually changing. A path says which file, not what happens to
+    # it, and "approve this edit" is not answerable without seeing the edit.
+    # Capped so a huge write does not turn into a wall of text on the board.
+    $maxDetail = 6000
+    $details = ''
+    if ($json.tool_input) {
+        if ($json.tool_input.new_string -ne $null -or $json.tool_input.old_string -ne $null) {
+            $old = "$($json.tool_input.old_string)"
+            $new = "$($json.tool_input.new_string)"
+            $details = "--- removing`n$old`n`n+++ adding`n$new"
+        }
+        elseif ($json.tool_input.content -ne $null) {
+            $details = "+++ writing`n$($json.tool_input.content)"
+        }
+        elseif ($json.tool_input.edits) {
+            # MultiEdit carries a list of replacements.
+            $parts = foreach ($e in $json.tool_input.edits) {
+                "--- removing`n$($e.old_string)`n`n+++ adding`n$($e.new_string)"
+            }
+            $details = ($parts -join "`n`n=== next edit ===`n`n")
+        }
+    }
+    if ($details.Length -gt $maxDetail) {
+        $details = $details.Substring(0, $maxDetail) +
+            "`n`n... truncated, $($details.Length - $maxDetail) more characters"
+    }
+
+    $body = @{
+        agent   = $agent
+        tool    = $toolName
+        command = $cmd
+        pid     = $runnerPid
+        cwd     = "$($json.cwd)"
+        details = $details
+    } | ConvertTo-Json -Compress
 
     # No client-side timeout: the hook blocks as long as it takes the human to
     # answer. Claude-code's own hook timeout (set in settings.json) is the upper

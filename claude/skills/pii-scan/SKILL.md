@@ -13,6 +13,9 @@ description: >
 
 Find PII and secrets in content so it can be scrubbed before sharing. Detection first, redaction only on request.
 
+Scope: this scans arbitrary CONTENT (a support bundle, a file, a pasted block). To vet a git diff before pushing,
+use the `safe-to-push` skill, which runs this same secret+PII pass as one layer plus diff-specific checks.
+
 ## Safety (non-negotiable)
 
 - Local only. NEVER upload, post, email, or send the content OR the findings to any external service, tool, or network

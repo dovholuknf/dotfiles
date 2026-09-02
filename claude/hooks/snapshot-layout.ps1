@@ -25,22 +25,30 @@ try {
         if ($last -and ($now - $last).TotalMinutes -lt 10) { exit 0 }
     }
 
-    # Capture the current layout from the ledger: newest session per EXISTING
-    # worktree (the working set), grouped by window. Paths/windows are stable even
-    # when pids churn, so a history line stays restorable regardless of liveness.
-    # Working set only: recently-active sessions (an open tab fires hooks, so its
-    # LastStateChange is recent), newest per existing worktree. Without this, the
-    # capture balloons to every worktree on disk.
-    $recent = $now.AddHours(-18)
+    # Capture EVERY open tab: a session whose claude process is still ALIVE (pid
+    # running), grouped by window, newest session per existing worktree. Liveness is
+    # the right filter, not recency: it captures a tab left open and idle for days,
+    # while still excluding dead/old worktrees, so the capture never balloons to every
+    # worktree on disk. (An earlier version cut on an 18h LastStateChange window, which
+    # wrongly dropped open-but-idle tabs.)
+    #
+    # Build a pid -> process map once so liveness is O(1) per ledger entry, and guard
+    # pid reuse by matching the process StartTime to the session's recorded StartTime.
+    $procById = @{}
+    try { foreach ($pp in (Get-Process -ErrorAction SilentlyContinue)) { $procById[[int]$pp.Id] = $pp } } catch {}
+
     $sessDir = Join-Path $wtRoot 'sessions'
     $seen = @{}
     $tabs = @()
     foreach ($f in (Get-ChildItem $sessDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
         try { $e = Get-Content $f.FullName -Raw | ConvertFrom-Json } catch { continue }
         if (-not ($e.WtSession -and $e.WindowName -and $e.WorktreePath)) { continue }
-        $last = if ($e.LastStateChange) { $e.LastStateChange } elseif ($e.LastSpawnedAt) { $e.LastSpawnedAt } else { $e.SpawnedAt }
-        $lastDt = $null; try { $lastDt = [datetime]::Parse($last) } catch {}
-        if (-not $lastDt -or $lastDt -lt $recent) { continue }
+        if (-not ($e.Pid) -or [int]$e.Pid -eq 0) { continue }
+        $proc = $procById[[int]$e.Pid]
+        if (-not $proc) { continue }                 # pid not running -> tab not open
+        if ($e.StartTime) {                          # guard pid reuse
+            try { if ([math]::Abs(($proc.StartTime - [datetime]::Parse("$($e.StartTime)")).TotalSeconds) -gt 2) { continue } } catch {}
+        }
         $p   = ($e.WorktreePath -replace '/', '\').TrimEnd('\')
         $key = $p.ToLower()
         if ($seen.ContainsKey($key)) { continue }

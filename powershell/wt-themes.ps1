@@ -34,6 +34,7 @@ $script:OriginalPSReadLineColors = $null
 # Map repo name (last segment of origin URL, no .git) -> theme name.
 # use-repotheme reads this to snap to the right palette for the current repo.
 $script:RepoThemes = @{
+    'atrium' = 'active-light'
     'ziti-openwrt' = 'ocean-deep'
     'appetizer' = 'active-work'
     'zrok' = 'electric-purple'
@@ -654,6 +655,83 @@ $theme_active_work = @{
     }
 }
 
+# mint: a light-background theme -- pale green ground with a dark, saturated
+# palette (the inverse of active-work's light-on-dark).
+$theme_mint = @{
+    label  = 'mint'
+    bg     = '#9ad4a8'
+    fg     = '#12301e'
+    cursor = '#0d5a2a'
+    sel_bg = '#5fb277'
+    sel_fg = '#0a2413'
+    ansi = @(
+        '#12301e',  # 0  black -- dark text on the pale bg
+        '#a52828',  # 1  red
+        '#1e7a33',  # 2  green
+        '#8a6410',  # 3  amber
+        '#1f50aa',  # 4  blue
+        '#8f2f82',  # 5  magenta
+        '#0e746c',  # 6  cyan
+        '#2a4634',  # 7  "white" -> dark muted (a foreground on light bg)
+        '#4d6a55',  # 8  bright black -> mid gray-green
+        '#c03434',  # 9  bright red
+        '#2a9440',  # 10 bright green
+        '#a5760f',  # 11 bright amber
+        '#2660c6',  # 12 bright blue
+        '#a83a98',  # 13 bright magenta
+        '#118a80',  # 14 bright cyan
+        '#0a2413'   # 15 bright white -> darkest text
+    )
+    psr = @{
+        Parameter          = '#8a6410'
+        Operator           = '#1f4030'
+        Member             = '#255a3a'
+        Comment            = '#5a7a60'
+        Number             = '#a04a10'
+        ContinuationPrompt = '#2a7a44'
+        Error              = '#b02020'
+    }
+}
+
+# Lighter sibling of active-work: light-on-dark palette on a lighter green ground.
+# Tokens run brighter than active-work's to hold contrast on the lighter bg, and the
+# reds lean salmon (a pure red vibrates on green; a lighter salmon separates cleanly).
+$theme_active_light = @{
+    label  = 'active-light'
+    bg     = '#1c5a2b'
+    fg     = '#edf8ed'
+    cursor = '#9affa6'
+    sel_bg = '#3f8250'
+    sel_fg = '#f4fbec'
+    ansi = @(
+        '#123a1e',  # 0
+        '#ff9a92',  # 1  red -> salmon, brighter (reads on green)
+        '#90ec90',  # 2  green
+        '#f2d888',  # 3
+        '#94aef2',  # 4  blue
+        '#ec9ce0',  # 5  magenta
+        '#7ce4d2',  # 6  cyan
+        '#e4f2e4',  # 7
+        '#8aac8a',  # 8
+        '#ffaba2',  # 9  bright salmon
+        '#b8f8b8',  # 10
+        '#ffe6a0',  # 11
+        '#b0ccff',  # 12
+        '#f4bcec',  # 13
+        '#a6f8e8',  # 14
+        '#f4fbec'   # 15
+    )
+    psr = @{
+        Parameter          = '#ffe2a0'   # flags -- brighter amber
+        Operator           = '#e2f2e2'
+        Member             = '#dcf0e0'
+        Comment            = '#a2c4a2'
+        Number             = '#ffc8a0'
+        ContinuationPrompt = '#9ad8a8'
+        Error              = '#ffa098'   # salmon-red, brighter
+    }
+}
+
 $theme_pull_requests = @{
     label  = 'pull-requests'
     bg     = '#0a2a6a'
@@ -729,6 +807,8 @@ $theme_tangent = @{
 # ── shortcut commands ─────────────────────────────────────────────────────────
 
 function ActiveWork   { $script:_PendingThemeName = 'active-work';   Apply-Theme $theme_active_work }
+function ActiveLight  { $script:_PendingThemeName = 'active-light';  Apply-Theme $theme_active_light }
+function Mint         { $script:_PendingThemeName = 'mint';          Apply-Theme $theme_mint }
 function PullRequests { $script:_PendingThemeName = 'pull-requests'; Apply-Theme $theme_pull_requests }
 function Tangent      { $script:_PendingThemeName = 'tangent';       Apply-Theme $theme_tangent }
 function Worktrees    { $script:_PendingThemeName = 'worktrees';     Apply-Theme $theme_worktrees }
@@ -903,6 +983,8 @@ $script:WtThemes = @{
     # gwt-window themes (each also has a convenience function: ActiveWork, etc.)
     'worktrees'      = $theme_worktrees
     'active-work'    = $theme_active_work
+    'active-light'   = $theme_active_light
+    'mint'           = $theme_mint
     'pull-requests'  = $theme_pull_requests
     'tangent'        = $theme_tangent
     # bonus themes -- Set-Theme '<name>' only, no shortcut function.

@@ -5,6 +5,11 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 
 ## 2026
 
+- **2026-09-02** Added a python block to `pre-tool-use-hook.ps1`, mirroring the existing perl guard. Blocks
+  `python`/`python3`/`python.exe` invoked as a Bash command (start or after a pipe/compound) with a nudge to use
+  bash or PowerShell, or ask if python is genuinely required. Matches only real invocations, not paths, `grep python`,
+  `pip`, or `pythonpath`. Reason: clint wants the agent to reach for bash/pwsh first, not python.
+
 - **2026-08-27** Denied the `Artifact` tool in `claude/settings.json` (deny: `Artifact`, `Artifact(*)`). After the agent
   published an overview of clint's setup to a claude.ai-hosted Artifact WITHOUT authorization, clint (rightly furious)
   ordered uploads prevented in hardware, not left to judgment. Nothing publishes off-machine from this account now.

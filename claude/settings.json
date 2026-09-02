@@ -275,6 +275,11 @@
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -FromPayloadSource",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/atrium-session-hook.ps1 -Event start",
+            "timeout": 8
           }
         ]
       }
@@ -286,6 +291,11 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State ended",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/atrium-session-hook.ps1 -Event end",
             "timeout": 5
           },
           {

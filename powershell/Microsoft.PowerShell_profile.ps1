@@ -49,7 +49,6 @@ function cdghdov () { cd $env:GH_DOVH }
 function cdda () { cd $env:DOTAGENTS }
 function cddf () { cd $env:DOTFILES }
 function cdop () { cd $env:ON_PATH }
-function cdds() { cd $env:GH_ROOT\netfoundry\docusaurus-shared }
 
 function StartMcpGateway {
     # forwards to the shared launcher in common-tools.ps1 (both accounts have it)

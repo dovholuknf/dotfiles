@@ -127,6 +127,17 @@ if ($json.tool_name -eq "Bash") {
 		exit 0
 	}
 
+	# No python by default. Matches python / python3 / python.exe invoked as the command
+	# (start, or after a pipe/compound), not 'python' inside a path or words like
+	# 'pythonpath'. A nudge, not an absolute: rework in bash/pwsh, or ask if it's truly needed.
+	if ($cmd -match '(^|;|\||\n|&&)\s*python3?(\.exe)?\b') {
+		@{
+			decision = "block"
+			reason   = "Do not use python unless bash or PowerShell genuinely cannot solve the problem. Prefer bash, pwsh, or the dedicated file/search/edit tools. If python is actually required for this, say why and ask the user first."
+		} | ConvertTo-Json -Compress
+		exit 0
+	}
+
 	# Docker: forbid inline env-var prefixes; env must be passed via flags
 	if ($cmd -match '^\s*([A-Za-z_]\w*=\S+\s+)+docker\b') {
 		@{
