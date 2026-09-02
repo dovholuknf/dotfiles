@@ -26,7 +26,7 @@
 # hook that runs this often has no room for any of it.
 
 param(
-    [ValidateSet('tool-start', 'tool-end', 'prompt', 'subagent-end', 'idle')]
+    [ValidateSet('tool-start', 'tool-end', 'prompt', 'subagent-end', 'idle', 'waiting')]
     [string]$Event = 'tool-start'
 )
 

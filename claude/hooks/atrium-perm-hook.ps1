@@ -160,13 +160,32 @@ try {
             "`n`n... truncated, $($details.Length - $maxDetail) more characters"
     }
 
+    # Identifies this attempt, so a retry is recognised as the same question
+    # rather than asked again. Built from the session and the exact request, so
+    # it is stable across a retry and different for a genuinely new call.
+    #
+    # The failure mode this closes: atrium crashes between recording a decision
+    # and answering, the hook retries, and the operator is asked the same thing
+    # twice. The second answer is then given against a situation that has
+    # already moved on.
+    $dedupKey = ''
+    try {
+        $material = "$($json.session_id)|$agent|$toolName|$cmd"
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($material))
+        $dedupKey = -join ($hash[0..11] | ForEach-Object { $_.ToString('x2') })
+    } catch {
+        # A missing key means "treat this as new", which is the old behaviour.
+    }
+
     $body = @{
-        agent   = $agent
-        tool    = $toolName
-        command = $cmd
-        pid     = $runnerPid
-        cwd     = "$($json.cwd)"
-        details = $details
+        agent     = $agent
+        tool      = $toolName
+        command   = $cmd
+        pid       = $runnerPid
+        cwd       = "$($json.cwd)"
+        details   = $details
+        dedup_key = $dedupKey
     } | ConvertTo-Json -Compress
 
     # No client-side timeout: the hook blocks as long as it takes the human to
