@@ -17,6 +17,7 @@
 #   gwt prune                         [-y]          # current repo, all worktrees
 #   gwt prune <branch>                [-y]          # current repo, one worktree
 #   gwt prune -Org <org> [-Repo <r>]  [-y]          # whole org (or one repo)
+#   gwt prune -Recapped               [-y]          # cross-repo: remove every recapped, non-live worktree (dry-run w/o -y)
 #   gwt cd  <branch>                                # cd to that branch's worktree (needs profile wrapper)
 #   gwt rehome <branch>               [-Prompt <s>] # re-home THIS tab onto another worktree + relaunch claude
 #   gwt <url>                         [-y]          # bare URL shorthand for pr
@@ -67,6 +68,7 @@ param(
     [switch]$IncludeDuplicates,
     [switch]$NoFetch,       # 'list' / 'update' / 'prune': skip the initial 'git fetch' (faster, may be stale)
     [switch]$Fetch,         # 'prune': force a fresh fetch, ignoring the recent-fetch cache
+    [switch]$Recapped,      # 'prune': cross-repo sweep of recapped, non-live worktrees (dry-run unless -y/-Force)
     [string]$Window,        # 'sessions restore' override / 'sessions save|unsave|clean' exact-window filter
     [string]$Name,          # 'sessions save|unsave|clean|restore' exact-branch filter
     [string]$Note,          # 'sessions save': attach a note to the saved session (re-save to rewrite it)
@@ -91,6 +93,13 @@ $ErrorActionPreference = 'Stop'
 # Spawning, theming, hook dispatch, session-tracking, and listing/recovery
 # helpers all live in claude-shell.ps1 -- shared between gwt and claudeshell.
 . (Join-Path $PSScriptRoot '..\claude-shell.ps1')
+
+# _GetGwtSessions / _StampSessionRecap live in the session registry. An interactive
+# `gwt` already has them (clint's profile sources it), but a standalone
+# `pwsh -File git-worktree.ps1` (and the 'prune -Recapped' sweep) needs them too.
+if (-not (Get-Command _GetGwtSessions -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot '..\gwt-session-registry.ps1')
+}
 
 # Path roots: env-var driven with historical defaults. Mirrors the values
 # claude-shell.ps1 computes; kept script-scoped here so helper functions can
@@ -1710,14 +1719,27 @@ switch ($Command) {
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
-        if ($Current) {
+        # 'current' link on new. Default 'set': point <WtRoot>\current at the new
+        # worktree and just TELL you (the _SetCurrentSymlink call prints the arrow).
+        # Revert per-invocation or via env: GWT_NEW_CURRENT=ask restores the old
+        # prompt, =off leaves 'current' untouched. -Current always forces the set.
+        $curMode = if ($env:GWT_NEW_CURRENT) { $env:GWT_NEW_CURRENT.Trim().ToLower() } else { 'set' }
+        if ($Current -or $curMode -eq 'set') {
+            Write-Color "  pointing 'current' at the new worktree (GWT_NEW_CURRENT=ask to be prompted, =off to skip):" DarkGray
             _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath
-        } else {
+        } elseif ($curMode -eq 'ask') {
             $r = Read-Host "activate this worktree (point '$($ctx.WtRoot)\current' here)? (y/N)"
             if ($r -match '^[Yy]$') { _SetCurrentSymlink -WtRoot $ctx.WtRoot -WorktreePath $wtPath }
         }
-        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject
-        _SetGwtCwdHint $wtPath
+        # 'off' falls through: leave 'current' alone.
+
+        # Moving THIS shell into the new worktree is OFF by default -- 'gwt new' rarely
+        # needs it, so the shell stays in the main clone. Restore the old cd-into-new
+        # behavior with GWT_NEW_CD=1. The claude-tab spawn ('open in claude?') is
+        # unaffected either way -- only this shell's cwd is held put.
+        $stayPut = ($env:GWT_NEW_CD -ne '1')
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject -NoCd:$stayPut
+        if (-not $stayPut) { _SetGwtCwdHint $wtPath }
     }
 
     'current' {
@@ -4531,6 +4553,9 @@ switch ($Command) {
                     else                                                            { $tag = 'ABORTED'; $abortedCount++ }
                     if ($s.Saved)               { $tag = 'SAVED' }
                     if ($s.Alive -and $s.State) { $tag = "$tag/$($s.State)" }
+                    # '+r' marks a session whose work was captured by /recap. It is the
+                    # signal that this folder is safe to prune (gwt prune -Recapped).
+                    if ($s.PSObject.Properties['RecapPath'] -and $s.RecapPath) { $tag = "$tag +r" }
                     $j  = _SessionJournal $s.ClaudeSessionId
                     $la = if ($j -and $j.LastActive) { $j.LastActive }
                           elseif ($s.LastStateChange) { try { [datetime]$s.LastStateChange } catch { $null } }
@@ -5223,6 +5248,79 @@ switch ($Command) {
     }
 
     'prune' {
+        # -Recapped: a cross-repo sweep, not the normal per-repo prune. Target every
+        # ledger session that carries a RecapPath (its work is captured by /recap) and
+        # is NOT alive, and remove that worktree folder. Dry-run by default; -y/-Force
+        # actually deletes. SAVED is always kept. Only paths under the worktree root are
+        # eligible, so a main clone is never touched. This is the aggressive folder
+        # reclaimer for sessions already recapped.
+        if ($Recapped) {
+            $wtRootNorm = $script:WtRoot.Replace('\','/').ToLower()
+            $cands = @()
+            foreach ($s in @(_GetGwtSessions)) {
+                if (-not ($s.PSObject.Properties['RecapPath'] -and $s.RecapPath)) { continue }
+                if ($s.Alive)  { continue }
+                if ($s.Saved)  { continue }
+                if (-not $s.WorktreePath) { continue }
+                $p  = ($s.WorktreePath -replace '/','\').TrimEnd('\')
+                $pn = $p.Replace('\','/').ToLower()
+                if (-not $pn.StartsWith($wtRootNorm + '/')) { continue }   # worktrees only, never a main clone
+                $cands += [pscustomobject]@{
+                    Branch = $s.Branch; Path = $p; Recap = "$($s.RecapPath)"; File = $s.File; Exists = (Test-Path $p)
+                }
+            }
+            # One representative per worktree path.
+            $cands = @($cands | Group-Object { $_.Path.ToLower() } | ForEach-Object { $_.Group | Select-Object -First 1 })
+
+            if (-not $cands.Count) {
+                Write-Color "no recapped, non-live worktrees to prune. (recap a session first: /recap, then 'gwt prune -Recapped')" DarkGray
+                return
+            }
+
+            Write-Color "`nrecapped worktrees eligible for prune ($($cands.Count)):" Cyan
+            foreach ($c in $cands) {
+                $suffix = if ($c.Exists) { '' } else { '  (folder already gone; ledger only)' }
+                Write-Color ("  {0,-28} {1}{2}" -f $c.Branch, $c.Path, $suffix)
+                Write-Color ("      recap: {0}" -f $c.Recap) DarkGray
+            }
+
+            if (-not ($y -or $Force)) {
+                Write-Color ""
+                Write-Color "  dry-run. re-run 'gwt prune -Recapped -y' to remove these folders (the recaps are kept)." Yellow
+                return
+            }
+
+            # Derive the main clone for a worktree path: <WtRoot>\<host>\<org>\<repo>\<branch>
+            # maps to <GitRoot>\<host>\<org>\<repo>.
+            function script:_MainCloneForWorktree([string]$wt) {
+                $rel  = $wt.Substring($script:WtRoot.Length).TrimStart('\')
+                $segs = $rel -split '\\'
+                if ($segs.Count -lt 3) { return $null }
+                Join-Path (Join-Path (Join-Path $script:GitRoot $segs[0]) $segs[1]) $segs[2]
+            }
+
+            foreach ($c in $cands) {
+                if ($c.Exists) {
+                    if (Get-AliveSessionForPathFast $c.Path) {
+                        Write-Color "  [LIVE   ] $($c.Branch) @ $($c.Path) -- skipped (a session is running here)" Yellow
+                        continue
+                    }
+                    $src = _MainCloneForWorktree $c.Path
+                    if (-not ($src -and (Test-Path $src))) {
+                        Write-Color "  [SKIP   ] $($c.Path) -- could not resolve its main clone" Yellow
+                        continue
+                    }
+                    # Remove-Worktree carries the under-root guard, the live guard, the cd-out,
+                    # 'git worktree remove --force', the force-dir removal, and repoints 'current'.
+                    Remove-Worktree -Src $src -WtPath $c.Path -AutoConfirm
+                    if (Test-Path $c.Path) { continue }   # removal failed; keep the ledger entry as a breadcrumb
+                }
+                if ($c.File -and (Test-Path $c.File)) { Remove-Item $c.File -Force -ErrorAction SilentlyContinue }
+            }
+            Write-Color "`n  done." Green
+            return
+        }
+
         # If $Target looks like a path (., .., contains a backslash, or is
         # rooted with a drive letter), resolve it to an absolute path and peel
         # off the last folder. That folder name is the branch under gwt's

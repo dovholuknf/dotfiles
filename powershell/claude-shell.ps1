@@ -373,7 +373,8 @@ function _OpenClaudeShell {
 
 function _ConfirmOpenOrCd {
     param([string]$Path, [string]$Repo, [string]$Branch, [string]$PromptOverride, [switch]$AutoOpen,
-          [switch]$ByProject)   # group the tab into a per-project window named after $Repo
+          [switch]$ByProject,   # group the tab into a per-project window named after $Repo
+          [switch]$NoCd)        # never move THIS shell: skip the 'cd there?' fallback, leave the shell put
 
     # The trailing _SetGwtCwdHint (in the caller) writes the cwd-hint the profile
     # wrapper follows. Default to letting it run; set this true only when the user
@@ -405,6 +406,10 @@ function _ConfirmOpenOrCd {
         $promptText = if ($PromptOverride) { $PromptOverride }
                       else { Select-ClaudePrompt -Repo $Repo -Branch $Branch }
         _OpenClaudeShell -Path $Path -Repo $Repo -Branch $Branch -PromptText $promptText -WindowName $window -Force
+    } elseif ($NoCd) {
+        # Caller wants this shell held put (gwt new default). Don't offer 'cd there?';
+        # suppress the trailing hint so the wrapper leaves the shell where it is.
+        $global:_GwtSuppressCd = $true
     } else {
         $cd = Read-Host "cd there? (Y/n)"
         if (-not ([string]::IsNullOrWhiteSpace($cd) -or $cd -match '^[Yy]$')) {

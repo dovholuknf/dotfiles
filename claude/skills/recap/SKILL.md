@@ -26,6 +26,20 @@ so mine them carefully and lead the reader to them.
     (e.g. `ziti-tunnel-sdk-c-refactor-needs-mfa-2026-08-19-1503--REOPENED.md`). This makes the messy
     sessions spottable in the history dir at a glance.
 
+## Check for an existing recap FIRST
+
+Before writing anything, look for a recap this session already has, and UPDATE it instead of writing a duplicate:
+
+1. The session ledger is the primary signal. `gwt sessions` stamps `RecapPath` on the entry for this worktree
+   when a recap was written (via `stamp-recap.ps1`). Read the ledger entry for the current worktree
+   (`$env:WORKTREE_ROOT\sessions\*.json`, match `WorktreePath` to cwd); if it has a `RecapPath` and that file
+   exists, that is the recap to update.
+2. Fallback if no stamp: glob `D:\worktrees\history\<repo>-<branch>-*.md` (include the `--REOPENED` variants). A
+   match for this same repo/branch is almost certainly this session's recap.
+3. If one is found, UPDATE it in place: keep its original filename and timestamp, refresh the sections that changed,
+   add any new false finishes, and re-run the stamp/artifact steps. Do NOT write a second file with a new timestamp.
+4. Only when nothing matches do you create a new recap.
+
 ## Gathering the material
 
 1. **Prefer your own context.** You lived the session, so you already know the thread, the false finishes,
@@ -69,10 +83,34 @@ prose). Sections, in this order:
 - Report faithfully. Failing tests get named, skipped steps get named, "done" means verified done.
 - No hype, no marketing adjectives, no wrap-up cheerleading.
 
+## Capturing debug artifacts
+
+A recap is the point where a worktree becomes safe to prune, so anything the session made that is worth
+keeping has to leave the worktree WITH the recap. After writing the markdown, sweep the session's debug
+artifacts into a sibling folder next to the recap:
+
+- Destination: `D:\worktrees\history\<same-stem>-artifacts\`, where `<same-stem>` is the recap filename
+  without `.md` (and without `--REOPENED`). Create it only if there is something to put in it.
+- What to collect: files this session created for its own debugging, not the repo's own output. The
+  session scratchpad (the temp `...\scratchpad` dir named in the environment preamble) is the main source:
+  any timing scripts, parse-check scripts, dumps, captured logs, sample outputs. Also copy any debug file
+  the session deliberately wrote elsewhere that you remember making (a crash dump you pulled, a log you
+  saved, a repro script).
+- Copy, do not move, and never reach into the repo tree or delete anything. If the scratchpad is empty and
+  the session made no artifacts, skip this step and say so.
+- In the recap's Follow-ups (or a one-line note at the end), name the artifacts folder and what is in it,
+  so a later reader knows the debug trail was preserved.
+
 ## After writing
 
+- Stamp the gwt session ledger so `gwt sessions` shows this folder as recapped (a `+r` marker) and
+  `gwt prune -Recapped` can target it. Run, from the worktree:
+  `stamp-recap.ps1 -RecapPath '<full path to the recap .md>'`
+  (it is on PATH; it defaults the worktree to the current directory and no-ops cleanly if this worktree
+  was never gwt-spawned). Do this even when there were no artifacts to capture.
 - Print the path you wrote, then one reminder line, e.g.
   `recap written: <path> (N false finishes) -- you thought this shit was done.`
+  If artifacts were captured, add `artifacts: <folder> (K files)`.
 - If nothing of substance happened this session, say so and skip the file rather than writing an empty
   recap.
 - Never commit. If the history root should be tracked, that is the user's call to make.

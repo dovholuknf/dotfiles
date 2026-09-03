@@ -22,6 +22,11 @@ param(
 $gate = "$($env:ATRIUM_PERM_GATE)".Trim().ToLower()
 if ($gate -eq 'off') { exit 0 }
 
+# Timing probe: this hook once cost up to ~6.5s from a per-PID CIM ancestor walk.
+# Logs its own elapsed ms so a future regression is visible without guessing.
+$__sw = [System.Diagnostics.Stopwatch]::StartNew()
+$__dbg = 'D:\worktrees\watch\hook-debug.log'
+
 try {
     $raw = [Console]::In.ReadToEnd()
     $payload = $null
@@ -35,14 +40,21 @@ try {
 
     # The runner's own process, so atrium can check liveness for free later.
     # This script runs as a descendant of it, so walk up until it turns up.
+    # ONE Win32_Process enumeration into an in-memory pid->{name,parent} map, then
+    # walk the map. A per-PID filtered CIM call costs ~1s each on this box, so the
+    # old six-hop loop cost up to ~6.5s per SessionStart. See CLAUDE.md pitfalls.
     $runnerPid = 0
     try {
+        $procMap = @{}
+        foreach ($p in (Get-CimInstance Win32_Process -ErrorAction Stop)) {
+            $procMap[[int]$p.ProcessId] = @{ Name = "$($p.Name)"; Parent = [int]$p.ParentProcessId }
+        }
         $walk = $PID
         for ($i = 0; $i -lt 6 -and $walk -gt 0; $i++) {
-            $p = Get-CimInstance Win32_Process -Filter "ProcessId=$walk" -ErrorAction Stop
+            $p = $procMap[$walk]
             if (-not $p) { break }
-            if ($i -gt 0 -and $p.Name -match '^(claude|node)(\.exe)?$') { $runnerPid = [int]$p.ProcessId; break }
-            $walk = [int]$p.ParentProcessId
+            if ($i -gt 0 -and $p.Name -match '^(claude|node)(\.exe)?$') { $runnerPid = $walk; break }
+            $walk = $p.Parent
         }
     } catch {}
 
@@ -64,4 +76,8 @@ try {
 } catch {
     # Atrium not running, or not reachable. Nothing to do about it here.
 }
+try {
+    $__sw.Stop()
+    Add-Content -Path $__dbg -Value ("{0}  atrium-session  event={1}  {2:N0} ms" -f (Get-Date).ToString('o'), $Event, $__sw.Elapsed.TotalMilliseconds)
+} catch {}
 exit 0

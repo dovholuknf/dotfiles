@@ -707,6 +707,30 @@ function cleanup-ziti {
 # a one-time map hint, and PS>. State is kept in globals so it behaves the same
 # whichever profile calls it. Set-Theme comes from wt-themes.ps1, sourced after
 # this file, which is fine because the prompt only runs after the profile loads.
+# Derive a wt tab title from the cwd, mirroring the repo path layout: a clone at
+# <GIT_ROOT>\<host>\<org>\<repo> or a worktree at <WORKTREE_ROOT>\<host>\<org>\<repo>\<branch>
+# yields org/repo (the host segment is dropped). Worktrees append ` @ <branch>` so
+# sibling worktrees don't collide. A path under neither root falls back to the leaf.
+function _WtTabTitle {
+    param([string]$Cwd)
+    $gitRoot = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' }
+    $wtRoot  = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
+    $c = $Cwd.TrimEnd('\')
+    foreach ($root in @($gitRoot, $wtRoot)) {
+        $r = $root.TrimEnd('\')
+        if ($c.StartsWith($r + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            $seg = $c.Substring($r.Length + 1) -split '\\'
+            if ($seg.Count -ge 3) {
+                $title = $seg[1,2] -join '/'
+                if ($r -ieq $wtRoot.TrimEnd('\') -and $seg.Count -ge 4) { $title += " @ $($seg[3])" }
+                return $title
+            }
+            return ($seg[-1])
+        }
+    }
+    return (Split-Path $c -Leaf)
+}
+
 function _WtPrompt {
     $cwd = $pwd.ProviderPath
     if ($cwd -ne $global:_WtLastThemeCwd) {
@@ -714,6 +738,7 @@ function _WtPrompt {
         if (Get-Command Set-Theme -ErrorAction SilentlyContinue) {
             Set-Theme -UseRepoTheme -Quiet
         }
+        try { $Host.UI.RawUI.WindowTitle = _WtTabTitle $cwd } catch {}
     }
 
     if ($global:WtCurrentRepo) {
@@ -744,7 +769,10 @@ function _WtPrompt {
     If (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Host "[Admin]" -NoNewLine -ForegroundColor "Red"
     }
-    if ($global:WtLabel) {
+    # Apply-Theme copies the theme's own label into WtLabel, so for a theme whose
+    # label equals its name this would render '[dracula] [dracula]'. Show the label
+    # only when it says something the theme tag doesn't.
+    if ($global:WtLabel -and $global:WtLabel -ne $global:WtThemeName) {
         Write-Host "[$global:WtLabel] " -NoNewLine -ForegroundColor "DarkCyan"
     }
     if ($global:WtThemeName) {

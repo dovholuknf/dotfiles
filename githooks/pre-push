@@ -50,12 +50,23 @@ if [ -n "$blocked" ]; then
         :   # explicit one-shot override
     elif [ -e /dev/tty ]; then
         printf '\n  BLOCKED: this push updates %s on "%s".\n' "$blocked" "$remote" > /dev/tty
-        printf '  to always allow main here, add this line to your allowlist %s\n    %s\n' "$allowfile" "$id" > /dev/tty
-        printf '  Type yes to allow this push once: ' > /dev/tty
+        printf '  allowlist: %s\n    entry: %s\n' "$allowfile" "$id" > /dev/tty
+        printf "  Type 'yes' to allow once, 'always' to add it to the allowlist, anything else aborts: " > /dev/tty
         read -r answer < /dev/tty
         case "$answer" in
-            yes|YES) printf '  allowed.\n' > /dev/tty ;;
-            *)       printf '  aborted.\n' > /dev/tty; exit 1 ;;
+            always|ALWAYS|a|A)
+                if [ -n "$id" ]; then
+                    mkdir -p "$(dirname "$allowfile")" 2>/dev/null
+                    if ! { [ -f "$allowfile" ] && grep -qxF "$id" "$allowfile" 2>/dev/null; }; then
+                        printf '%s\n' "$id" >> "$allowfile"
+                    fi
+                    printf "  added '%s' to %s -- future main pushes here skip this prompt.\n" "$id" "$allowfile" > /dev/tty
+                else
+                    printf '  could not derive a repo id from the remote; allowed once instead.\n' > /dev/tty
+                fi
+                ;;
+            yes|YES|y|Y) printf '  allowed once.\n' > /dev/tty ;;
+            *)           printf '  aborted.\n' > /dev/tty; exit 1 ;;
         esac
     else
         printf 'pre-push: refusing to update %s (no terminal; allowlist it or set GIT_ALLOW_MAIN=1)\n' "$blocked" 1>&2

@@ -51,6 +51,37 @@ Working list for clint + claude. Check items off as they land. Dates are absolut
 - [ ] Optional deeper scan: `accesschk -uwqs "<host>\claude" C:\` (full writable surface) and
   `accesschk -uwcqv "<host>\claude" *` (services/tasks claude can write, a path to SYSTEM).
 
+## Settings reconcile (backlog, added 2026-09-03)
+
+The live `C:\Users\claude\.claude\settings.json` diverged from the tracked `dotfiles\claude\settings.json`
+and is no longer the symlink (it is a real file now). The live copy is NEWER: an atrium session added a
+compiled hook dispatcher `D:/git/github/dovholuknf/atrium/build.claude/atrium.exe hook --event <e>` on
+top of the existing pwsh hooks. Do NOT blind-copy live -> repo; reconcile deliberately.
+
+What the live file has that the repo copy lacks:
+- `atrium.exe hook --event` calls, ADDITIVE (alongside, not replacing the pwsh hooks): `tool-start`
+  (PreToolUse), `tool-end` (PostToolUse, repo had this empty), `prompt` (UserPromptSubmit),
+  `subagent-start` (new SubagentStart matcher), `subagent-end` (SubagentStop).
+- `Bash(sha256sum:*)` in allow.
+- `blockReadsOutsideWorkingDirectories: false` (already set this session; uncontroversial, land it).
+
+Open questions before reconciling:
+1. Is `atrium.exe hook` meant to REPLACE the pwsh atrium hooks (`atrium-perm-hook.ps1`,
+   `atrium-session-hook.ps1`, `log-subagent.ps1`)? Today both run, so atrium gets double-reported and
+   every tool call spawns extra processes. If yes, the reconcile retires the redundant .ps1 atrium hooks.
+2. Perf: `tool-start` + `tool-end` fire on EVERY tool call = 2 `atrium.exe` spawns per tool. Measure its
+   cold start before committing it; this is the same per-call tax that made SessionStart slow.
+3. Hardcoded path: `D:/git/github/dovholuknf/atrium/build.claude/atrium.exe` violates the repo's
+   no-hardcoded-path rule and points at a `build.claude/` artifact. Route it through an env var (e.g.
+   `$env:ATRIUM_BIN`) or a resolver before tracking it.
+4. Re-divergence cause: claude-code writes `~/.claude/settings.json` in place when permissions/hooks are
+   edited (e.g. /permissions, auto-mode), which REPLACES the symlink with a real file. So a plain symlink
+   for settings.json is fragile. Decide: accept periodic re-sync, or stop symlinking settings.json and
+   sync it via a step instead.
+
+Plan once the above are answered: settle the atrium.exe question, de-hardcode the path, copy the agreed
+result into `dotfiles\claude\settings.json`, restore the symlink (or the chosen sync), commit.
+
 ## Back burner
 
 - [ ] WSL/ziti blog post: set the `authors:` key and move it to the real blog posts dir.

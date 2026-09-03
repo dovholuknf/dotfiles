@@ -144,13 +144,20 @@ function _RegisterGwtSession {
 # we fall back to "process exists" as the liveness signal).
 function _GetGwtSessions {
     _Ensure-GwtSessionDir
+    # ONE Win32_Process enumeration into a pid->proc map (CreationDate kept for the
+    # pid-reuse guard below). A per-PID filtered CIM call costs ~1s each on this box,
+    # so looking one up per session made `gwt sessions` scale at ~1s per row. CIM is
+    # used (not Get-Process) because it sees other users' processes; Get-Process does not.
+    $procMap = @{}
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+        $procMap[[int]$_.ProcessId] = $_
+    }
     Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
         try {
             $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
             $alive = $false
             if ($e.Pid -and $e.Pid -ne 0) {
-                # CimInstance works cross-user; Get-Process doesn't see other users' procs.
-                $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$($e.Pid)" -ErrorAction SilentlyContinue
+                $cim = $procMap[[int]$e.Pid]
                 if ($cim) {
                     if ($e.StartTime -and $cim.CreationDate) {
                         $alive = [math]::Abs(($cim.CreationDate - [datetime]::Parse($e.StartTime)).TotalSeconds) -lt 2
@@ -171,4 +178,35 @@ function _RemoveStaleGwtSessions {
         Remove-Item $_.File -Force -ErrorAction SilentlyContinue
         Write-Host ("  removed stale: {0} ({1})" -f $_.Branch, $_.WindowName) -ForegroundColor DarkGray
     }
+}
+
+# Stamp the session entry for a worktree with the recap that was just written.
+# The recap skill calls this after writing its markdown. Sets RecapPath + RecapAt
+# on the newest entry whose WorktreePath matches (defaults to the current cwd),
+# which is what lets 'gwt sessions' show a recap marker and 'gwt prune -Recapped'
+# target folders whose work is already captured. No-op (returns $false) if no
+# entry matches; recapping a worktree that was never gwt-spawned is fine.
+function _StampSessionRecap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RecapPath,
+        [string]$WorktreePath
+    )
+    _Ensure-GwtSessionDir
+    $target = if ($WorktreePath) { $WorktreePath } else { (Get-Location).Path }
+    $target = ($target -replace '/', '\').TrimEnd('\')
+    $match = Get-ChildItem $script:GwtSessionDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $e = Get-Content $_.FullName -Raw | ConvertFrom-Json
+            if ($e.WorktreePath -and (($e.WorktreePath -replace '/', '\').TrimEnd('\')) -ieq $target) {
+                [pscustomobject]@{ Entry = $e; File = $_.FullName; When = "$($e.LastSpawnedAt)" }
+            }
+        } catch {}
+    } | Sort-Object When -Descending | Select-Object -First 1
+    if (-not $match) { return $false }
+    $e = $match.Entry
+    $e | Add-Member -NotePropertyName RecapPath -NotePropertyValue $RecapPath -Force
+    $e | Add-Member -NotePropertyName RecapAt   -NotePropertyValue ((Get-Date).ToString('o')) -Force
+    ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $match.File -Encoding UTF8
+    return $true
 }
