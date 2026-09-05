@@ -22,6 +22,10 @@ IFS=$'\t' read -r cwd fh_pct fh_reset wk_pct ctx_pct ctx_used ctx_size tpath < <
     , (.context_window.context_window_size // -1)
     , (.transcript_path // "")
     ] | @tsv' 2>/dev/null <<<"$input")
+# @tsv escapes backslashes, doubling them in Windows paths (D:\\git\\...). Undo
+# that on the two path-bearing fields so the bar and the stat check see real paths.
+cwd=${cwd//\\\\/\\}
+tpath=${tpath//\\\\/\\}
 [ -z "$cwd" ] && cwd=$(pwd)
 
 # Clock and "now" via the printf builtin, no date fork.
