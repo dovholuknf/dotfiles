@@ -889,8 +889,8 @@ function cdghnf () { cd $env:GH_ROOT\netfoundry }
 function cdtk ()  { cd $env:GH_ROOT\openziti-test-kitchen }
 function cdbb ()  { cd $env:BB_ROOT }
 function cdbbnf () { cd $env:BB_ROOT\netfoundry }
-function cdnf ()  { cd $env:NF_ROOT }
-function cdz ()   { cd $env:NF_ROOT\ziti }
+function cdnf ()  { cd $env:GH_ROOT\netfoundry }
+function cdz ()   { cd $env:OZ_ROOT\ziti }
 function cdo ()   { cd $env:OZ_ROOT }
 function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
 function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }

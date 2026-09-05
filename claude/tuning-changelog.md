@@ -56,3 +56,10 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 - **2026-08-14** Added a Simplified-Technical-English register to the chat directives (active voice, present
   tense, one meaning per word, short sentences). Goal: tighter, clearer replies. Set as a preference, not a
   hard rule, so meaning is never contorted to obey it.
+
+- **2026-09-04** Added the `afk` skill, after two nights of handing over a queue of work and re-explaining the
+  same nuances each time. Captures the contract (never block, decide and record), the snapshot-and-diff patch
+  harness that exists because `git commit` is hook-blocked, reviewing the plan before writing any code,
+  verifying migrations against a COPY of the live database, and the three artifacts to leave behind: report,
+  demo, replay proof. Also the bash tool's refusals, which cost real time to rediscover twice. Goal: `/afk`
+  plus a task list, with nothing else to say.

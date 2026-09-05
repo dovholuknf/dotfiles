@@ -15,7 +15,7 @@ $env:ON_PATH="${env:DOTFILES_PWSH}\onpath"
 $env:ORIG_PATH=$env:PATH
 $env:DOTAGENTS_SCRIPTS="${env:DOTAGENTS}\scripts"
 $env:PATH="${env:ON_PATH};$env:PATH;$env:BB_DOV_ROOT\dev_stuff\helper-scripts\windows"
-$env:NF_ROOT="${env:OZ_ROOT}\nf"
+$env:NF_ROOT="${env:GH_ROOT}\netfoundry"
 
 # user-specific: which Python and which ziti base
 $env:PYTHON_HOME    = "$env:LOCALAPPDATA\Programs\Python\Python313"
