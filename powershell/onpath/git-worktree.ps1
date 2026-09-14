@@ -1735,8 +1735,7 @@ switch ($Command) {
 
         # Moving THIS shell into the new worktree is OFF by default -- 'gwt new' rarely
         # needs it, so the shell stays in the main clone. Restore the old cd-into-new
-        # behavior with GWT_NEW_CD=1. The claude-tab spawn ('open in claude?') is
-        # unaffected either way -- only this shell's cwd is held put.
+        # behavior with GWT_NEW_CD=1. Only relevant to the wt-tab fallback.
         $stayPut = ($env:GWT_NEW_CD -ne '1')
         _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject -NoCd:$stayPut
         if (-not $stayPut) { _SetGwtCwdHint $wtPath }
@@ -4811,6 +4810,23 @@ switch ($Command) {
                         break
                     }
                 }
+            }
+        }
+        if (-not $wtPath) {
+            # The main clone lives under GIT_ROOT, not WtRoot, so it never matched the
+            # worktree lookups above. 'gwt cd main' means "back to the base clone", and
+            # the clone IS the base checkout wherever its HEAD happens to sit -- so route
+            # to it when $Target names the clone's current branch, a conventional main
+            # name, or the repo's default branch. The branch is printed so a clone that
+            # is NOT on main (e.g. parked on a feature branch, or dirty and unable to
+            # switch) is visible rather than silently landed on.
+            $mainBranch    = (& git -C $ctx.Src rev-parse --abbrev-ref HEAD 2>$null)
+            $defaultBranch = ((& git -C $ctx.Src symbolic-ref --quiet refs/remotes/origin/HEAD 2>$null) -replace '^refs/remotes/origin/', '')
+            if (($mainBranch -and $Target -ieq $mainBranch) -or `
+                $Target -ieq 'main' -or $Target -ieq 'master' -or `
+                ($defaultBranch -and $Target -ieq $defaultBranch)) {
+                $wtPath = $ctx.Src
+                Write-Color "matched the main clone ($($ctx.Src), currently on '$mainBranch')" DarkGray
             }
         }
         if (-not $wtPath) { throw "no worktree for branch or dir '$Target' in $($ctx.Org)/$($ctx.Repo)" }

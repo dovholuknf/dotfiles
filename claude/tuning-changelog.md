@@ -5,6 +5,11 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 
 ## 2026
 
+- **2026-09-06** Neutered `snapshot-layout.ps1` (early-exit unless `GWT_SNAPSHOT_LAYOUT=1`). It was the heaviest
+  UserPromptSubmit hook (window/process enumeration) and under load it blew its 5s/10s budget, so every prompt
+  printed a "UserPromptSubmit hook timed out" line. Reason: clint moved tab/session capture to atrium, so this hook
+  is redundant. Revert by setting the env var.
+
 - **2026-09-02** Added a python block to `pre-tool-use-hook.ps1`, mirroring the existing perl guard. Blocks
   `python`/`python3`/`python.exe` invoked as a Bash command (start or after a pipe/compound) with a nudge to use
   bash or PowerShell, or ask if python is genuinely required. Matches only real invocations, not paths, `grep python`,

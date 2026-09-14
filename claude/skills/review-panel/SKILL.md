@@ -37,13 +37,30 @@ of objects with exactly these fields (empty array if it found nothing):
   "category": "correctness|security|fit|test|perf|style",
   "claim": "one-sentence statement of the problem",
   "evidence": "why it is real -- the code path, with file:line refs the conductor can check",
+  "preexisting": "introduced|preexisting|worsened-by-pr",
+  "prod_survival": "blocking/high only: one sentence answering 'why isn't this already broken in production?'",
   "fix": "the concrete change that resolves it",
   "confidence": "high|medium|low"
 }]
 ```
 
 The `evidence` field is mandatory and must cite real lines, not restate the claim -- it is what the
-verify pass and the conductor check against.
+verify pass and the conductor check against. Two hard rules on it, learned from panels that shipped
+confident-but-wrong criticals:
+
+- **Dependency claims must quote the dependency's source.** Any claim about how a library or dependency
+  behaves (a leak, an ownership transfer, an ordering guarantee) must quote the exact line from that
+  dependency's OWN source, with its path, at the version the project pins (the vcpkg / go-module / lockfile
+  pin) -- never reasoning from memory. A claim about dependency behavior with no quoted source line is
+  dropped, not verified: memory-based dependency reasoning is where false leaks come from.
+- **`preexisting`** says whether the PR caused it. `preexisting` (the PR never touched this code) is not the
+  PR's finding: demote it out of `blocking`/`high` BEFORE the verify pass so no verifier is spent on
+  unchanged code, and report it in a separate "pre-existing, not introduced here" note. Only `introduced`
+  and `worsened-by-pr` keep their severity.
+- **`prod_survival`** is required on every `blocking`/`high`. If the finding cannot answer "why isn't this
+  already broken in production?" -- e.g. the loop actually breaks on match, the path is unreachable on the
+  common case -- it is not a high; the agent must lower it or drop it. The conductor uses a failed answer
+  as grounds to demote in step 6.
 
 ## 1. Determine the review target
 
@@ -73,12 +90,17 @@ Look at the changed files and the shape of the change, then choose from the avai
 - behavior change with test-coverage stakes (new feature, endpoint, branch, bug fix) ->
   add `functional-tester` (does it do the right thing across edges and errors)
 - performance, concurrency, resource, or resilience surface (hot path, load, retries, pools, goroutines,
-  outbound calls) -> add `nonfunctional-tester` (how it holds up under load, failure, and time)
+  outbound calls) -> add `nonfunctional-tester` -- but ONLY when there is a latency or load surface a user
+  would actually notice. A periodic background tick (a posture check every 20s, a housekeeping sweep) has
+  no such surface: adding this agent there yields six "add a benchmark" findings that never reach the
+  report. Skip it.
 
-Adjust with judgment. A diff that only touches docs or generated files may need no panel, say so. A
-change that adds a client, transport, auth, persistence, or a second copy of an existing flow should
-always include `codebase-steward` regardless of language. Do not run a specialist whose language is
-absent from the diff.
+Adjust with judgment. The selection rule: name the concrete surface in THIS diff each agent needs to exist,
+and skip the agent when that surface is absent. A diff that only touches docs or generated files may need no
+panel, say so. A change that adds a client, transport, auth, persistence, or a second copy of an existing
+flow should always include `codebase-steward` regardless of language. Do not run a specialist whose language
+is absent from the diff, and do not run `nonfunctional-tester` on a change with no user-visible perf/load
+surface.
 
 ## 3. Report the panel and confirm before dispatching
 
@@ -120,14 +142,20 @@ concurrently in isolated contexts. Give every agent the same shared context:
   question by READING and `grep`-ing the code (find the callers, check the signatures), never by invoking
   a build. A reviewer that shells out to a compiler is wasting minutes on something already verified.
 - the Severity scale and Finding schema from the Shared definitions above, verbatim -- they MUST return
-  the ```json array in that shape, with real `evidence`
+  the ```json array in that shape, with real `evidence`, a `preexisting` value on every finding, a
+  `prod_survival` answer on every `blocking`/`high`, and a quoted dependency-source line (with path, at the
+  pinned version) for any claim about a dependency's behavior
 
 ## 5. Adversarially verify the serious findings
 
 Do not trust `blocking` and `high` findings on the reviewer's word -- past panels have shipped
 confident-but-wrong criticals. Before merging, refute them.
 
-- Collect every finding at severity `blocking` or `high` across all agents.
+- FIRST, pre-filter cheaply, before spending any verifier: drop or demote every `blocking`/`high` whose
+  `preexisting` is `preexisting` (move it to the pre-existing note, not the PR report), and every one whose
+  `prod_survival` answer is empty or self-defeating (the loop breaks on match, the path is unreachable).
+  This is the third of the run that used to be spent verifying findings a one-line read kills.
+- Collect every REMAINING finding at severity `blocking` or `high` across all agents.
 - For each, spawn one verifier in a SINGLE parallel message. Prefer a fork of the same specialist type
   that raised it (falling back to `general-purpose`), and prompt it to REFUTE, not confirm: reproduce
   the exact failing path from `evidence`, or show the state is unreachable / the claim is false. It must
@@ -141,6 +169,11 @@ confident-but-wrong criticals. Before merging, refute them.
 ## 6. Merge and triage
 
 When verification is done, consolidate into ONE report. Do not just concatenate.
+
+- **Integrity check first.** An agent's final message is not reliably schema-compliant: its prose can
+  reference findings its ```json array omits. For each agent, diff the count of findings in its array
+  against what its own summary prose claims; if they disagree, send that agent back for the complete array
+  before merging. Never merge from the prose.
 
 - Deduplicate deterministically on the structured fields: same `file` + `line` (or same root cause in
   `claim`) collapses into one entry, listing every agent that raised it (agreement raises confidence).

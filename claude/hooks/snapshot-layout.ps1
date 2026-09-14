@@ -6,6 +6,13 @@
 # recent point even after the live registry churns (drag-kill, mass restart). Most invocations
 # just read a stamp file and exit. Best-effort: never blocks claude, never throws.
 $ErrorActionPreference = 'SilentlyContinue'
+
+# NEUTERED 2026-09-06: atrium now captures the tab/session layout, so this hook is
+# off by default. It was the heaviest UserPromptSubmit hook (window/process
+# enumeration) and under load it blew its 5s/10s budget, so every prompt logged a
+# "UserPromptSubmit hook timed out" line. Re-enable with GWT_SNAPSHOT_LAYOUT=1.
+if ($env:GWT_SNAPSHOT_LAYOUT -ne '1') { exit 0 }
+
 try {
     $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
     $watch  = Join-Path $wtRoot 'watch'

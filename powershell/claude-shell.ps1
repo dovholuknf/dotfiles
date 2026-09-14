@@ -267,6 +267,28 @@ function _OpenClaudeShell {
         [switch]$Verbose            # show runas chatter
     )
 
+    # Atrium-owned by default: hand a fresh claude launch to atrium (its own pty, on the
+    # board, browser-attachable) instead of spawning a wt tab. _OpenClaudeShell is the one
+    # function EVERY gwt spawn path funnels through -- new, claude, the URL verbs, the
+    # resume-last-picks fast path -- so intercepting HERE covers all of them with no
+    # per-site wiring. Skips: -NoClaude (a plain themed shell, not a claude session),
+    # -ReuseSessionId (a restore; atrium cannot resume a wt session id), and
+    # GWT_ATRIUM=off. Falls through to the wt spawn below when atrium is not running.
+    #   GWT_ATRIUM unset|on -> atrium ; =ask -> ask per spawn ; =off -> wt tab (legacy)
+    if (-not $NoClaude -and -not $ReuseSessionId) {
+        $atMode = if ($env:GWT_ATRIUM) { $env:GWT_ATRIUM.Trim().ToLower() } else { 'on' }
+        if ($atMode -eq 'ask') {
+            $r = Read-Host "start '$Branch' as an atrium-owned session (Y) or a windows terminal tab (n)? (Y/n)"
+            $atMode = if ($r -match '^[Nn]$') { 'off' } else { 'on' }
+        }
+        if ($atMode -ne 'off') {
+            if (_LaunchOnAtrium -Path $Path -Title $Branch -Why "gwt $Branch" -Tags @('gwt', $Repo) -PromptText $PromptText -Repo $Repo -Branch $Branch) {
+                return
+            }
+            Write-Color "  atrium not running -- opening a windows terminal tab instead" DarkGray
+        }
+    }
+
     # Resolve picker sentinels here, the single chokepoint that records the window
     # and runs wt, so no caller can leak a literal '__auto__' into the ledger (which
     # made every 'auto' pile into one window named __auto__). 'auto' = group by repo.
@@ -418,6 +440,88 @@ function _ConfirmOpenOrCd {
             # and the wrapper cds you there.)
             $global:_GwtSuppressCd = $true
         }
+    }
+}
+
+# Launch a claude session that ATRIUM owns and supervises, instead of a Windows
+# Terminal tab. Atrium runs the pty itself (browser-attachable, on the board),
+# so there is no wt window and no wt tab tracking -- the card IS the session.
+#
+# The daemon writes its own address to %LOCALAPPDATA%\atrium\daemon.json, so the
+# port is discovered, never hardcoded. A missing file means the daemon is not
+# running: return $false so the caller can fall back to the wt-tab path rather
+# than leaving the user with no session at all. The listener is loopback-only by
+# design, so no auth applies. Returns $true only when a card was actually created.
+function _LaunchOnAtrium {
+    param([string]$Path, [string]$Title, [string]$Why, [string[]]$Tags = @('gwt'), [string]$PromptText,
+          [string]$Repo, [string]$Branch)
+
+    # Find the daemon's board address. The daemon writes daemon.json into the
+    # profile of the account it RUNS as, which on this box is the 'claude' account,
+    # while gwt usually runs as 'clint'. So we cannot just read our own
+    # %LOCALAPPDATA% -- that only works when gwt happens to run as the daemon
+    # account. Probe, first hit wins:
+    #   1. GWT_ATRIUM_BOARD -- explicit override, e.g. http://localhost:7778
+    #   2. our own %LOCALAPPDATA%\atrium\daemon.json (gwt running as the daemon acct)
+    #   3. a shared, both-accounts-readable copy under WORKTREE_ROOT (atrium is
+    #      being asked to write this; see the integration requirements) -- the real
+    #      cross-account fix, no hardcoded user
+    #   4. the claude account's profile path -- stopgap until 3 lands, and the one
+    #      hardcoded user on this box (its daemon account)
+    $board = $null
+    if ($env:GWT_ATRIUM_BOARD) { $board = $env:GWT_ATRIUM_BOARD.Trim() }
+    if (-not $board) {
+        $candidates = @(
+            (Join-Path $env:LOCALAPPDATA 'atrium\daemon.json'),
+            (Join-Path $env:WORKTREE_ROOT 'atrium\daemon.json'),
+            'C:\Users\claude\AppData\Local\atrium\daemon.json'
+        ) | Where-Object { $_ }
+        foreach ($c in $candidates) {
+            if (-not (Test-Path $c)) { continue }
+            try {
+                $b = (Get-Content $c -Raw | ConvertFrom-Json).board
+                if ($b) { $board = $b; break }
+            } catch { }  # unreadable/locked -- try the next candidate
+        }
+    }
+    if (-not $board) { return $false }
+
+    $payload = @{
+        harness = 'claude'                 # id from GET /v1/harnesses (claude|codex|shell)
+        cwd     = ($Path -replace '\\', '/')  # atrium wants forward slashes
+        title   = $Title
+        why     = $Why
+        tags    = $Tags
+    }
+    if ($PromptText) { $payload.prompt = $PromptText }
+    if ($Branch)     { $payload.branch = $Branch }
+    if ($Repo)       { $payload.repo   = $Repo }
+
+    # Structured host/org so the board can group this card under GITHUB > ORG > REPO like
+    # every other card, instead of inferring a hostless group from the tags. Derived from
+    # the worktree/clone path against the known <root>\<host>\<org>\<repo>\... layout:
+    # a worktree sits under WORKTREE_ROOT, a main clone under GIT_ROOT.
+    $fwd = ($Path -replace '\\', '/').TrimEnd('/')
+    foreach ($root in @($env:WORKTREE_ROOT, $env:GIT_ROOT)) {
+        if (-not $root) { continue }
+        $r = ($root -replace '\\', '/').TrimEnd('/')
+        if ($fwd.ToLower().StartsWith("$($r.ToLower())/")) {
+            $seg = $fwd.Substring($r.Length + 1).Split('/')
+            if ($seg.Count -ge 2) { $payload.host = $seg[0]; $payload.org = $seg[1] }
+            if ($seg.Count -ge 3 -and -not $Repo) { $payload.repo = $seg[2] }
+            break
+        }
+    }
+    $body = $payload | ConvertTo-Json -Compress
+
+    try {
+        $task = Invoke-RestMethod -Method Post -Uri "$board/v1/launch" `
+            -ContentType 'application/json' -Body $body -TimeoutSec 10
+        Write-Color "  on the atrium board: $($task.display_title)  [$($task.wire_name)]" Green
+        return $true
+    } catch {
+        Write-Color "  atrium did not take it: $($_.Exception.Message)" Yellow
+        return $false
     }
 }
 

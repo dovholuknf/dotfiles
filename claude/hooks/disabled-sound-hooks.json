@@ -1,0 +1,23 @@
+{
+  "_note": "Sound-bell hooks removed from ~/.claude/settings.json on 2026-09-07 to silence the bells. Kept here so they can be pasted back. Each object below is one hook entry; add it back to the matching event + matcher in settings.json's `hooks` block (create the matcher entry if it is gone). The wav files also got swapped for silence (originals at C:/Users/claude/.claude/sounds/*.wav.prebells-bak) -- restore those too when re-enabling.",
+
+  "Notification / matcher permission_prompt": {
+    "type": "command",
+    "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
+  },
+
+  "Notification / matcher elicitation_dialog": {
+    "type": "command",
+    "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
+  },
+
+  "PermissionRequest / matcher \"\"": {
+    "type": "command",
+    "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/permissionrequest.wav').PlaySync()\""
+  },
+
+  "Stop / matcher none": {
+    "type": "command",
+    "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/stop.wav').PlaySync()\""
+  }
+}

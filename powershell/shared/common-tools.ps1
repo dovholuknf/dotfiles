@@ -892,6 +892,8 @@ function cdbbnf () { cd $env:BB_ROOT\netfoundry }
 function cdnf ()  { cd $env:GH_ROOT\netfoundry }
 function cdz ()   { cd $env:OZ_ROOT\ziti }
 function cdo ()   { cd $env:OZ_ROOT }
+function oz ()    { cd $env:OZ_ROOT }
+function zrok ()  { cd $env:OZ_ROOT\zrok }
 function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
 function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }

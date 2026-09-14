@@ -5,8 +5,9 @@ description: >
   root. Captures what we set out to do, what shipped, what got parked, the FALSE FINISHES (every time
   claude said "done" and it reopened), the friction, and the timing. Invoke when the user says "recap",
   "/recap", "write up the history", "capture the archeology", "session recap", or asks for a
-  "you thought this was done" writeup on the way out. Writes a markdown file and prints a short reminder
-  line. It does not commit anything.
+  "you thought this was done" writeup on the way out. Every recap opens with a fat keyword block so it is
+  greppable later, and registers one line in a central INDEX.tsv. Writes a markdown file and prints a short
+  reminder line. It does not commit anything.
 ---
 
 # recap
@@ -58,6 +59,16 @@ Before writing anything, look for a recap this session already has, and UPDATE i
 Plain markdown, wrapped at 120 chars, the user's prose rules (no em-dash, no `--` dash, no semicolon in
 prose). Sections, in this order:
 
+- **Keywords** (the FIRST thing in the file, before the header): a fat, comma-separated grep blob under a
+  `## Keywords` heading. This is what makes the recap findable months later, so do NOT be stingy. Rules:
+  - **Main idea first.** The first two or three terms are the one-line "what this session was," in the words
+    the user would reach for. Everything after is coverage.
+  - Then dump EVERY angle a future grep might use: the feature or task, the bug and its symptom, every repo /
+    tool / binary / host / service touched (e.g. `cdzrok`, `zrok2`, `atrium`), domains and URLs, error strings,
+    the exact commands or flags that mattered, synonyms, and the plainest layman phrasing of the problem.
+  - Aim for 20+ terms on any real session. Repetition across phrasings is the point, not a flaw.
+  - Comma-separated on as many lines as needed. No semicolons (prose rule). Lowercase unless a term is
+    case-bearing (an identifier, a flag, a hostname).
 - **Header**: repo, branch, date, elapsed wall-clock, rough active-turn count. One line each.
 - **Set out to do**: the goal(s) as they stood at the start, in one or two sentences.
 - **Shipped**: what actually got done and verified, each with the concrete artifact (file, function,
@@ -100,6 +111,27 @@ artifacts into a sibling folder next to the recap:
   the session made no artifacts, skip this step and say so.
 - In the recap's Follow-ups (or a one-line note at the end), name the artifacts folder and what is in it,
   so a later reader knows the debug trail was preserved.
+
+## Register it in the central index
+
+The per-file recaps are the detail; `INDEX.tsv` is the one file you grep to find them. After writing (or
+updating) the recap, append ONE tab-separated line to `D:\worktrees\history\INDEX.tsv`:
+
+```
+date<TAB>repo<TAB>branch<TAB>worktree-path<TAB>state<TAB>reopened<TAB>recap-file<TAB>transcript-id<TAB>keywords
+```
+
+- `date` = `yyyy-MM-dd`. `state` = `done` | `parked` | `dead` (your judgement of where the work stands).
+  `reopened` = `y` when the recap has false finishes, else `n`.
+- `recap-file` = the recap's filename (not full path; the dir is fixed). `transcript-id` = the session
+  `.jsonl` name (the pointer to full detail).
+- `keywords` = the SAME fat blob from the recap's `## Keywords` block, on one line (commas, no tabs). This is
+  what the grep hits, so keep it fat.
+- Create `INDEX.tsv` with a header row of those column names if it does not exist. If this session already has
+  a line (you updated an existing recap), replace that line in place rather than appending a duplicate; match
+  on `recap-file`.
+- One recall move for the reader: `grep -i <term> D:\worktrees\history\INDEX.tsv` -> the line names the recap
+  and the transcript.
 
 ## After writing
 
