@@ -847,6 +847,17 @@ function Remove-Worktree {
 
     $ok = $AutoConfirm -or ([string]::IsNullOrWhiteSpace(($r = Read-Host "remove worktree at '$WtPath'? (Y/n)")) -or $r -match '^[Yy]$')
     if ($ok) {
+        # Best-effort: tell atrium to stop + archive the card for this worktree FIRST and
+        # wait for it to confirm, THEN delete. An atrium-owned session runs its pty in this
+        # dir and holds the cwd lock but does not show in the gwt ledger (guard #1 above
+        # cannot see it), so releasing it here is what lets the delete succeed. No-ops when
+        # atrium is down or lacks the endpoint, and the delete proceeds regardless.
+        Write-Color "  asking atrium to release the card for this worktree..." DarkGray
+        if (_ArchiveAtriumCardForCwd -Cwd $WtPath) {
+            Write-Color "  atrium confirmed; removing" DarkGray
+        } else {
+            Write-Color "  atrium not reachable / no card; removing anyway" DarkGray
+        }
         Invoke-Git $Src @('worktree','remove','--force',$WtPath)
         $gone = _ForceRemoveWorktreeDir $WtPath
         if ($gone) {
@@ -1733,12 +1744,19 @@ switch ($Command) {
         }
         # 'off' falls through: leave 'current' alone.
 
-        # Moving THIS shell into the new worktree is OFF by default -- 'gwt new' rarely
-        # needs it, so the shell stays in the main clone. Restore the old cd-into-new
-        # behavior with GWT_NEW_CD=1. Only relevant to the wt-tab fallback.
-        $stayPut = ($env:GWT_NEW_CD -ne '1')
-        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject -NoCd:$stayPut
-        if (-not $stayPut) { _SetGwtCwdHint $wtPath }
+        # Move THIS shell into the new worktree as part of 'gwt new' (the default).
+        # Stay in the main clone instead with GWT_NEW_CD=off (0/no also accepted). This
+        # is independent of the claude/atrium spawn -- it only moves the invoking shell.
+        $stayPut = ($env:GWT_NEW_CD -match '^\s*(0|off|no)\s*$')
+        # Always -NoCd so _ConfirmOpenOrCd never runs its own 'cd there?' prompt; the cd
+        # is owned here so it happens whether or not a session was opened.
+        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject -NoCd
+        if (-not $stayPut) {
+            # cd is part of the action, not gated on the open-in-claude answer: clear any
+            # suppress the -NoCd decline path set, then write the hint unconditionally.
+            $global:_GwtSuppressCd = $false
+            _SetGwtCwdHint $wtPath
+        }
     }
 
     'current' {

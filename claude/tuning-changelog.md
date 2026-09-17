@@ -5,6 +5,23 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 
 ## 2026
 
+- **2026-09-16** Loosened the git guard in `pre-tool-use-hook.ps1` from "no git mutations at all" to "claude works
+  only on its own `claude/*` branches, and never a remote." push/pull/fetch stay ALWAYS blocked; branch-naming
+  verbs (branch create/delete/rename, `checkout -b`, `switch`) require a `claude/*` target; current-branch verbs
+  (commit, add, rebase, reset, restore, clean) require the checked-out branch to be `claude/*`; read-only git still
+  passes. Reason: clint wants claude to do committed work without its authorship touching his branches -- claude
+  commits on `claude/*` locally, clint fetches/merges into his own and pushes as himself. Also resolves git
+  aliases before the checks (an alias like `co`=checkout or a `!`-shell alias can't smuggle a blocked verb) and
+  blocks creating/unsetting aliases via `git config`. Validated by `claude/hooks/tests/test-git-guard.ps1`
+  (63 cases). Understood as best-effort defense-in-depth, NOT a wall: a text hook cannot catch every evasion
+  (renamed binary, `sh -c`, python subprocess). The real "never push" guarantee lives in the claude account's
+  credentials (no push-authorized SSH key, read-only token), not here. NOTE: edited the LIVE
+  `~/.claude/hooks/pre-tool-use-hook.ps1`, which has diverged from the repo copy -- reconcile still owed.
+
+- **2026-09-15** Reversed the `gwt new` cd default: it now cds the invoking shell INTO the new worktree as part
+  of the action (was: stay in the main clone). Opt back out with `GWT_NEW_CD=off` (0/no also work). Reason: clint
+  changed his mind and wants the shell to land in the new worktree. Independent of the claude/atrium spawn.
+
 - **2026-09-06** Neutered `snapshot-layout.ps1` (early-exit unless `GWT_SNAPSHOT_LAYOUT=1`). It was the heaviest
   UserPromptSubmit hook (window/process enumeration) and under load it blew its 5s/10s budget, so every prompt
   printed a "UserPromptSubmit hook timed out" line. Reason: clint moved tab/session capture to atrium, so this hook
@@ -68,3 +85,12 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   verifying migrations against a COPY of the live database, and the three artifacts to leave behind: report,
   demo, replay proof. Also the bash tool's refusals, which cost real time to rediscover twice. Goal: `/afk`
   plus a task list, with nothing else to say.
+
+- **2026-09-15** Set `includeCoAuthoredBy: false` in global settings, at clint's request to stop seeing the
+  Claude attribution trailer on his commits. The setting suppresses harness-generated attribution entirely
+  rather than swapping one line for another, and a hook now blocks attribution trailers outright, so any
+  custom line has to come from a git `prepare-commit-msg` hook or `commit.template` rather than from me.
+
+- **2026-09-15** Corrected the entry above. `includeCoAuthoredBy` is deprecated. The current key is
+  `attribution.commit`, a string holding the exact trailer text, with an empty string to hide it. Set to
+  clint custom line. No git hook or commit template needed, and the harness emits the line rather than me.

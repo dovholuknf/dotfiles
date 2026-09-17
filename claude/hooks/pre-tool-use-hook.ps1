@@ -84,13 +84,86 @@ if ($json.tool_name -eq "Bash") {
         exit 0
     }
 
-    # Never mutate the user's git repo. Read-only git (status, log, diff, show, remote, worktree list) is fine.
-    if ($cmd -match '\bgit\s+(-\S+\s+)*(add|commit|push|pull|fetch|branch|checkout|rebase|reset|restore|clean)\b') {
-        @{
-            decision = "block"
-            reason   = "Do not mutate the git repo. Hand the command to the user to run instead."
-        } | ConvertTo-Json -Compress
+    # ---- git policy: claude works only on its own claude/* branches, and NEVER a remote ----
+    # Read-only git (status, log, diff, show, remote, branch listing) always passes.
+    #   push/pull/fetch          -> ALWAYS blocked (no git command reaches a remote)
+    #   branch-naming verbs      -> the NAMED branch must start 'claude/'
+    #     (branch create/delete/rename, 'checkout -b', 'switch [-c]')
+    #   current-branch verbs     -> the CHECKED-OUT branch must start 'claude/'
+    #     (commit, add, rebase, reset, restore, clean)
+    # Anything on a non-claude/ branch, or any remote op, is handed back to the user.
+    # Validated by claude/hooks/tests/test-git-guard.ps1 -- keep that green.
+    function _GitBlock($why) {
+        @{ decision = "block"; reason = $why } | ConvertTo-Json -Compress
         exit 0
+    }
+    $gitCwd = if ($json.cwd) { "$($json.cwd)" } else { (Get-Location).Path }
+
+    # 0a. No creating/unsetting git aliases. An alias is a bypass: it can hide a blocked
+    #     verb ('co'=checkout) or run a shell command ('!...'). Reads (--get/--list) pass.
+    if ($cmd -match '\bgit\s+(?:-\S+\s+)*config\b' -and $cmd -match '\balias\.' -and
+        $cmd -notmatch '--(get|get-all|get-regexp|list)\b') {
+        _GitBlock "claude may not create or unset git aliases (an alias can hide a blocked verb or run a shell command). Hand it to the user."
+    }
+
+    # 0b. Resolve an alias in the subcommand position BEFORE the checks below, so an alias
+    #     cannot smuggle a blocked verb past the text match. Expand up to 5 levels; a
+    #     '!'-shell alias is arbitrary code and is blocked outright. Real verbs (commit,
+    #     push, ...) are not aliases, so 'config --get' returns empty and nothing changes.
+    $depth = 0
+    while ($depth -lt 5 -and $cmd -match '\bgit\s+(?:-\S+\s+)*([A-Za-z][\w-]*)') {
+        $sub = $Matches[1]
+        $exp = ''
+        try { $exp = "$(& git -C "$gitCwd" config --get "alias.$sub" 2>$null)".Trim() } catch { $exp = '' }
+        if (-not $exp) { break }
+        if ($exp.StartsWith('!')) {
+            _GitBlock "git alias '$sub' is a shell alias ('!...') -- claude may not run it (arbitrary command). Hand it to the user."
+        }
+        $rest = ($cmd -replace ('^.*?\bgit\s+(?:-\S+\s+)*' + [regex]::Escape($sub) + '\b'), '')
+        $cmd  = "git $exp$rest"
+        $depth++
+    }
+
+    # 1. Remote ops: never, on any branch.
+    if ($cmd -match '\bgit\s+(?:-\S+\s+)*(push|pull|fetch)\b') {
+        _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user."
+    }
+
+    # 2a. checkout: allowed ONLY as 'checkout -b claude/*'. Plain 'git checkout <x>' is
+    #     ambiguous with file restore, so it is blocked; use 'git switch' to move branches.
+    if ($cmd -match '\bgit\s+(?:-\S+\s+)*checkout\b') {
+        if ($cmd -match '\bcheckout\s+(?:-\S+\s+)*-[bB]\s+(\S+)') {
+            if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only create claude/* branches. '$($Matches[1])' is not one." }
+        } else {
+            _GitBlock "Use 'git switch claude/<branch>' to move branches. Plain 'git checkout' is blocked here (ambiguous with file restore, and claude stays on claude/* branches)."
+        }
+    }
+    # 2b. switch: 'switch -c <n>' (create) or 'switch <n>' (move). Target must be claude/*.
+    elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*switch\b') {
+        if ($cmd -match '\bswitch\s+(?:-c\s+)?(?:-\S+\s+)*([^\s-]\S*)') {
+            if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only switch to claude/* branches. '$($Matches[1])' is not one." }
+        } else {
+            _GitBlock "claude may only 'git switch' to a named claude/* branch."
+        }
+    }
+    # 2c. branch: every branch-name argument (create/delete/rename) must be claude/*.
+    #     No name args (a listing: 'git branch', '-a', '-r', '-v') passes.
+    elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*branch\b') {
+        $after = ($cmd -replace '^.*?\bgit\s+(?:-\S+\s+)*branch\b', '').Trim()
+        $names = @($after -split '\s+' | Where-Object { $_ -and ($_ -notmatch '^-') })
+        foreach ($n in $names) {
+            if ($n -notmatch '^claude/') { _GitBlock "claude may only create/delete/rename claude/* branches. '$n' is not one." }
+        }
+    }
+    # 3. Current-branch verbs: the checked-out branch must be claude/*.
+    elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*(commit|add|rebase|reset|restore|clean)\b') {
+        $verb = $Matches[1]
+        $branch = ''
+        try { $branch = "$(& git -C "$gitCwd" rev-parse --abbrev-ref HEAD 2>$null)".Trim() } catch { $branch = '' }
+        if ($branch -notmatch '^claude/') {
+            $where = if ($branch) { "current branch is '$branch'" } else { "no claude/* branch is checked out" }
+            _GitBlock "claude may only '$verb' on a claude/* branch ($where). Switch to a claude/* branch, or hand the command to the user."
+        }
     }
 
     if ($cmd -match '(^|;|\n)\s*cd\s+\S.*&&') {

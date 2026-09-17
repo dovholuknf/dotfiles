@@ -102,29 +102,27 @@ flow should always include `codebase-steward` regardless of language. Do not run
 is absent from the diff, and do not run `nonfunctional-tester` on a change with no user-visible perf/load
 surface.
 
-## 3. Report the panel and confirm before dispatching
+## 3. Report the panel, then dispatch
 
-Before launching anything, show the user what will run and wait for the go-ahead. This is a hard gate:
-no agent starts until the user confirms.
+Invoking the skill IS the go-ahead. Do NOT make the user type "proceed". When the user ran
+`/review-panel`, said "review panel", "gauntlet", "run the reviewers", or handed over a PR to review, print
+the one-line selection and dispatch immediately (step 4) -- no confirmation prompt. What to print in that
+one line:
 
-- list each selected agent with a one-line reason it was chosen
-- show the diff range or PR the panel will review, and the count of changed files
-- ask the user to confirm, add, or remove agents
+- each selected agent with a one-line reason it was chosen
+- the diff range or PR and the count of changed files
+- a note that a verify pass and coverage critic will follow (extra agents, more tokens), so the user can
+  still say "skip the verify pass" or "no critic" -- but you do not WAIT for that; they interrupt if they
+  want it.
 
-Ask however the host prefers. `AskUserQuestion` (options like Proceed / Adjust selection / Cancel, with
-Other to name exact agents) is the default, but if the host or user disallows the picker, ask the same
-thing as plain text. Either way, wait for the answer.
+The user can always interrupt to add/remove agents; requiring "proceed" first is the friction to remove.
 
-Also tell the user, in one line, that after the panel returns you will adversarially verify the serious
-findings and run a coverage critic (extra agents, more tokens) -- so they can say up front "skip the
-verify pass" or "no critic" if they want a lean run. A prior "just run it" / `-y` opts into everything.
+Pause for an explicit answer ONLY when the request was a question rather than a command ("should I review
+this?", "what would you run?"), or when the selection is genuinely ambiguous and a wrong pick is expensive.
+Then ask as plain text (or `AskUserQuestion` if the host allows the picker) and wait.
 
-Skip this gate only when the invocation already told you to proceed without asking (the user passed a
-confirming argument such as `-y` or `go`, said something like "just run it", or the request itself was
-"run the review panel"). In that case still print the one-line selection first, then dispatch.
-
-Example of what to show:
-`Panel for <range> (7 files): go-security-reviewer (Go footguns), codebase-steward (fit, new client added). Proceed?`
+Example of what to print before dispatching:
+`Panel for main...HEAD (6 files): c-systems-reviewer (new C API, 4 TLS backends), codebase-steward (new vtable member). Verify pass + critic to follow. Dispatching.`
 
 ## 4. Dispatch in parallel
 

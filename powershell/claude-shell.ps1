@@ -443,6 +443,57 @@ function _ConfirmOpenOrCd {
     }
 }
 
+# Discover the atrium daemon's board address, or $null when it is not running.
+# The daemon writes daemon.json into the profile of the account it RUNS as (the
+# 'claude' account on this box), while gwt usually runs as 'clint', so we cannot just
+# read our own %LOCALAPPDATA%. Probe, first hit wins:
+#   1. GWT_ATRIUM_BOARD -- explicit override, e.g. http://localhost:7778
+#   2. our own %LOCALAPPDATA%\atrium\daemon.json (gwt running as the daemon account)
+#   3. a shared, both-accounts-readable copy under WORKTREE_ROOT (the real cross-
+#      account fix once atrium writes it there)
+#   4. the claude account's profile path -- stopgap, the one hardcoded user
+function _GetAtriumBoard {
+    if ($env:GWT_ATRIUM_BOARD) { return $env:GWT_ATRIUM_BOARD.Trim() }
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'atrium\daemon.json'),
+        (Join-Path $env:WORKTREE_ROOT 'atrium\daemon.json'),
+        'C:\Users\claude\AppData\Local\atrium\daemon.json'
+    ) | Where-Object { $_ }
+    foreach ($c in $candidates) {
+        if (-not (Test-Path $c)) { continue }
+        try {
+            $b = (Get-Content $c -Raw | ConvertFrom-Json).board
+            if ($b) { return $b }
+        } catch { }  # unreadable/locked -- try the next candidate
+    }
+    return $null
+}
+
+# Best-effort: ask atrium to stop + archive the card whose session runs in $Cwd, and
+# WAIT for it to confirm. gwt prune calls this BEFORE it deletes a worktree: an
+# atrium-owned session holds that directory open through its pty and does NOT appear in
+# the gwt session ledger, so guard #1 in Remove-Worktree cannot see it -- releasing it
+# here is what lets the delete below succeed. Returns $true only when atrium confirmed;
+# $false when atrium is down, has no such endpoint yet, or times out, in which case the
+# caller removes the worktree anyway.
+#
+# The endpoint is not final on the atrium side yet (R8 in the integration requirements).
+# Override the path with GWT_ATRIUM_ARCHIVE_PATH once atrium settles it; the default is a
+# reasonable guess and a 404 just reads as "not supported yet" -> best-effort no-op.
+function _ArchiveAtriumCardForCwd {
+    param([string]$Cwd)
+    $board = _GetAtriumBoard
+    if (-not $board) { return $false }
+    $path = if ($env:GWT_ATRIUM_ARCHIVE_PATH) { $env:GWT_ATRIUM_ARCHIVE_PATH } else { '/v1/cards/archive' }
+    $body = @{ cwd = ($Cwd -replace '\\', '/'); reason = 'gwt prune removed the worktree'; wait = $true } | ConvertTo-Json -Compress
+    try {
+        Invoke-RestMethod -Method Post -Uri "$board$path" -ContentType 'application/json' -Body $body -TimeoutSec 30 | Out-Null
+        return $true
+    } catch {
+        return $false   # atrium down / no such endpoint / timeout -- caller proceeds anyway
+    }
+}
+
 # Launch a claude session that ATRIUM owns and supervises, instead of a Windows
 # Terminal tab. Atrium runs the pty itself (browser-attachable, on the board),
 # so there is no wt window and no wt tab tracking -- the card IS the session.
@@ -456,34 +507,7 @@ function _LaunchOnAtrium {
     param([string]$Path, [string]$Title, [string]$Why, [string[]]$Tags = @('gwt'), [string]$PromptText,
           [string]$Repo, [string]$Branch)
 
-    # Find the daemon's board address. The daemon writes daemon.json into the
-    # profile of the account it RUNS as, which on this box is the 'claude' account,
-    # while gwt usually runs as 'clint'. So we cannot just read our own
-    # %LOCALAPPDATA% -- that only works when gwt happens to run as the daemon
-    # account. Probe, first hit wins:
-    #   1. GWT_ATRIUM_BOARD -- explicit override, e.g. http://localhost:7778
-    #   2. our own %LOCALAPPDATA%\atrium\daemon.json (gwt running as the daemon acct)
-    #   3. a shared, both-accounts-readable copy under WORKTREE_ROOT (atrium is
-    #      being asked to write this; see the integration requirements) -- the real
-    #      cross-account fix, no hardcoded user
-    #   4. the claude account's profile path -- stopgap until 3 lands, and the one
-    #      hardcoded user on this box (its daemon account)
-    $board = $null
-    if ($env:GWT_ATRIUM_BOARD) { $board = $env:GWT_ATRIUM_BOARD.Trim() }
-    if (-not $board) {
-        $candidates = @(
-            (Join-Path $env:LOCALAPPDATA 'atrium\daemon.json'),
-            (Join-Path $env:WORKTREE_ROOT 'atrium\daemon.json'),
-            'C:\Users\claude\AppData\Local\atrium\daemon.json'
-        ) | Where-Object { $_ }
-        foreach ($c in $candidates) {
-            if (-not (Test-Path $c)) { continue }
-            try {
-                $b = (Get-Content $c -Raw | ConvertFrom-Json).board
-                if ($b) { $board = $b; break }
-            } catch { }  # unreadable/locked -- try the next candidate
-        }
-    }
+    $board = _GetAtriumBoard
     if (-not $board) { return $false }
 
     $payload = @{
