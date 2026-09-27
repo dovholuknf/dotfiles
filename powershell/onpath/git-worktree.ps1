@@ -3,7 +3,7 @@
 # profile alias: function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
 #
 # usage:
-#   gwt new  <branch> [-From <source>] [-Prompt <str>] [-y] [--by-project]
+#   gwt new  <branch> [-From <source>] [-Prompt <str>] [--by-project]   # defaults to -y; -Interactive to prompt
 #                                                # --by-project: group the tab into a
 #                                                # window named after the repo, themed
 #                                                # from the per-repo theme map
@@ -42,6 +42,7 @@ param(
     [string]$SourceRoot    = $( $r = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' };      ($r -replace '\\+','\').TrimEnd('\') ),
     [string]$WorktreeRoot  = $( $r = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }; ($r -replace '\\+','\').TrimEnd('\') ),
     [switch]$y,
+    [switch]$Interactive,   # restore per-step prompts. Worktree creators (new/pr/issue/advisory/ghsa/twig/clone) default to -y.
     [switch]$Current,       # 'new': skip the activate prompt and point <WtRoot>\current at the new worktree
     [switch]$Force,         # 'prune': also include DIRTY worktrees (otherwise they're protected)
     [switch]$Reselect,      # force re-prompt instead of reusing saved picks
@@ -866,6 +867,33 @@ function Remove-Worktree {
             Write-Color "WARNING: '$WtPath' still on disk after remove attempt" Red
             Write-Color "  close any program with files open under that path, then 'gwt prune $WtPath -Force' again" DarkGray
         }
+        # GHSA temp-fork cleanup. A 'gwt ghsa' worktree (advisory-<id> or advisory-<id>-prN)
+        # tracks a shared fork remote 'ghsa-<id>' on the base clone. When the LAST such
+        # worktree for a fork is pruned, drop the remote (and the local branches that
+        # tracked it) so a pruned ghsa leaves no dangling remote. -cmatch keeps the
+        # uppercase 'advisory-GHSA-...' trees of the plain 'advisory' flow (no fork remote)
+        # from matching. The just-removed worktree is already gone from 'worktree list', so
+        # any advisory-<id>* still listed is a genuine other user of the remote.
+        if ($gone -and ((Split-Path $WtPath -Leaf) -cmatch '^advisory-(?<id>[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})(?:$|-)')) {
+            $ghsaId     = $Matches.id
+            $ghsaRemote = "ghsa-$ghsaId"
+            if ((& git -C $Src remote 2>$null) -contains $ghsaRemote) {
+                $others = @(& git -C $Src worktree list --porcelain 2>$null |
+                    Where-Object { $_ -like 'worktree *' } |
+                    ForEach-Object { Split-Path ($_ -replace '^worktree ', '') -Leaf } |
+                    Where-Object { $_ -cmatch "^advisory-$([regex]::Escape($ghsaId))(?:$|-)" })
+                if (-not $others.Count) {
+                    $tracking = @(& git -C $Src for-each-ref --format '%(refname:short)' refs/heads 2>$null |
+                        Where-Object { (& git -C $Src config --get "branch.$_.remote" 2>$null) -eq $ghsaRemote })
+                    foreach ($b in $tracking) { & git -C $Src branch -D $b 2>&1 | Out-Null }
+                    & git -C $Src remote remove $ghsaRemote 2>&1 | Out-Null
+                    Write-Color "  ghsa: removed fork remote '$ghsaRemote' (last advisory worktree pruned)" DarkGray
+                } else {
+                    Write-Color "  ghsa: keeping fork remote '$ghsaRemote' -- $($others.Count) advisory worktree(s) still use it" DarkGray
+                }
+            }
+        }
+
         # If 'current' was pointing at this worktree, repoint it to MAIN
         # ($Src is the main clone dir) instead of leaving a dangling symlink.
         _DropCurrentSymlinkIfPointsAt -WtRoot (Split-Path $WtPath -Parent) -WorktreePath $WtPath -MainPath $Src
@@ -1403,7 +1431,24 @@ if ($Command -match '^https?://') {
     #   1. <host>/<org>/<repo>/pull/<num>  -> 'pr' (existing behavior)
     #   2. <host>/<org>/<repo>             -> 'clone' (parse host/org/repo,
     #                                                 clone if missing, open)
-    if ($Command -match '^https?://[^/]+/[^/]+/[^/]+/pull/\d+') {
+    if ($Command -match '^https?://(?<host>[^/]+)/(?<org>[^/]+)/(?<base>[^/]+)-ghsa-(?<ghsa>[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})/pull/(?<num>\d+)') {
+        # GitHub security-advisory TEMP-FORK *PR* URL. Same temp fork as the /tree/ case
+        # below, but a PR link instead of a branch link. MUST precede the generic /pull/
+        # match, which would otherwise fat-clone the fork as its own repo (the very thing
+        # the ghsa flow exists to avoid). The PR head branch name is not in the URL and
+        # the github API 404s on <repo>-ghsa-* forks, so the 'ghsa' handler fetches
+        # refs/pull/<num>/head from the fork over git instead. The repo-name suffix (a
+        # real GHSA id: three groups of four) is the reliable signal.
+        $script:RemoteHost   = $Matches.host
+        $script:Org          = $Matches.org
+        $script:Repo         = $Matches.base
+        $script:GhsaForkRepo = "$($Matches.base)-ghsa-$($Matches.ghsa)"
+        $script:GhsaId       = $Matches.ghsa
+        $script:GhsaPrNum    = $Matches.num
+        $script:CloneBranch  = $null
+        $Target  = $Command
+        $Command = 'ghsa'
+    } elseif ($Command -match '^https?://[^/]+/[^/]+/[^/]+/pull/\d+') {
         $Target  = $Command -replace '(?<=pull/\d+)(/.*)?$',''  # strip /changes, /files, etc.
         $Command = 'pr'
     } elseif ($Command -match '^https?://bitbucket\.org/[^/]+/[^/]+/pull-requests/\d+') {
@@ -1438,6 +1483,7 @@ if ($Command -match '^https?://') {
         $script:GhsaForkRepo = "$($Matches.base)-ghsa-$($Matches.ghsa)"       # the temp fork repo name
         $script:GhsaId       = $Matches.ghsa                                  # e.g. p6gx-g438-rjc8
         $script:CloneBranch  = $Matches.branch                               # the fix branch on the fork
+        $script:GhsaPrNum    = $null                                          # tree URL, not a PR URL
         $Target  = $Command
         $Command = 'ghsa'
     } elseif ($Command -match '^https?://[^/]+\.zendesk\.com/.*?/tickets/\d+') {
@@ -1458,6 +1504,15 @@ if ($Command -match '^https?://') {
     }
     # Anything else falls through with $Command still set to the URL -- the
     # default switch case will print "unknown command" with the URL as the name.
+}
+
+# Worktree-creating commands default to -y (auto-accept every prompt: existing-copy
+# reuse, discard-local, activate, window + starter-prompt pick, auto-open claude).
+# clint always accepts the defaults now. This runs AFTER URL normalization, so a bare
+# PR/issue/advisory URL (routed to pr/issue/advisory/ghsa above) is covered too, not
+# just an explicit 'gwt new'. -Interactive restores the per-step prompts.
+if (-not $Interactive -and $Command -in @('new', 'pr', 'issue', 'advisory', 'ghsa', 'twig', 'clone')) {
+    $y = $true
 }
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -1759,6 +1814,27 @@ switch ($Command) {
         }
     }
 
+    'open' {
+        # Choose how gwt opens a claude session: 'atrium' (a real, watchable board session)
+        # or 'wt' (a Windows Terminal tab). No arg prints the active opener and its source.
+        # The choice persists in <WtRoot>\gwt-opener.txt; $env:GWT_OPENER overrides per-session.
+        #   gwt open            -- show the active opener
+        #   gwt open atrium|wt  -- set (and persist) the default opener
+        $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
+        $f = Join-Path $wtRoot 'gwt-opener.txt'
+        if ($Target) {
+            $n = $Target.Trim().ToLower()
+            if ($n -notin 'atrium','wt') { throw "opener must be 'atrium' or 'wt' (got '$Target')" }
+            Set-Content -Path $f -Value $n -Encoding UTF8 -NoNewline
+            Write-Color "gwt opener -> $n  (persisted in $f; set `$env:GWT_OPENER to override per-session)" Green
+        } else {
+            Write-Color "gwt opener: $(_GwtOpener)" Cyan
+            if ($env:GWT_OPENER)  { Write-Color "  source: `$env:GWT_OPENER" DarkGray }
+            elseif (Test-Path $f) { Write-Color "  source: $f" DarkGray }
+            else                  { Write-Color "  source: default" DarkGray }
+        }
+    }
+
     'current' {
         # Manage <WtRoot>\current -- the IDE-pinned link (directory junction).
         #   gwt current           -- print what 'current' points at
@@ -2038,15 +2114,17 @@ switch ($Command) {
         $forkRepo = $script:GhsaForkRepo
         $ghsa     = $script:GhsaId
         $branch   = $script:CloneBranch
-        if (-not ($forkRepo -and $ghsa -and $branch)) {
-            throw "'ghsa' is URL-driven -- paste a github temp-fork tree URL (.../<repo>-ghsa-xxxx-xxxx-xxxx/tree/<branch>)"
+        $prNum    = $script:GhsaPrNum
+        if (-not ($forkRepo -and $ghsa -and ($branch -or $prNum))) {
+            throw "'ghsa' is URL-driven -- paste a github temp-fork URL (.../<repo>-ghsa-xxxx-xxxx-xxxx/tree/<branch> or .../pull/<num>)"
         }
         $ctx    = Resolve-RepoContext          # Org + base Repo were set by URL parsing
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
         Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
 
-        # Add (or refresh) the temp fork as a remote, then fetch just the fix branch and
-        # point a local branch of the same name at it (so a push goes back to the fork).
+        # Add (or refresh) the temp fork as a remote, then fetch just the fix and point a
+        # local branch at it. A tree URL names the fix branch directly; a PR URL does not
+        # (and the API 404s on temp forks), so we fetch refs/pull/<num>/head over git.
         $remote  = "ghsa-$ghsa"
         $forkUrl = "https://$($ctx.RemoteHost)/$($ctx.Org)/$forkRepo.git"
         if ((& git -C $ctx.Src remote 2>$null) -contains $remote) {
@@ -2056,11 +2134,52 @@ switch ($Command) {
         }
         Write-Color "advisory temp fork: $($ctx.Org)/$forkRepo" Cyan
         Write-Color "  remote '$remote' -> $forkUrl" DarkGray
-        & git -C $ctx.Src fetch $remote $branch 2>&1 | Out-Null
-        if (-not (& git -C $ctx.Src rev-parse --verify --quiet "$remote/$branch" 2>$null)) {
-            throw "couldn't fetch '$branch' from $remote ($forkUrl) -- auth? (private fork needs your gh/git credentials) or wrong branch name"
+        if ($prNum) {
+            # PR head fetched into a tracking ref UNDER this remote so prune can key its
+            # remote cleanup off branch.<b>.remote. The local branch (and worktree dir)
+            # carry the PR number, so multiple PRs from one fork coexist on one remote.
+            $branch     = "advisory-$ghsa-pr$prNum"
+            $fetchedRef = "$remote/$branch"
+            & git -C $ctx.Src fetch $remote "refs/pull/$prNum/head:refs/remotes/$fetchedRef" 2>&1 | Out-Null
+            if (-not (& git -C $ctx.Src rev-parse --verify --quiet $fetchedRef 2>$null)) {
+                throw "couldn't fetch PR #$prNum head from $remote ($forkUrl) -- auth? (private fork needs your gh/git credentials) or wrong PR number"
+            }
+        } else {
+            $fetchedRef = "$remote/$branch"
+            & git -C $ctx.Src fetch $remote $branch 2>&1 | Out-Null
+            if (-not (& git -C $ctx.Src rev-parse --verify --quiet $fetchedRef 2>$null)) {
+                throw "couldn't fetch '$branch' from $remote ($forkUrl) -- auth? (private fork needs your gh/git credentials) or wrong branch name"
+            }
         }
-        & git -C $ctx.Src branch -f $branch "$remote/$branch" 2>&1 | Out-Null
+
+        # Point the local fix branch at the freshly fetched tip. git refuses 'branch -f' on
+        # a branch already checked out in a linked worktree (and the error would be
+        # swallowed), so when a worktree already holds it, fast-forward that checkout in
+        # place instead -- which is also how a re-run picks up new commits. A dirty or
+        # diverged checkout can't fast-forward: leave it and say so rather than clobber.
+        $existingWt = Get-WorktreePathForBranch $ctx.Src $branch
+        if ($existingWt) {
+            & git -C $existingWt merge --ff-only $fetchedRef 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Color "  refreshed $branch to the fetched tip (fast-forward)" DarkGray
+            } else {
+                Write-Color "  note: $branch at $existingWt did not fast-forward (dirty or diverged) -- left as-is" DarkYellow
+            }
+        } else {
+            & git -C $ctx.Src branch -f $branch $fetchedRef 2>&1 | Out-Null
+        }
+
+        # Record the fork remote on the branch so 'gwt prune' can tell when the last
+        # advisory worktree using this fork is gone and drop the remote with it. A PR-mode
+        # branch came from refs/pull/<num>/head (no matching fork head), so set merge there
+        # directly -- a plain --set-upstream-to would map it to refs/heads/<branch>, which
+        # does not exist on the fork and breaks 'git pull'. Tree-mode tracks the real head.
+        if ($prNum) {
+            & git -C $ctx.Src config "branch.$branch.remote" $remote 2>&1 | Out-Null
+            & git -C $ctx.Src config "branch.$branch.merge" "refs/pull/$prNum/head" 2>&1 | Out-Null
+        } else {
+            & git -C $ctx.Src branch --set-upstream-to "$remote/$branch" $branch 2>&1 | Out-Null
+        }
 
         # Seed the spawned claude with how to READ this fix, so it doesn't repeat the
         # dead end of querying the github API for the temp fork (a fine-grained PAT
@@ -2089,8 +2208,8 @@ switch ($Command) {
             $Prompt = $lines -join "`n`n"
         }
 
-        $wtPath = Join-Path $ctx.WtRoot "advisory-$ghsa"
-        $existingWt = Get-WorktreePathForBranch $ctx.Src $branch
+        $wtLeaf = if ($prNum) { $branch } else { "advisory-$ghsa" }
+        $wtPath = Join-Path $ctx.WtRoot $wtLeaf
         if ($existingWt) {
             Write-Color "ready: $existingWt (branch $branch)" Green
             _ConfirmOpenOrCd -Path $existingWt -Repo $ctx.Repo -Branch $branch -PromptOverride $Prompt -AutoOpen:$y
@@ -6155,6 +6274,7 @@ switch ($Command) {
         Write-Host "          .../issues/<num>        -> 'issue' (worktree branched off main, named issue-<num>)" -ForegroundColor DarkGray
         Write-Host "          .../security/advisories/GHSA-... -> 'advisory' (worktree off main, named advisory-<GHSA>)" -ForegroundColor DarkGray
         Write-Host "          .../<repo>-ghsa-xxxx-xxxx-xxxx/tree/<branch> -> 'ghsa' (base clone + fork remote, worktree advisory-<ghsa> on the fix branch)" -ForegroundColor DarkGray
+        Write-Host "          .../<repo>-ghsa-xxxx-xxxx-xxxx/pull/<num>    -> 'ghsa' (base clone + fork remote, worktree advisory-<ghsa>-pr<num> on the PR head)" -ForegroundColor DarkGray
         Write-Host "          .../<org>/<repo>        -> 'clone' (clone if missing, open main)" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt update-registry" -ForegroundColor Cyan

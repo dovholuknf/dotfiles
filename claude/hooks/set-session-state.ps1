@@ -24,25 +24,16 @@ if (-not $State -and -not $FromPayloadSource) {
 
 # Best-effort: any failure is swallowed so we never block claude.
 
-# Trace: every invocation appends. If you don't see entries after a prompt /
-# stop / permission-prompt, the hook didn't fire (or pwsh wasn't on PATH).
-$dbg = 'D:\worktrees\watch\hook-debug.log'
+. "$PSScriptRoot\hook-timing.ps1" -HookName "set-session-state $State"
 try {
-    [System.IO.Directory]::CreateDirectory((Split-Path $dbg)) | Out-Null
-    Add-Content -Path $dbg -Value ("{0}  set-state fired  state={1}  pid={2}" -f (Get-Date).ToString('o'), $State, $PID)
-} catch {}
 
 try {
     $stdinRedirected = [Console]::IsInputRedirected
     $raw = if ($stdinRedirected) { [Console]::In.ReadToEnd() } else { $null }
-    try {
-        Add-Content -Path $dbg -Value ("    stdinRedirected={0}  rawLen={1}" -f $stdinRedirected, $(if ($raw) { $raw.Length } else { 0 }))
-    } catch {}
     if (-not $stdinRedirected) { exit 0 }
     if (-not $raw) { exit 0 }
     $payload = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue
     $sid = $payload.session_id
-    try { Add-Content -Path $dbg -Value ("    parsed session_id={0}" -f $sid) } catch {}
     if (-not $sid) { exit 0 }
 
     # SessionEnd carries a `reason` (clear | logout | prompt_input_exit | other).
@@ -61,7 +52,6 @@ try {
         } else {
             $State = 'startup'
         }
-        try { Add-Content -Path $dbg -Value ("    derived state from source: $State") } catch {}
     }
 
     $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
@@ -107,8 +97,12 @@ try {
     # WtSession / WindowName. Pick the RIGHT one -- the entry for THIS tab wins by
     # WtSession match, else the newest by last activity. Taking the first match blind
     # is what wrote the tab line under a stale entry's window (the '[pr-1269]' bug).
+    # A plain text search picks the few files that mention this id, so only those are parsed. Parsing every
+    # file was the whole cost of this hook, and the ledger only grows.
     $candidates = @()
-    foreach ($f in (Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+    $mentions = @(Get-ChildItem $sessionDir -Filter '*.json' -ErrorAction SilentlyContinue |
+        Select-String -SimpleMatch $sid -List -ErrorAction SilentlyContinue | ForEach-Object { Get-Item $_.Path })
+    foreach ($f in $mentions) {
         try { $ce = Get-Content $f.FullName -Raw -ErrorAction Stop | ConvertFrom-Json } catch { continue }
         if ($ce.ClaudeSessionId -ne $sid) { continue }
         $candidates += [pscustomobject]@{ File = $f.FullName; Entry = $ce }
@@ -163,4 +157,5 @@ try {
     }
 } catch {}
 
+} finally { Complete-HookTiming }
 exit 0

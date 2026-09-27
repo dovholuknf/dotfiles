@@ -38,9 +38,32 @@ function _initRepo($path, $extraBranch) {
 _initRepo $claudeRepo 'claude/test'
 _initRepo $mainRepo   $null
 
-function Invoke-Hook($cmd, $cwd) {
+# Mid-rebase repos: HEAD detached, the branch being rebased in rebase-merge/head-name,
+# which is what git itself reads. One rebasing a claude/* branch, one rebasing main,
+# and one plainly detached with no rebase at all.
+function _midRebase($path, $headName) {
+    _initRepo $path $null
+    & git -C $path checkout -q --detach 2>$null
+    if ($headName) {
+        $rm = Join-Path $path '.git/rebase-merge'
+        New-Item -ItemType Directory -Path $rm -Force | Out-Null
+        Set-Content -Path (Join-Path $rm 'head-name') -Value $headName -Encoding ascii
+    }
+}
+$rebaseClaudeRepo = Join-Path $root 'rebase-claude-repo'
+$rebaseMainRepo   = Join-Path $root 'rebase-main-repo'
+$detachedRepo     = Join-Path $root 'detached-repo'
+_midRebase $rebaseClaudeRepo 'refs/heads/claude/test'
+_midRebase $rebaseMainRepo   'refs/heads/main'
+_midRebase $detachedRepo     $null
+$repos = @{
+    claude = $claudeRepo; main = $mainRepo
+    'rebase-claude' = $rebaseClaudeRepo; 'rebase-main' = $rebaseMainRepo; detached = $detachedRepo
+}
+
+function Invoke-Hook($cmd, $cwd, $tool = 'Bash') {
     # Returns $true when the hook BLOCKS, $false when it allows (no block decision emitted).
-    $payload = @{ tool_name = 'Bash'; tool_input = @{ command = $cmd }; cwd = $cwd } | ConvertTo-Json -Compress
+    $payload = @{ tool_name = $tool; tool_input = @{ command = $cmd }; cwd = $cwd } | ConvertTo-Json -Compress
     $out = $payload | & pwsh -NoProfile -File $hook
     return ("$out" -match '"decision"\s*:\s*"block"')
 }
@@ -122,19 +145,44 @@ $cases = @(
     @{ cmd = 'git config --unset alias.co';      repo = 'claude'; expect = 'block' }
     @{ cmd = 'git config --get-regexp alias';    repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git config --get alias.co';        repo = 'claude'; expect = 'allow' }
+
+    # --- mid-rebase (detached HEAD): the branch being rebased decides ---
+    @{ cmd = 'git add CHANGELOG.md';             repo = 'rebase-claude'; expect = 'allow' }
+    @{ cmd = 'git rebase --continue';            repo = 'rebase-claude'; expect = 'allow' }
+    @{ cmd = 'git add CHANGELOG.md';             repo = 'rebase-main';   expect = 'block' }
+    @{ cmd = 'git rebase --continue';            repo = 'rebase-main';   expect = 'block' }
+    @{ cmd = 'git add .';                        repo = 'detached';      expect = 'block' }   # detached, no rebase
+
+    # --- the git policy binds every shell, not just the Bash tool ---
+    # A git commit issued through the PowerShell tool used to bypass the guard entirely.
+    @{ cmd = 'git commit -m "wip"';              repo = 'main';   expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = 'git commit -m "wip"';              repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = 'git add .';                        repo = 'main';   expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = 'git push';                         repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = 'git checkout -b feature/x';        repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = 'git ci -m x';                      repo = 'main';   expect = 'block'; tool = 'PowerShell' }   # alias resolved
+    @{ cmd = 'git commit -m "co-authored-by: x"';repo = 'claude'; expect = 'block'; tool = 'PowerShell' }   # trailer ban
+    @{ cmd = 'git status';                       repo = 'main';   expect = 'allow'; tool = 'PowerShell' }   # read-only still passes
+
+    # ';' and '>' are Bash-tool ergonomics: blocked under Bash, allowed under PowerShell.
+    @{ cmd = 'git status; git status';           repo = 'claude'; expect = 'block'; tool = 'Bash' }
+    @{ cmd = 'git status; git status';           repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'block'; tool = 'Bash' }
+    @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
 )
 
 $pass = 0; $fail = 0; $failed = @()
 foreach ($c in $cases) {
-    $cwd = if ($c.repo -eq 'claude') { $claudeRepo } else { $mainRepo }
-    $blocked = Invoke-Hook $c.cmd $cwd
+    $cwd = $repos[$c.repo]
+    $tool = if ($c.tool) { $c.tool } else { 'Bash' }
+    $blocked = Invoke-Hook $c.cmd $cwd $tool
     $got = if ($blocked) { 'block' } else { 'allow' }
     if ($got -eq $c.expect) {
         $pass++
-        Write-Host ("PASS  [{0,-6}] {1,-6} {2}" -f $c.repo, $got, $c.cmd) -ForegroundColor DarkGray
+        Write-Host ("PASS  [{0,-10}] {1,-6} {2}" -f "$($c.repo)/$tool", $got, $c.cmd) -ForegroundColor DarkGray
     } else {
         $fail++; $failed += $c
-        Write-Host ("FAIL  [{0,-6}] want {1} got {2}  ::  {3}" -f $c.repo, $c.expect, $got, $c.cmd) -ForegroundColor Red
+        Write-Host ("FAIL  [{0,-10}] want {1} got {2}  ::  {3}" -f "$($c.repo)/$tool", $c.expect, $got, $c.cmd) -ForegroundColor Red
     }
 }
 

@@ -254,6 +254,27 @@ function _ConfirmNoAliveSessionAt {
 # spawn
 # ---------------------------------------------------------------------------
 
+# Which "opener" a gwt spawn uses: 'atrium' (a real, watchable board session) or 'wt' (a
+# Windows Terminal tab). This is the single place the choice is resolved; every gwt spawn
+# funnels through _OpenClaudeShell, which asks this. Resolution order, first wins:
+#   1. $env:GWT_OPENER          -- per-session override ('atrium' | 'wt')
+#   2. <WORKTREE_ROOT>\gwt-opener.txt -- the persisted default, set by 'gwt open <name>'
+#   3. legacy $env:GWT_ATRIUM=off/0/false/no  -> 'wt'
+#   4. default                  -> 'atrium'
+# An unrecognized value anywhere falls through to the next source.
+function _GwtOpener {
+    $o = "$env:GWT_OPENER".Trim().ToLower()
+    if ($o -in 'atrium','wt') { return $o }
+    $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
+    $f = Join-Path $wtRoot 'gwt-opener.txt'
+    if (Test-Path $f) {
+        try { $c = (Get-Content $f -Raw).Trim().ToLower(); if ($c -in 'atrium','wt') { return $c } } catch {}
+    }
+    $legacy = "$env:GWT_ATRIUM".Trim().ToLower()
+    if ($legacy -in '0','off','false','no') { return 'wt' }
+    return 'atrium'
+}
+
 function _OpenClaudeShell {
     param(
         [string]$Path,
@@ -267,26 +288,18 @@ function _OpenClaudeShell {
         [switch]$Verbose            # show runas chatter
     )
 
-    # Atrium-owned by default: hand a fresh claude launch to atrium (its own pty, on the
-    # board, browser-attachable) instead of spawning a wt tab. _OpenClaudeShell is the one
-    # function EVERY gwt spawn path funnels through -- new, claude, the URL verbs, the
-    # resume-last-picks fast path -- so intercepting HERE covers all of them with no
-    # per-site wiring. Skips: -NoClaude (a plain themed shell, not a claude session),
-    # -ReuseSessionId (a restore; atrium cannot resume a wt session id), and
-    # GWT_ATRIUM=off. Falls through to the wt spawn below when atrium is not running.
-    #   GWT_ATRIUM unset|on -> atrium ; =ask -> ask per spawn ; =off -> wt tab (legacy)
-    if (-not $NoClaude -and -not $ReuseSessionId) {
-        $atMode = if ($env:GWT_ATRIUM) { $env:GWT_ATRIUM.Trim().ToLower() } else { 'on' }
-        if ($atMode -eq 'ask') {
-            $r = Read-Host "start '$Branch' as an atrium-owned session (Y) or a windows terminal tab (n)? (Y/n)"
-            $atMode = if ($r -match '^[Nn]$') { 'off' } else { 'on' }
+    # Pick the opener. _OpenClaudeShell is the one function EVERY gwt spawn path funnels
+    # through (new, claude, the URL verbs, the resume-last-picks fast path), so choosing the
+    # opener HERE covers all of them with no per-site wiring. The 'atrium' opener hands the
+    # launch to a real board session and returns; the 'wt' opener (and the atrium->wt
+    # fallback when the daemon is down) continues to the wt.exe spawn below. Skipped for
+    # -NoClaude (a plain themed shell, not a claude session) and -ReuseSessionId (a restore;
+    # atrium cannot resume a wt session id). Toggle with 'gwt open <atrium|wt>'.
+    if (-not $NoClaude -and -not $ReuseSessionId -and (_GwtOpener) -eq 'atrium') {
+        if (_LaunchOnAtrium -Path $Path -Title $Branch -Why "gwt $Branch" -Tags @('gwt', $Repo) -PromptText $PromptText -Repo $Repo -Branch $Branch) {
+            return
         }
-        if ($atMode -ne 'off') {
-            if (_LaunchOnAtrium -Path $Path -Title $Branch -Why "gwt $Branch" -Tags @('gwt', $Repo) -PromptText $PromptText -Repo $Repo -Branch $Branch) {
-                return
-            }
-            Write-Color "  atrium not running -- opening a windows terminal tab instead" DarkGray
-        }
+        Write-Color "  atrium not running -- opening a windows terminal tab instead" DarkGray
     }
 
     # Resolve picker sentinels here, the single chokepoint that records the window
@@ -788,10 +801,7 @@ function _RegisterOrClaimClaudeSession {
         } -Descending)
         $existing = [PSCustomObject]@{ Entry = $sorted[0].Entry; File = $sorted[0].File; MatchedBy = 'WtSession' }
         foreach ($dup in ($sorted | Select-Object -Skip 1)) {
-            try {
-                Remove-Item $dup.File -Force -ErrorAction SilentlyContinue
-                Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    DEDUP-DROP file={0} (same WtSession {1})" -f $dup.File, $wtSess)
-            } catch {}
+            try { Remove-Item $dup.File -Force -ErrorAction SilentlyContinue } catch {}
         }
     } elseif ($pathMatch) {
         $existing = [PSCustomObject]@{ Entry = $pathMatch.Entry; File = $pathMatch.File; MatchedBy = 'WorktreePath' }
@@ -810,10 +820,8 @@ function _RegisterOrClaimClaudeSession {
         $e | Add-Member -NotePropertyName State           -NotePropertyValue 'idle' -Force
         $e | Add-Member -NotePropertyName LastStateChange -NotePropertyValue (Get-Date).ToString('o') -Force
         ($e | ConvertTo-Json -Depth 5) | Set-Content -Path $existing.File -Encoding UTF8
-        try { Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    CLAIM  file={0}  cwd={1}  claudeSessionId={2}" -f $existing.File, $cwd, $claudeSessionId) } catch {}
         return
     }
-    try { Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    NEW    cwd={0}  claudeSessionId={1}" -f $cwd, $claudeSessionId) } catch {}
 
     # Create a new entry from scratch. Best-guess branch/repo via git.
     $branch = ''
@@ -880,7 +888,6 @@ function _RegisterOrClaimClaudeSession {
     }
     $newFile = Join-Path $script:GwtSessionDir "$sessionId.json"
     ($entry | ConvertTo-Json -Depth 5) | Set-Content -Path $newFile -Encoding UTF8
-    try { Add-Content -Path 'D:\worktrees\watch\hook-debug.log' -Value ("    WROTE  file={0}" -f $newFile) } catch {}
 }
 
 function _UnregisterClaudeSession {

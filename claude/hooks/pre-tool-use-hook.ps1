@@ -41,7 +41,7 @@ $rootBlock = "Do not create folders at the root of a drive. Put it under D:\tmp 
              "default output path too: running the script is the same act as writing the files " +
              "directly, so change the default rather than passing an override."
 
-if ($json.tool_name -eq "Bash") {
+if ($json.tool_input.command) {
     $newRoot = Find-NewRootPath $json.tool_input.command
     if ($newRoot) {
         @{
@@ -63,7 +63,35 @@ if ($json.tool_name -eq "Write" -or $json.tool_name -eq "Edit" -or $json.tool_na
     }
 }
 
-if ($json.tool_name -eq "Bash") {
+if ($json.tool_name -eq "Task") {
+    # Redirect plain Claude subagents to real atrium sessions, so agent work is watchable
+    # on the board and kept in history instead of being ephemeral. ON by default; set
+    # ATRIUM_ONLY_SUBAGENTS=0 (or off/false/no) to allow normal subagents for a session --
+    # the fan-out skills (review-panel, qa-review, pr-review, afk) need that. Fail-open:
+    # pure string check, no external call.
+    #
+    # READ-ONLY HELPERS ARE EXEMPT. Explore and Plan spawn no board card and mutate nothing;
+    # a doer using one to read the codebase is not the ephemeral-work problem this guards
+    # against. They pass through even when the guard is on. log-subagent.ps1 still records the
+    # start (type + description = the why) into state.log, so every one is visible in agent-log.
+    # clint's decision 2026-09-21: allow read-only subagents inside doers, keep redirecting the rest.
+    $subtype = "$($json.tool_input.subagent_type)".Trim().ToLower()
+    $readonlyAgents = @('explore', 'plan')
+    $g = "$env:ATRIUM_ONLY_SUBAGENTS".Trim().ToLower()
+    if (($readonlyAgents -notcontains $subtype) -and $g -ne '0' -and $g -ne 'off' -and $g -ne 'false' -and $g -ne 'no') {
+        @{
+            decision = "block"
+            reason   = "Plain Claude subagents are off here (ATRIUM_ONLY_SUBAGENTS). Run substantive agent work as a REAL atrium session instead, so it is watchable on the board and kept in history. HARD RULE, check FIRST: call the atrium-control MCP tool atrium_peers and count the running sessions YOU launched (sessions the user started do not count); if you launched 10 or more (the concurrency cap), do NOT launch another -- wait for one to finish or ask clint, do not spawn past the cap. Otherwise: (1) make/prepare the working directory first -- it must already exist; (2) call atrium_launch with cwd, a short title, a one-line why, and a FULL prompt containing the ENTIRE task (the new session inherits NONE of this conversation's context, so spell it all out); (3) use the returned card id with atrium_task / atrium_say to follow up. If a normal one-shot subagent is genuinely wanted this session, the user can set ATRIUM_ONLY_SUBAGENTS=0 and retry."
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
+}
+
+# Any tool that carries a shell command, not just the Bash tool. A PowerShell tool call
+# (or any future shell tool) presents its command in tool_input.command too, and a git
+# commit issued that way must hit the same policy -- gating on tool_name == "Bash" left a
+# hole where `git commit` on a non-claude/* branch sailed through the PowerShell tool.
+if ($json.tool_input.command) {
     $cmd = $json.tool_input.command
 
     # No Co-Authored-By trailer, ever. Catches it in git commit messages and gh pr bodies.
@@ -160,6 +188,19 @@ if ($json.tool_name -eq "Bash") {
         $verb = $Matches[1]
         $branch = ''
         try { $branch = "$(& git -C "$gitCwd" rev-parse --abbrev-ref HEAD 2>$null)".Trim() } catch { $branch = '' }
+        # Mid-rebase HEAD is detached. The branch being rebased is in head-name
+        # (rebase-merge for -m/-i, rebase-apply for the am backend).
+        if ($branch -eq 'HEAD') {
+            foreach ($dir in 'rebase-merge', 'rebase-apply') {
+                $hn = ''
+                try { $hn = "$(& git -C "$gitCwd" rev-parse --git-path "$dir/head-name" 2>$null)".Trim() } catch { $hn = '' }
+                if ($hn -and -not [IO.Path]::IsPathRooted($hn)) { $hn = Join-Path $gitCwd $hn }
+                if ($hn -and (Test-Path -LiteralPath $hn)) {
+                    $branch = ((Get-Content -LiteralPath $hn -Raw) -replace '^refs/heads/', '').Trim()
+                    break
+                }
+            }
+        }
         if ($branch -notmatch '^claude/') {
             $where = if ($branch) { "current branch is '$branch'" } else { "no claude/* branch is checked out" }
             _GitBlock "claude may only '$verb' on a claude/* branch ($where). Switch to a claude/* branch, or hand the command to the user."
@@ -220,21 +261,26 @@ if ($json.tool_name -eq "Bash") {
 		exit 0
 	}
 	
-	if ($cmd -match ';') {
-		@{
-			decision = "block"
-			reason   = "Do not chain multiple commands with ';'. Run one command at a time."
-		} | ConvertTo-Json -Compress
-		exit 0
+	# ';' chaining and '>' redirection are Bash-tool ergonomics only. PowerShell uses ';' as
+	# its statement separator and '>' / '2>&1' as normal redirection, so these two stay
+	# scoped to the Bash tool. The git/co-author policy above is NOT scoped -- it binds every shell.
+	if ($json.tool_name -eq "Bash") {
+		if ($cmd -match ';') {
+			@{
+				decision = "block"
+				reason   = "Do not chain multiple commands with ';'. Run one command at a time."
+			} | ConvertTo-Json -Compress
+			exit 0
+		}
+
+		if ($cmd -match '[>]{1,2}\s*\S+') {
+			@{
+				decision = "block"
+				reason   = "Use tee instead of > or >> for output redirection."
+			} | ConvertTo-Json -Compress
+			exit 0
+		}
 	}
-	
-	if ($cmd -match '[>]{1,2}\s*\S+') {
-		@{
-			decision = "block"
-			reason   = "Use tee instead of > or >> for output redirection."
-		} | ConvertTo-Json -Compress
-		exit 0
-    }
 	
 	# CMake must go THROUGH a preset. A bare 'cmake --build' or bare configure re-runs
 	# vcpkg with the shell environment, missing VCPKG_BINARY_SOURCES and the shared

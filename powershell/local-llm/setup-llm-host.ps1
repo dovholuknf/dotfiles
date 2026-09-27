@@ -255,15 +255,21 @@ function Should-Run {
     ($Phase -contains $Name) -and ($SkipPhase -notcontains $Name)
 }
 
-function Get-LatestLlamaTag {
+function Get-LatestLlamaRelease {
+    # llama.cpp publishes every binary build as a prerelease, so /releases/latest returns an unrelated
+    # non-binary release (a v0.x tag) and the setup finds no Windows asset. Page through /releases and
+    # take the newest one that actually carries the asset this host needs.
     # Unauthenticated GitHub API allows 60 requests an hour, which is ample for a setup run.
+    param([Parameter(Mandatory)][string]$AssetPattern)
     try {
-        $r = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' `
+        $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20' `
             -Headers @{ 'User-Agent' = 'setup-llm-host' }
-        return $r.tag_name
     } catch {
         throw "Could not reach the llama.cpp releases API: $($_.Exception.Message)"
     }
+    $rel = $rels | Where-Object { $_.assets.name -match $AssetPattern } | Select-Object -First 1
+    if (-not $rel) { throw "No recent llama.cpp release carries an asset matching $AssetPattern." }
+    return $rel
 }
 
 function Get-GpuVendor {
@@ -597,19 +603,20 @@ if (Should-Run 'Runtime') {
     } elseif ($PSCmdlet.ShouldProcess($llamaDir, 'install llama.cpp')) {
 
         $vendor = Get-GpuVendor
-        $tag    = Get-LatestLlamaTag
-        Write-Host "   release $tag, GPU vendor $vendor" -ForegroundColor DarkGray
 
-        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/$tag" `
-            -Headers @{ 'User-Agent' = 'setup-llm-host' }
-
-        # Vulkan covers AMD and Intel without a vendor toolkit; CUDA is worth the extra cudart download
+        # Vulkan covers AMD and Intel without a vendor toolkit. CUDA is worth the extra cudart download
         # only on NVIDIA. The cudart DLLs must unpack into the same directory as the executables.
         $wanted = if ($vendor -eq 'nvidia') { 'bin-win-cuda-\d+\.\d+-x64\.zip$' } else { 'bin-win-vulkan-x64\.zip$' }
 
-        $main = $rel.assets | Where-Object { $_.name -match $wanted } |
+        $rel = Get-LatestLlamaRelease -AssetPattern $wanted
+        $tag = $rel.tag_name
+        Write-Host "   release $tag, GPU vendor $vendor" -ForegroundColor DarkGray
+
+        # The CUDA pattern also matches the cudart archive, so anchor the main build to the llama- prefix.
+        # Sort descending prefers the highest CUDA minor version when a release ships more than one.
+        $main = $rel.assets | Where-Object { $_.name -match "^llama-.*$wanted" } |
             Sort-Object name -Descending | Select-Object -First 1
-        if (-not $main) { throw "No asset matching $wanted in release $tag." }
+        if (-not $main) { throw "No llama- asset matching $wanted in release $tag." }
 
         $assets = @($main)
         if ($vendor -eq 'nvidia') {

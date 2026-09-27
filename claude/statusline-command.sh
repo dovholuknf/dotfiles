@@ -93,16 +93,16 @@ fh_suffix=""
 seg " 5h " "$fh_pct" "$fh_suffix"
 seg " wk " "$wk_pct"
 
-# Context: raw tokens with a zone that gets louder as it fills. 200k is the one
-# non-arbitrary threshold (past it the 1M context moves to the premium tier);
-# 75%/90% are judgement, 90% leaving ~100k to finish and compact deliberately.
+# Context: raw tokens with a zone that gets louder as it fills. Thresholds are ABSOLUTE
+# token counts, not percentages: 200k sweet ceiling (past it the 1M context moves to the
+# premium tier), 300k warning, 400k LAND THE PLANE (leaving ~600k of a 1M window, deliberate).
 u=${ctx_used%%.*}
 z=${ctx_size%%.*}
 if [ -n "$u" ] && [ "$u" -ge 0 ] 2>/dev/null && [ -n "$z" ] && [ "$z" -gt 0 ] 2>/dev/null; then
     pct=$(( u * 100 / z ))
-    if [ "$pct" -ge 90 ]; then
+    if [ "$u" -ge 400000 ]; then
         printf -v tmp '\033[90m  |\033[0m\033[1;97;41m  LAND THE PLANE  %s/%s  (%s%%)  /compact  \033[0m' "$u" "$z" "$pct"
-    elif [ "$pct" -ge 75 ]; then
+    elif [ "$u" -ge 300000 ]; then
         printf -v tmp '\033[90m  |\033[0m\033[1;33m ctx %s/%s (%s%%) getting full\033[0m' "$u" "$z" "$pct"
     elif [ "$u" -le 200000 ]; then
         printf -v tmp '\033[90m  |\033[0m\033[90m ctx \033[0m\033[32m%s\033[0m\033[90m/%s\033[0m\033[32m sweet\033[0m' "$u" "$z"

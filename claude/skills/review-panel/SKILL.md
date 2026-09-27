@@ -198,4 +198,6 @@ Output one consolidated report:
 - A short note on anything you merged, dropped, or downgraded during triage and verification, so the
   user can see what was reconciled.
 
-Do not apply fixes. End by offering to apply the agreed-upon ones, and let the user choose which.
+Report only. Do NOT apply fixes, and do NOT end by asking whether to fix anything ("should I fix the
+highs?", "want me to apply these?"). Each finding already carries its `fix`; the user acts on the report
+themselves. Stop after the report. Apply a fix only if the user, in a later message, explicitly asks for it.

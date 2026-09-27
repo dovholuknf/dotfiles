@@ -5,6 +5,10 @@ $script = "$onPath\disk-usage.ps1"
 $outdir = "V:\disk-usage-history"
 $ts     = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 
+# Timing, appended to run-history.txt at the end so we can see how long each run takes.
+$startedAt = Get-Date
+$sw        = [System.Diagnostics.Stopwatch]::StartNew()
+
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host " weekly-disk-usage scheduled task" -ForegroundColor Cyan
@@ -82,6 +86,36 @@ foreach ($o in $outputs) {
     } else {
         Write-Host ("  {0,-4}  FAILED -- no output file at {1}" -f $o.Drive, $o.File) -ForegroundColor Red
     }
+}
+
+# Elapsed + one row per run into run-history.txt (tab-separated, header written once).
+# Columns: started, elapsed_s (parseable), elapsed (hh:mm:ss), then <KB>KB/<lines>ln per
+# drive (or FAIL). Lets us track how long the snapshot takes over time.
+$sw.Stop()
+$elapsed  = $sw.Elapsed
+$histFile = Join-Path $outdir 'run-history.txt'
+$driveCells = foreach ($o in $outputs) {
+    if (Test-Path $o.File) {
+        $kb = [int]((Get-Item $o.File).Length / 1KB)
+        $ln = (Get-Content $o.File | Measure-Object -Line).Lines
+        "{0}KB/{1}ln" -f $kb, $ln
+    } else { 'FAIL' }
+}
+$row = @(
+    $startedAt.ToString('yyyy-MM-dd HH:mm:ss')
+    [int]$elapsed.TotalSeconds
+    ('{0:hh\:mm\:ss}' -f $elapsed)
+) + $driveCells
+try {
+    New-Item -ItemType Directory -Force -Path $outdir | Out-Null
+    if (-not (Test-Path $histFile)) {
+        $header = @('started', 'elapsed_s', 'elapsed') + ($outputs | ForEach-Object { $_.Drive.TrimEnd('\') })
+        Add-Content -Path $histFile -Value ($header -join "`t")
+    }
+    Add-Content -Path $histFile -Value ($row -join "`t")
+    Write-Host ("  elapsed: {0}  (logged to {1})" -f ('{0:hh\:mm\:ss}' -f $elapsed), $histFile) -ForegroundColor White
+} catch {
+    Write-Host ("  (could not write run history: {0})" -f $_.Exception.Message) -ForegroundColor DarkYellow
 }
 Write-Host ""
 

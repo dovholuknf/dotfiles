@@ -293,11 +293,12 @@ throwaway shell, but a provider must be defined somewhere before `-m provider/mo
 
 ## Measured results
 
-`llama-bench -ngl 99 -p 4096 -n 128 -r 3`, same command on both machines.
+`llama-bench -ngl 99 -p 4096 -n 128 -r 3`, same command on all three machines.
 
 | model | host | GPU | prompt t/s | generation t/s |
 | --- | --- | --- | --- | --- |
 | Qwen3-Coder 30B-A3B, UD-Q4_K_XL | SG4 | RTX 4070 Laptop, 8GB | 380.5 ± 6.3 | 25.3 ± 2.7 |
+| Qwen3-Coder 30B-A3B, UD-Q4_K_XL | sgg | RTX 4070 desktop, 12GB | 824.7 ± 4.5 | 59.5 ± 1.0 |
 | Qwen3-Coder 30B-A3B, UD-Q4_K_XL | SGX2 | Radeon 8060S, unified | 1200.2 ± 6.5 | 95.3 ± 0.1 |
 | Qwen3-Coder-Next 80B-A3B, UD-Q4_K_XL | SGX2 | Radeon 8060S, unified | 729.1 ± 9.6 | 47.8 ± 0.3 |
 | Qwen3.8-27B dense, UD-Q4_K_XL | SGX2 | Radeon 8060S, unified | 261.8 ± 0.2 | 12.6 ± 0.0 |
@@ -417,6 +418,33 @@ prefix mid-session and reintroduce the 21-second pause for no visible reason.
 
 If prompt size is the floor, the harness is the lever: Pi's system prompt is under 1k tokens against
 OpenCode's ~9.7k.
+
+## Serving concurrent requests
+
+`--parallel N` gives the server N slots and, with continuous batching (on by default), serves N requests
+at once rather than queuing them. The KV cache is fixed by `--ctx-size` and split across the slots, so
+raising `--parallel` costs no extra VRAM but shrinks each slot to `ctx-size / N` tokens. Raising per-slot
+context back up means raising `--ctx-size`, which does cost KV VRAM and forces a higher `--n-cpu-moe`.
+
+Measured on sgg (RTX 4070, 12GB, Qwen3-Coder 30B-A3B UD-Q4_K_XL, n-cpu-moe 26, ctx 32768), firing K
+concurrent 256-token requests:
+
+| concurrency | aggregate t/s | per-request t/s | avg latency |
+| --- | --- | --- | --- |
+| 1 | 51.1 | 51.1 | 4.6s |
+| 2 | 73.3 | 38.0 | 6.0s |
+| 4 | 114.6 | 30.0 | 8.1s |
+| 8 | 147.1 | 19.0 | 12.2s |
+| 12 | 106.5 | 15.7 | 26.6s |
+
+Three rules come out of it:
+
+- **Never dispatch more concurrent requests than slots.** At K=12 against 8 slots the extra four queue,
+  wall time doubles, and aggregate throughput falls below the K=8 figure.
+- **Aggregate throughput peaks at the slot count.** Eight slots reach 147 t/s, about 2.9x single-stream,
+  the right setting for background drafting where nothing waits on a single response.
+- **Per-request speed decays the whole way** (51 to 19 t/s from K=1 to K=8). Cap concurrency at 4 when a
+  human waits on each response: 30 t/s per request stays readable while still roughly doubling aggregate.
 
 ## Choosing the pieces
 

@@ -31,6 +31,14 @@
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $OutputEncoding = [Text.Encoding]::UTF8
 
+# ── atrium board address ─────────────────────────────────────────────────────
+# Pin where the atrium daemon's board listens, so gwt's opener reaches it WITHOUT
+# daemon.json discovery -- that broke across the two accounts and the atrium2/hub
+# rework (daemon.json no longer where the probe looked). gwt's _GetAtriumBoard checks
+# this env var FIRST. Override per-session by setting GWT_ATRIUM_BOARD before load;
+# change the port here if the daemon ever moves.
+if (-not $env:GWT_ATRIUM_BOARD) { $env:GWT_ATRIUM_BOARD = 'http://localhost:7778' }
+
 # ── PATH manipulation ────────────────────────────────────────────────────────
 
 function update-path {
@@ -776,9 +784,9 @@ function _WtPrompt {
         Write-Host "[$global:WtLabel] " -NoNewLine -ForegroundColor "DarkCyan"
     }
     if ($global:WtThemeName) {
-        Write-Host "[$global:WtThemeName] " -NoNewLine -ForegroundColor "DarkCyan"
+        Write-Host "[$($env:USERNAME):$global:WtThemeName] " -NoNewLine -ForegroundColor "DarkCyan"
     } else {
-        Write-Host "[default] " -NoNewLine -ForegroundColor "DarkGray"
+        Write-Host "[$($env:USERNAME):default] " -NoNewLine -ForegroundColor "DarkGray"
     }
     Write-Host $env:COMPUTERNAME -NoNewLine -ForegroundColor "White"
     Write-Host ": " -NoNewLine
@@ -804,6 +812,27 @@ function gwt {
     $hintFile = Join-Path $env:TEMP "gwt-cwd-hint-$PID.txt"
     Remove-Item $hintFile -Force -ErrorAction SilentlyContinue
     $env:GWT_HINT_FILE = $hintFile
+
+    # Prune from INSIDE a worktree can't succeed: THIS shell's Win32 cwd holds an OS
+    # handle on the dir, and the prune script (a child process) cannot move the parent.
+    # So if we're pruning and the cwd is inside a worktree, move THIS shell out to the
+    # repo's main clone FIRST -- before the script runs -- so the removal isn't blocked.
+    # (The script also tries, but only for its own cwd; the parent is the real lock.)
+    if ($args.Count -ge 1 -and $args[0] -eq 'prune' -and $env:WORKTREE_ROOT) {
+        $cur = (Get-Location).Path
+        $wtr = $env:WORKTREE_ROOT.TrimEnd('\')
+        if ($cur.ToLower().StartsWith($wtr.ToLower() + '\')) {
+            $rel = $cur.Substring($wtr.Length + 1) -split '[\\/]'
+            if ($rel.Count -ge 3) {
+                $gitRoot   = if ($env:GIT_ROOT) { $env:GIT_ROOT.TrimEnd('\') } else { 'D:\git' }
+                $mainClone = Join-Path $gitRoot (($rel[0..2]) -join '\')
+                $dest      = if (Test-Path $mainClone) { $mainClone } else { $gitRoot }
+                Set-Location $dest; [Environment]::CurrentDirectory = $dest
+                Write-Host "gwt: moved this shell to '$dest' before pruning (it was inside a worktree)" -ForegroundColor DarkGray
+            }
+        }
+    }
+
     if ($args.Count -ge 1 -and $args[0] -eq 'cd') {
         $p = & "$env:ON_PATH\git-worktree.ps1" @args
         if ($LASTEXITCODE -eq 0 -and $p) { Set-Location $p; [Environment]::CurrentDirectory = $p }
@@ -890,10 +919,11 @@ function cdtk ()  { cd $env:GH_ROOT\openziti-test-kitchen }
 function cdbb ()  { cd $env:BB_ROOT }
 function cdbbnf () { cd $env:BB_ROOT\netfoundry }
 function cdnf ()  { cd $env:GH_ROOT\netfoundry }
+function cda ()   { cd $env:GH_ROOT\dovholuknf\atrium }
 function cdz ()   { cd $env:OZ_ROOT\ziti }
 function cdo ()   { cd $env:OZ_ROOT }
-function oz ()    { cd $env:OZ_ROOT }
-function zrok ()  { cd $env:OZ_ROOT\zrok }
+function oz ()     { cd $env:OZ_ROOT }
+function cdzrok () { cd $env:OZ_ROOT\zrok }   # NOT 'zrok' -- that shadows the zrok binary
 function cdzd ()  { cd $env:OZ_ROOT\ziti-doc }
 function cdew ()  { cd $env:OZ_ROOT\desktop-edge-win }
 function cdzet () { cd $env:OZ_ROOT\ziti-tunnel-sdk-c }

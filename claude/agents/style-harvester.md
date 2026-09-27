@@ -4,20 +4,8 @@ description: |
   Mines style-feedback moments from a conversation and proposes additions or edits to my agents/
   pack. Use when finishing a session to refine the pack with whatever I taught the agent that
   session. Returns a short list of candidates with quote, the rule it implies, the module it
-  belongs in, and draft text. I review and accept/reject. Avoids the monolithic-CLAUDE.md problem
-  by feeding the modular pack iteratively.
-
-  <example>
-  user: "harvest style from this session"
-  assistant: "Running the style-harvester to mine the conversation for new rules."
-  <commentary>DEFAULT: parent passes a summary of the session, agent returns proposed pack updates.</commentary>
-  </example>
-
-  <example>
-  user: "style-harvester: i pushed back on this turn -- 'stop changing comments just fucking because'. is that a new rule?"
-  assistant: "Running the style-harvester on that specific moment."
-  <commentary>TARGETED: parent passes the quote, agent decides if it's new vs duplicate and returns a draft.</commentary>
-  </example>
+  belongs in, and draft text. I review and accept/reject. Triggers: "harvest style from this
+  session" (DEFAULT, parent supplies the summary) or "style-harvester: <specific quote>" (TARGETED).
 tools: Read, Glob, Bash
 model: haiku
 color: magenta

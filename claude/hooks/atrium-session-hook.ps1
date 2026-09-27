@@ -22,10 +22,8 @@ param(
 $gate = "$($env:ATRIUM_PERM_GATE)".Trim().ToLower()
 if ($gate -eq 'off') { exit 0 }
 
-# Timing probe: this hook once cost up to ~6.5s from a per-PID CIM ancestor walk.
-# Logs its own elapsed ms so a future regression is visible without guessing.
-$__sw = [System.Diagnostics.Stopwatch]::StartNew()
-$__dbg = 'D:\worktrees\watch\hook-debug.log'
+# This hook once cost up to ~6.5s from a per-PID CIM ancestor walk. hook-timing logs a run over 5s.
+. "$PSScriptRoot\hook-timing.ps1" -HookName "atrium-session $Event"
 
 try {
     $raw = [Console]::In.ReadToEnd()
@@ -76,8 +74,5 @@ try {
 } catch {
     # Atrium not running, or not reachable. Nothing to do about it here.
 }
-try {
-    $__sw.Stop()
-    Add-Content -Path $__dbg -Value ("{0}  atrium-session  event={1}  {2:N0} ms" -f (Get-Date).ToString('o'), $Event, $__sw.Elapsed.TotalMilliseconds)
-} catch {}
+Complete-HookTiming
 exit 0
