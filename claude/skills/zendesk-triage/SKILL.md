@@ -1,12 +1,9 @@
 ---
 name: zendesk-triage
 description: >
-  Triage a NetFoundry Zendesk support ticket end to end: pull the ticket and every comment (internal
-  included), summarize it into the working repo, enumerate and download attachments, hand the logs to the
-  right analyzer, and produce a reply plan that separates what the logs prove from what is still the
-  customer's claim. Invoke when the user gives a Zendesk ticket number or netfoundry.zendesk.com URL, says
-  "read this ticket", "triage 16059", "summarize this ticket", "what's going on in this ticket", or asks how
-  to answer a customer on one. It reads and analyzes; it never posts to the ticket.
+  Triage a NetFoundry Zendesk ticket: pull all comments, download attachments, route logs to the right analyzer,
+  and plan a reply that separates proven facts from customer claims. Use for a ticket number or
+  netfoundry.zendesk.com URL, "read this ticket", "triage 16059", "summarize this ticket". Never posts.
 ---
 
 # zendesk-triage

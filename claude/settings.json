@@ -1,6 +1,11 @@
 {
+  "cleanupPeriodDays": 3650,
   "env": {
     "_ATRIUM_PERM_GATE": "on"
+  },
+  "attribution": {
+    "commit": "Co-Authored-By: deez nutz",
+    "pr": "🤖  Generated with deez nutz"
   },
   "permissions": {
     "allow": [
@@ -19,6 +24,7 @@
       "Bash(head:*)",
       "Bash(tail:*)",
       "Bash(wc:*)",
+      "Bash(sha256sum:*)",
       "Bash(du:*)",
       "Bash(grep:*)",
       "Bash(tee:*)",
@@ -108,20 +114,13 @@
       "WebFetch(domain:openziti.discourse.group)"
     ],
     "deny": [
-      "Bash(git checkout*)",
-      "Bash(git commit*)",
-      "Bash(git reset*)",
-      "Bash(git restore*)",
-      "Bash(git clean*)",
-      "Bash(git push*)",
-      "Bash(git rebase*)",
-      "Bash(git fetch*)",
-      "Bash(git branch -D*)",
-      "Bash(git branch -d*)",
-      "Bash(git branch -m*)",
-      "Bash(git branch -c*)",
-      "Bash(git checkout -b*)",
-      "Bash(git switch -c*)",
+      "AskUserQuestion",
+      "ShareOnboardingGuide",
+      "SendFeedback",
+      "Workflow",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "ListAgents",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./secrets/**)",
@@ -130,61 +129,65 @@
       "Read(/e/**)",
       "Artifact",
       "Artifact(*)"
-    ]
+    ],
+    "blockReadsOutsideWorkingDirectories": false
   },
-  "hooks": {
-    "PostToolUse": [],
-    "PreToolUse": [
+  "model": "claude-opus-5-5[1m]",
+  "modelPicker": {
+    "options": [
       {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/atrium-perm-hook.ps1",
-            "timeout": 86400
-          },
-          {
-            "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -File C:/Users/claude/.claude/hooks/pre-tool-use-hook.ps1",
-            "timeout": 5
-          }
-        ]
+        "model": "claude-opus-5",
+        "label": "Opus 5"
       },
       {
-        "matcher": "Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/log-subagent.ps1 -Phase start",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
+        "model": "claude-opus-4-8",
+        "label": "Opus 4.8"
+      },
       {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/log-subagent.ps1 -Phase stop",
-            "timeout": 5
-          }
-        ]
+        "model": "claude-opus-4-7",
+        "label": "Opus 4.7"
+      },
+      {
+        "model": "claude-opus-4-6",
+        "label": "Opus 4.6"
       }
-    ],
+    ]
+  },
+  "disableClaudeAiConnectors": true,
+  "skillOverrides": {
+    "customer-trends": "off",
+    "hubspot-leads-reporting": "off",
+    "docs": "off",
+    "pptx": "off",
+    "xlsx": "off",
+    "docx": "off",
+    "ops-triage": "off",
+    "trace-analyzer": "off",
+    "pdf": "off",
+    "morning": "off",
+    "skill-creator": "off",
+    "import-memory": "off",
+    "claude-api": "off",
+    "loop": "off",
+    "dataviz": "off",
+    "claude-in-chrome": "off",
+    "schedule": "off",
+    "run": "off",
+    "init": "off",
+    "security-review": "off",
+    "keybindings-help": "off",
+    "fewer-permission-prompts": "off",
+    "simplify": "off"
+  },
+  "hooks": {
     "Notification": [
       {
         "matcher": "permission_prompt",
         "hooks": [
           {
             "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
-          },
-          {
-            "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
-            "timeout": 5
+            "timeout": 15
           },
           {
             "type": "command",
@@ -198,12 +201,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/notification.wav').PlaySync()\""
-          },
-          {
-            "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
-            "timeout": 5
+            "timeout": 15
           },
           {
             "type": "command",
@@ -211,42 +210,13 @@
             "timeout": 5
           }
         ]
-      }
-    ],
-    "UserPromptSubmit": [
+      },
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State thinking",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/filler-guard.ps1",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/snapshot-layout.ps1",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "none",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/stop.wav').PlaySync()\""
-          },
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State idle",
-            "timeout": 5
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event notification"
           }
         ]
       }
@@ -254,10 +224,91 @@
     "PermissionRequest": [
       {
         "matcher": "",
+        "hooks": []
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -WindowStyle Hidden -Command \"(New-Object Media.SoundPlayer 'C:/Users/claude/.claude/sounds/permissionrequest.wav').PlaySync()\""
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-end"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-failed"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe session --event compact"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event permission",
+            "timeout": 86400
+          },
+          {
+            "type": "command",
+            "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -File C:/Users/claude/.claude/hooks/pre-tool-use-hook.ps1",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-start"
+          }
+        ]
+      },
+      {
+        "matcher": "Task|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/log-subagent.ps1 -Phase start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State ended",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe session --event end",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -WindowStyle Hidden -File C:/Users/claude/.claude/hooks/session-bootstrap.ps1 -Phase end",
+            "timeout": 5
           }
         ]
       }
@@ -274,46 +325,111 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -FromPayloadSource",
-            "timeout": 5
+            "timeout": 15
           },
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/atrium-session-hook.ps1 -Event start",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe session --event start",
             "timeout": 8
           }
         ]
       }
     ],
-    "SessionEnd": [
+    "Stop": [
+      {
+        "matcher": "none",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State idle",
+            "timeout": 15
+          }
+        ]
+      },
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State ended",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe turn --event end"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/log-subagent.ps1 -Phase stop",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/atrium-session-hook.ps1 -Event end",
-            "timeout": 5
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event subagent-end"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State thinking",
+            "timeout": 15
           },
           {
             "type": "command",
-            "command": "pwsh -NoProfile -WindowStyle Hidden -File C:/Users/claude/.claude/hooks/session-bootstrap.ps1 -Phase end",
-            "timeout": 5
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/filler-guard.ps1",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/snapshot-layout.ps1",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event prompt"
           }
         ]
       }
     ]
   },
+  "disableAgentView": true,
+  "enableArtifact": false,
   "statusLine": {
     "type": "command",
     "command": "bash /c/Users/claude/.claude/statusline-command.sh"
   },
   "feedbackSurveyRate": 0,
+  "spinnerTipsEnabled": false,
   "effortLevel": "medium",
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "medium"
+    }
+  },
+  "autoCompactWindow": 253000,
+  "promptSuggestionEnabled": false,
   "autoUpdatesChannel": "latest",
+  "skipWorkflowUsageWarning": true,
+  "autoCompactEnabled": true,
+  "switchModelsOnFlag": false,
   "junk": [
     {
       "type": "command",

@@ -1,8 +1,8 @@
 ---
 name: code-audit
 description: >
-  Audit the code comments in the current diff against agents/comments.md and DELETE the ones that do not earn their
-  place. For each comment authored or changed in the diff, ask whether the adjacent code already shows it, and delete
+  Audit the code comments in the current diff, or in a file or directory passed as an argument, against
+  agents/comments.md and DELETE the ones that do not earn their place. For each comment authored or changed in the diff, ask whether the adjacent code already shows it, and delete
   rather than reword when it does. Invoke with /code-audit, or when the user says "audit the comments", "check my
   comments", "clean these comments". Meant to run right before a diff is shown. It removes and tightens comments only.
   It never changes behavior and never adds a comment that was not already there.
@@ -23,8 +23,10 @@ test here: it drifts, and drift in a comment skill is its own punchline. If that
 
 ## Scope
 
-- Only comments **authored or modified in the current diff**. Get the diff (`git diff`, plus staged and unpushed
-  changes as relevant). A comment in an untouched region is out of scope even if it is bad.
+- **With no argument:** only comments **authored or modified in the current diff**. Get the diff (`git diff`, plus
+  staged and unpushed changes as relevant). A comment in an untouched region is out of scope even if it is bad.
+- **With a path argument** (`/code-audit src/foo.c`, `/code-audit lib/`): every comment in that file, or in every
+  source file under that directory, whether the diff touched it or not.
 - Never touch license or copyright headers.
 - Never touch a comment to change behavior. This pass moves and deletes text, nothing else.
 

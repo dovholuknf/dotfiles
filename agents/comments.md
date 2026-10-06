@@ -32,6 +32,10 @@ delete the comment.
 - A cross-reference to code that can drift. `mirrors the struct in controller.yml` rots the moment either
   side moves. Describe what THIS code does. A stable pointer (issue, URL, spec section) is still fine (see
   above), but rationale for a deferred decision belongs in the PR body or commit message, not here.
+- LLM cadence. No "not X, it's Y", no punchy fragment standing in for a sentence, no "X, not Y, and the second
+  is the one that actually holds", no setup line ("This needs two mechanisms."), no stock phrases ("earns its
+  keep", "closes that gap", "the seam", "happy path"). If the comment reads like a model wrote it, delete it or
+  say the fact plainly.
 - Decoration. No banner bars, no `==== section ====`, unless a long file genuinely needs navigation.
 - Examples pulled from the current session. A comment describes the code, not the conversation that produced
   it. Never use a value, path, or name that came up in our chat as the illustrative example (especially a
@@ -41,6 +45,11 @@ delete the comment.
 ## Style
 
 - Terse. One line if you can. A comment is not a paragraph.
+- lowercase, subject first, plain word order, few commas. Same voice as `claude/agents/voice-clint.md`:
+  `// the cache is cleared on login so stale tokens don't survive`, not
+  `// the cache is cleared on login, which keeps stale tokens out, matching the web client`.
+- Never restate code a reader takes in at a glance, such as the return value of a four-line body.
+- No trailing sentence that only points at other code ("same as the uploader does"). It adds nothing and it drifts.
 - Same prose rules as everywhere: no em-dash, no `--` used as a dash, no semicolons in prose.
 - Comment the surprising line, not every line. A comment on every line means none of them is worth reading.
 

@@ -4,13 +4,16 @@ This file is the gold standard for prose written for or by Clint Dovholuk (OpenZ
 samples he wrote, not from generic style advice. **When any rule in an agent definition disagrees with this file, this
 file wins.** Say in your report which default you set aside.
 
-Two registers. They are not interchangeable, and mixing them is the most common failure. Decide which one applies before
+Three registers. They are not interchangeable, and mixing them is the most common failure. Decide which one applies before
 editing a sentence.
 
 ## Shared across both registers
 
-- Long sentences are correct. Comma-heavy, with which/that clauses and subordinate clauses carrying real weight. Do not
-  split a sentence just because it exceeds twenty words.
+- Plain word order, subject first. No inverted clauses ("with retries on, the client reconnects") and no colon-led
+  fragments ("no timeout: a slow peer stalls").
+- Few commas. Two short sentences beat one comma-joined sentence, and nothing runs on.
+- Say the purpose plainly: "specifically kept at one connection so writes never contend for the lock".
+- Plain verbs. Never "carries" where "holds", "has" or "uses" works.
 - Triples and anaphora are deliberate rhythm, not a tell: "the easiest, fastest, and, of course, most expensive way",
   "no need to open ports, no need to expose services, no attack surface". Leave them.
 - Semicolons are allowed and appear in his published work: "one substantial advantage; it's entirely free". Do not
@@ -69,6 +72,25 @@ Rules:
 - **Rhetorical questions and flat dismissals.** "why wouldn't you?" "No 'are you on the right network' nonsense."
 - **TL;DR at the top** of longer posts. **Pull-quotes** mid-article for emphasis.
 - Ends with the project's standard "Share the Project" call to action. That block is boilerplate, leave it alone.
+
+## Posted-as-clint register
+
+Applies to text posted under Clint's name to other people: PR comments, review replies, issue comments, and messages
+to teammates. Commit messages keep their own rule (one line). The shared rules above do not apply here.
+
+Sample (illustrative, in the approved shape):
+
+> missed this one, i went with the approach from the other pr instead. the client retries on its own now, and the
+> server sends the extra stuff in a separate message like that pr does. the first write was too big, that's what was
+> breaking the test
+
+Rules:
+
+- **All lowercase** except code identifiers. No capital at the start of a sentence, none on "i".
+- **Casual and loose.** Comma splices are fine. "stuff" is fine.
+- **Not precise.** Leave out file:line refs, exact byte counts and constant names unless the point depends on them.
+  A draft full of line refs, byte counts and constant names was rejected as "i'm never this precise".
+- Say what changed and why, the way one dev tells another, and stop.
 
 ## What he rejects, stated plainly
 

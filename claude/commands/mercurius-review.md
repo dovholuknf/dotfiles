@@ -1,6 +1,7 @@
 ---
 description: Run a Mercurius design review on the given files via the shared MCP server
 argument-hint: <file> [file ...]
+disable-model-invocation: true
 ---
 
 Run a Mercurius review of these artifacts: $ARGUMENTS

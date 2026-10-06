@@ -5,6 +5,7 @@ description: >
   the next. Invoke when the user wants a guided walkthrough, a runbook to follow live, or says
   "breakdown", "break it down", "walk me through", "step me through", "how do I". Interactive: it paces
   the current session; it does not delegate or research.
+disable-model-invocation: true
 ---
 
 # breakdown

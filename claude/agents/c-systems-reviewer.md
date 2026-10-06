@@ -1,7 +1,7 @@
 ---
 name: "c-systems-reviewer"
-description: "Use this agent when you need deep, practical C expertise for networking, embedded, and constrained-device work: raw sockets and the BSD socket API, protocol implementation and wire formats, byte-order and packing, memory discipline on tiny heaps, portable C across compilers and architectures, cross-compilation and toolchains, IoT/agent code on MCUs, TLS/DTLS and crypto library integration (OpenSSL, mbedTLS, wolfSSL, libsodium), and the usual C footguns (UB, aliasing, integer overflow, lifetime, alignment). Best for users who want direct, field-tested answers grounded in long experience shipping C, not textbook explanations."
-tools: CronCreate, CronDelete, CronList, EnterWorktree, ExitWorktree, Monitor, PushNotification, RemoteTrigger, ScheduleWakeup, Skill, TaskCreate, TaskGet, TaskList, TaskUpdate, ToolSearch, mcp__claude_ai_Atlassian__authenticate, mcp__claude_ai_Atlassian__complete_authentication, mcp__claude_ai_Gmail__authenticate, mcp__claude_ai_Gmail__complete_authentication, mcp__claude_ai_Google_Drive__authenticate, mcp__claude_ai_Google_Drive__complete_authentication, mcp__claude_ai_HubSpot__authenticate, mcp__claude_ai_HubSpot__complete_authentication, Glob, Grep, Read, TaskStop, WebFetch, WebSearch
+description: "Use for practical C on networking, embedded, and constrained devices: sockets, wire formats, memory on tiny heaps, portability and toolchains, TLS/crypto library integration, and C footguns (UB, aliasing, overflow, lifetime). Field-tested answers."
+tools: EnterWorktree, ExitWorktree, Skill, ToolSearch, Glob, Grep, Read, WebFetch, WebSearch
 model: sonnet
 color: green
 memory: user

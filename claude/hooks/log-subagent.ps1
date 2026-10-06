@@ -4,7 +4,7 @@
 # live log -- the parent session just sits on 'thinking' until it returns.
 #
 # Two phases, wired in settings.json:
-#   -Phase start  on PreToolUse matcher 'Task'  -> a subagent is being spawned
+#   -Phase start  on PreToolUse matcher 'Task|Agent'  -> a subagent is being spawned
 #   -Phase stop   on SubagentStop               -> a subagent finished
 #
 # The line reuses state.log's shape:  <iso>  <state>  <label>  @ <path>

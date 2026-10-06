@@ -3,6 +3,63 @@
 Shit clint has done to try to make claude suck less. A running log of directive, hook, and config changes
 aimed at how claude behaves. Newest first. One dated line per change, plus a short why.
 
+- 2026-10-02: git guard allows exactly `git push [-u] hub <branch>` and `git fetch hub` (also `atrium-hub`), only
+  when every url and pushurl of that remote, after insteadOf, starts with this room's forwarder (`<agent>/git/`, agent
+  from atrium's daemon.json). Force, `+`/`:` refspecs, deletes, `--mirror`/`--all`/`--tags` and every other remote
+  stay refused. 43 new cases in `tests/test-git-guard.ps1`. Why: hub forge stage 1 (atrium
+  docs/rnd/hub-forge-design.md 5.3, wall 1), approved by clint 10-02. Inert until atrium's `hub` remote ships.
+
+- 2026-10-02: subagent gate matches `Agent` as well as `Task` (`pre-tool-use-hook.ps1`), and the `log-subagent.ps1`
+  PreToolUse matcher is now `Task|Agent`. Why: Claude Code renamed the tool to Agent, so the gate was dead and plain
+  subagents ran unchecked. Follow-on, not built: with the gate live, the fan-out skills (review-panel, qa-review) are
+  blocked unless they launch atrium sessions. The orchestrator sent that half to atrium's @rnd.
+
+- 2026-10-02: `attribution.pr` set to `"🤖 Generated with deez nutz"`, matching the commit canary. Why: unset, the
+  harness told claude to end PR bodies with the "Generated with Claude Code" footer, and it showed up in a suggested
+  `gh pr create` for ziti-sdk-c.
+
+- 2026-10-01: auto-compact back on, with `autoCompactWindow: 225000` (tokens). Why: clint wants a hard ceiling on
+  session context instead of running sessions to the model's full window.
+
+- 2026-10-01: review-panel skill dispatches reviewers via `atrium_launch` when atrium is available, not the Agent
+  tool. Why: the skill hardcoded Agent and overrode the global atrium-first rule on tlsuv PR 378.
+
+- 2026-09-29: denied ScheduleWakeup and ListAgents, and `skillOverrides` loop off. Why: clint says `/loop` should
+  not be used, and agent teams are unused. Cuts about 2.6k tokens from every session.
+
+- 2026-09-29: cut 8 agent descriptions to about 40 words (doc-humanizer, codebase-steward, csharp-expert,
+  c-systems-reviewer, network-expert, windows-enterprise-veteran, both testers). The three generalists' `tools:`
+  now match the testers' read-only set (no cron, push, remote, or task tools). Why: the agent listing loads every
+  session.
+
+- 2026-09-29: `permissions.deny` the tools AskUserQuestion, ShareOnboardingGuide, SendFeedback, Workflow, and
+  ReportFindings. Why: drop their schemas from every session's startup context. Workflow (ultracode) and the
+  `/code-review` findings report stop working until un-denied.
+
+- 2026-09-29: `disableClaudeAiConnectors: true` in `claude/settings.json`. Drops the claude.ai cloud connectors
+  (Atlassian, Gmail, Drive, HubSpot). Why: their tool names repeated in every agent's listing line and in the
+  deferred-tool list, all unused. Also stripped the `mcp__claude_ai_*` names from the `tools:` lines of
+  c-systems-reviewer, network-expert, and windows-enterprise-veteran.
+
+- 2026-09-29: startup skill-list prune. `skillOverrides` off for the 12 claude.ai-synced skills (`enabledPlugins`
+  did nothing for them) and 10 bundled skills (kept loop, update-config, code-review), and `disable-model-invocation` on 9 slash-only
+  dotfiles skills. Re-symlinked `atrium-join`, `atrium-leave`, `recall`, `review-work` (live copies had drifted to
+  plain dirs). Why: cut ~5k tokens of always-loaded skill descriptions.
+
+- 2026-09-29: `autoCompactEnabled: false` in `claude/settings.json`. Why: frees the 33k autocompact buffer. Long
+  sessions now hit the hard limit instead of compacting, so rehydrate by hand.
+
+- 2026-09-28: live `~/.claude/settings.json` had become a regular file and drifted from the repo. Copied it over
+  `claude/settings.json` as the canonical version and re-symlinked `~/.claude/settings.json` to it. This drops the
+  repo's `permissions.deny` git list and brings in the atrium hooks, attribution, and model settings. Why: repo edits
+  were not reaching the running config.
+
+- 2026-09-27: `disable-model-invocation: true` on the rarely used skills and commands (ziti-slide, bitbucket,
+  to-issue, atrium-join, atrium-leave, allow-docker, mercurius-review). Their descriptions leave the
+  always-loaded skill list, and `/name` still runs each one. Also trimmed the four longest descriptions
+  (safe-to-push, recap, pii-scan, zendesk-triage) to purpose, triggers, and safety rule, and unlinked
+  doc-check from `~/.claude/skills` (the shared docusaurus-shared repo is untouched). Why: cut per-session context.
+
 - 2026-09-25: pre-tool-use git guard now binds every shell, not just the Bash tool. The git policy +
   Co-Authored-By ban were gated on `tool_name == "Bash"`, so a `git commit` on a non-claude/* branch
   sailed straight through the PowerShell tool (that is how e7bd92d got committed to `nightly-fail`).
@@ -202,3 +259,37 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   old "sessions running" text contradicted the 2026-09-23 rule.
 - **2026-09-24** ziti-sdk-c memory `feedback_no_starting_docker_desktop`: never launch Docker Desktop, report a down
   daemon and wait. Why: I started it unasked after `/allow-docker`.
+- **2026-09-28** `claude/settings.json` `spinnerTipsEnabled: false`: hide the spinner tips. Why: they are noise under
+  the hook-progress line.
+- **2026-09-28** `claude/hooks/atrium-perm-hook.ps1`: MCP tool calls now go through atrium's permission gate. Why:
+  the `mcp__*` skip was left over from Mode A, which atrium removed.
+- **2026-09-29** atrium memory `ask-once-dont-repeat.md`: ask an open question once, never re-append it. Why:
+  I re-asked the same question on four routine notices and wasted output tokens.
+- **2026-09-30** `claude/settings.json`: the first PreToolUse gate is now `atrium.exe hook --event permission`, not
+  `atrium-perm-hook.ps1`. Why: f-006 replace, the Go gate ships with the binary and dedups on `tool_use_id`.
+- **2026-09-30** sg4 Defender exclusions (atrium build.claude, D:\worktrees, claude's go-build and go\pkg, go.exe,
+  chrome-headless-shell.exe) and `GOTMPDIR` for claude under go-build\tmp. Why: MsMpEng used 103%+ CPU scanning
+  builds and test binaries. See atrium docs/user-guide.md Pattern 13.
+- **2026-10-01** @review never asks for a whole board suite run before landing: touched sections plus bootClean,
+  each alone, and the whole suite runs after landing. Why: clint found the pre-landing whole run far too slow.
+- **2026-10-02** settings.json autoCompactWindow 225000 to 253000. Why: Claude compacts ~33k under the window, so 225k
+  fired at ~190k, before atrium clears at 200k. 253k puts compaction at ~220k (limit plus 10%), as clint asked.
+- **2026-10-05** settings.json autoCompactEnabled true to false. Why: Opus 5.5 sessions run a 200k window, so
+  autoCompactWindow 253000 cannot apply and they compacted every ~30 min; clint wants no auto-compaction at all.
+- **2026-10-05** settings.json autoCompactEnabled back to true, autoCompactWindow stays 253000 (compacts ~220k). Why:
+  the 200k "window" behind the disable was the statusline's hardcoded denominator, not the model; 1M sessions are fine.
+- **2026-10-05** statusline ctx denominator is a flat 300000 everywhere. Why: clint wants one fixed scale for now, not
+  the model window or an atrium-specific limit.
+- **2026-10-06** new skill `/clintify`: rewrites pasted LLM output into clint's preferred form, or with no paste sets the
+  session style. Why: rules mined from ~20k of his prompts, shareable with others whose LLM output he reads.
+- **2026-10-06** atrium runners on every room (sg4-control, claude-sg4, m1mini, sg3, sgg) no longer pass
+  `--autocompact`: the claude row's autocompact template is cleared. Why: claude's own autocompact setting governs.
+- **2026-10-06** voice-clint.md gains a "posted-as-clint" register: lowercase, casual, imprecise PR/review replies. Why:
+  clint rejected a precise, capitalized PR reply draft; promoted from a project memory.
+- **2026-10-06** agents/comments.md bans LLM-cadence comments by name, and /code-audit takes an optional path to audit
+  beyond the diff. Why: clint wants a "stupid comment" detector that catches LLM tells and can sweep whole files.
+- **2026-10-06** voice-clint.md shared rules flip from "long, comma-heavy sentences" to plain word order, few commas, no
+  inversion, no "carries"; comments.md gains lowercase, no restating easy code, no trailing pointers. Why: clint's
+  comment review on a PR showed that is how clint writes everywhere.
+- **2026-10-06** pull-requests.md commit rule: lead with the behavior change and why users care, one plain sentence,
+  small ride-along changes may go unmentioned. Why: clint approved a commit rewrite in that shape over a mechanism list.

@@ -55,7 +55,11 @@ Rules:
 - Reference the issue in that one line if relevant. Don't reference the PR number (the PR didn't exist
   when the commit landed).
 - No `Co-Authored-By:` trailers. None.
-- One logical change per commit. If you find yourself writing "and also..." in the subject, split.
+- Lead with the behavior change and why users care, not the mechanism. `close idle sessions after 30s so
+  the server stops running out of file handles`, not `add a 30s idle timer to the session pool`.
+- One plain sentence, never a comma-joined list of changes.
+- One logical change per commit. If you find yourself writing "and also..." in the subject, split. A small
+  change that rides along (a rename, a log tweak) can go unmentioned when naming it would blur the point.
 - Don't amend pushed commits. Don't force-push without explicit OK.
 
 ## Before opening the PR

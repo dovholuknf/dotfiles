@@ -3,7 +3,9 @@
 # profile alias: function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
 #
 # usage:
-#   gwt new  <branch> [-From <source>] [-Prompt <str>] [--by-project]   # defaults to -y; -Interactive to prompt
+#   gwt new  <branch> [-From <source>] [-Prompt <str>] [-Room <r>] [--by-project] # defaults to -y; -Interactive prompts
+#                                                # -Room: atrium room for the claude launch (any
+#                                                # launching subcommand). Omit it and a hub asks.
 #                                                # --by-project: group the tab into a
 #                                                # window named after the repo, themed
 #                                                # from the per-repo theme map
@@ -39,7 +41,9 @@ param(
     [string]$Repo,
     [string]$RemoteHost,    # explicit host (e.g. 'github.com', 'bitbucket.org') -- for callers that don't have a git remote to detect from
     [string]$Prompt,
-    [string]$SourceRoot    = $( $r = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' };      ($r -replace '\\+','\').TrimEnd('\') ),
+    [string]$Room,          # atrium room to launch claude in. Omit and a multi-room hub asks.
+    [switch]$Review,        # 'pr': start a review card even for your own PR
+    [string]$SourceRoot   = $( $r = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' };      ($r -replace '\\+','\').TrimEnd('\') ),
     [string]$WorktreeRoot  = $( $r = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }; ($r -replace '\\+','\').TrimEnd('\') ),
     [switch]$y,
     [switch]$Interactive,   # restore per-step prompts. Worktree creators (new/pr/issue/advisory/ghsa/twig/clone) default to -y.
@@ -108,6 +112,7 @@ if (-not (Get-Command _GetGwtSessions -ErrorAction SilentlyContinue)) {
 $script:WtRoot     = $WorktreeRoot.TrimEnd('\')
 $script:GitRoot    = $SourceRoot.TrimEnd('\')
 $script:SessionDir = "$script:WtRoot\sessions"
+$script:AtriumRoom = $Room   # read by _LaunchOnAtrium
 
 function _DetectCurrentRepoFromCwd {
     # Prefer git: if cwd is inside a work tree, derive host/org/repo from origin's
@@ -583,6 +588,18 @@ function Get-PrHeadBranch {
     $r = (& gh pr view $PrNumber --repo "$Org/$Repo" --json headRefName -q .headRefName 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "gh pr view failed for PR ${PrNumber}: $r" }
     return $r
+}
+
+# The branch a PR merges into, or $null when it can't be resolved (Bitbucket without API creds).
+function Get-PrBaseBranch {
+    param([string]$Org, [string]$Repo, [string]$PrNumber, [string]$RemoteHost = 'github.com')
+    if ($RemoteHost -eq 'bitbucket.org') {
+        if (-not ($env:BB_EMAIL -and $env:BB_TOKEN)) { return $null }
+        $b = "$((bbapi "repositories/$Org/$Repo/pullrequests/$PrNumber").destination.branch.name)"
+        return $(if ($b) { $b } else { $null })
+    }
+    $r = (& gh pr view $PrNumber --repo "$Org/$Repo" --json baseRefName -q .baseRefName 2>$null | Out-String).Trim()
+    return $(if ($LASTEXITCODE -eq 0 -and $r) { $r } else { $null })
 }
 
 function Sync-PrBranch {
@@ -2261,12 +2278,31 @@ switch ($Command) {
 
         $ctx    = Resolve-RepoContext
         $wtPath = Join-Path $ctx.WtRoot "pr-$prNum"
+
+        # Only this path starts a review card. Reopening a pr-N worktree any other way launches plainly.
+        $prUrl = if ($ctx.RemoteHost -eq 'bitbucket.org') {
+            "https://bitbucket.org/$($ctx.Org)/$($ctx.Repo)/pull-requests/$prNum"
+        } else { "https://$($ctx.RemoteHost)/$($ctx.Org)/$($ctx.Repo)/pull/$prNum" }
+        $script:AtriumReview = @{ Number = $prNum; Url = $prUrl; Org = $ctx.Org; Repo = $ctx.Repo }
+        # Your own PR launches plainly unless -Review forces the review card. GitHub only.
+        if (-not $Review -and $ctx.RemoteHost -eq 'github.com') {
+            $author = (& gh pr view $prNum --repo "$($ctx.Org)/$($ctx.Repo)" --json author --jq .author.login 2>$null | Out-String).Trim()
+            $me     = (& gh api user --jq .login 2>$null | Out-String).Trim()
+            if ($author -and $me -and $author -eq $me) {
+                Write-Color "PR #$prNum is yours -- launching plainly (-Review for a review card)" DarkGray
+                $script:AtriumReview = $null
+            }
+        }
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
 
         Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
         Invoke-Git $ctx.Src @('worktree','prune')
 
         $branch     = Get-PrHeadBranch -Org $ctx.Org -Repo $ctx.Repo -PrNumber $prNum -RemoteHost $ctx.RemoteHost
+        if ($script:AtriumReview) {
+            $script:AtriumReview.Branch = $branch
+            $script:AtriumReview.Base   = Get-PrBaseBranch -Org $ctx.Org -Repo $ctx.Repo -PrNumber $prNum -RemoteHost $ctx.RemoteHost
+        }
         $existingWt = Get-WorktreePathForBranch $ctx.Src $branch
 
         if ($existingWt) {

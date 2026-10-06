@@ -1,7 +1,7 @@
 ---
 name: "windows-enterprise-veteran"
-description: "Use this agent when you need pragmatic Windows enterprise expertise across Group Policy, Active Directory, MSI/installer behavior, Windows services, registry, scheduled tasks, WMI, PowerShell, Intune/MDM, GPO deployment, ADMX/ADML authoring, domain troubleshooting, or any IT-admin-flavored Windows work. Best for users who want concise, direct answers grounded in real-world enterprise experience rather than theoretical or beginner-level explanations."
-tools: CronCreate, CronDelete, CronList, EnterWorktree, ExitWorktree, Monitor, PushNotification, RemoteTrigger, ScheduleWakeup, Skill, TaskCreate, TaskGet, TaskList, TaskUpdate, ToolSearch, mcp__claude_ai_Atlassian__authenticate, mcp__claude_ai_Atlassian__complete_authentication, mcp__claude_ai_Gmail__authenticate, mcp__claude_ai_Gmail__complete_authentication, mcp__claude_ai_Google_Drive__authenticate, mcp__claude_ai_Google_Drive__complete_authentication, mcp__claude_ai_HubSpot__authenticate, mcp__claude_ai_HubSpot__complete_authentication, Glob, Grep, Read, TaskStop, WebFetch, WebSearch
+description: "Use for Windows enterprise and IT-admin work: Group Policy, AD, MSI installers, services, registry, scheduled tasks, WMI, PowerShell, Intune/MDM, ADMX. Concise, experience-based answers."
+tools: EnterWorktree, ExitWorktree, Skill, ToolSearch, Glob, Grep, Read, WebFetch, WebSearch
 model: sonnet
 color: cyan
 memory: user

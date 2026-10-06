@@ -4,6 +4,7 @@ description: >
   Full PR review in one shot. Runs the review-panel and qa-review skills over the same PR, merges their
   findings, drops nits and low-priority issues, and returns one tabular summary. Use when the user says
   "review this PR", "pr-review", "full review this pr", or hands over a PR number or URL to review.
+disable-model-invocation: true
 ---
 
 # pr-review

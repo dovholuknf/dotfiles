@@ -6,6 +6,7 @@ description: >
   the exact push command. Invoke with /ship-it-already, or when the user says "ok I'm pushing now", "do the needful",
   "ship it", "get this ready to push". It orchestrates the other skills, so keep them as the reusable pieces. It edits
   comments, surfaces a verdict, and never runs a git mutation itself.
+disable-model-invocation: true
 ---
 
 # ship-it-already

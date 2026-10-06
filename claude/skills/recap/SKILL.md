@@ -1,13 +1,9 @@
 ---
 name: recap
 description: >
-  Write a session recap (archeology / after-action) for the CURRENT claude-code session into the history
-  root. Captures what we set out to do, what shipped, what got parked, the FALSE FINISHES (every time
-  claude said "done" and it reopened), the friction, and the timing. Invoke when the user says "recap",
-  "/recap", "write up the history", "capture the archeology", "session recap", or asks for a
-  "you thought this was done" writeup on the way out. Every recap opens with a fat keyword block so it is
-  greppable later, and registers one line in a central INDEX.tsv. Writes a markdown file and prints a short
-  reminder line. It does not commit anything.
+  Write an after-action recap of the CURRENT session into the history root: what shipped, what got parked,
+  false finishes, friction, timing. Use for /recap, "recap", "write up the history", "capture the archeology",
+  "session recap". Never commits.
 ---
 
 # recap

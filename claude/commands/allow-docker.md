@@ -1,5 +1,6 @@
 ---
 description: Grant + verify Docker access for this session
+disable-model-invocation: true
 ---
 Docker should now be available. Do this:
 1. Run `docker version` to confirm it's on PATH.

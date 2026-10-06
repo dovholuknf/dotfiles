@@ -6,6 +6,7 @@ description: >
   Invoke with /review-work, or when the user says "walk me through testing this", "turn this into a test",
   "review-work", "make me a test card", or hands over a feature to verify by clicking through. It reformats the
   feature under discussion into the fixed shape below; it does not run the test or change code.
+disable-model-invocation: true
 ---
 
 # review-work

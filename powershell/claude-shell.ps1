@@ -291,15 +291,19 @@ function _OpenClaudeShell {
     # Pick the opener. _OpenClaudeShell is the one function EVERY gwt spawn path funnels
     # through (new, claude, the URL verbs, the resume-last-picks fast path), so choosing the
     # opener HERE covers all of them with no per-site wiring. The 'atrium' opener hands the
-    # launch to a real board session and returns; the 'wt' opener (and the atrium->wt
-    # fallback when the daemon is down) continues to the wt.exe spawn below. Skipped for
+    # launch to a real board session and returns; the 'wt' opener continues to the wt.exe
+    # spawn below. A failed atrium launch fails closed: it opens a wt tab only when the user
+    # answers y, so an atrium outage or refusal is never papered over silently. Skipped for
     # -NoClaude (a plain themed shell, not a claude session) and -ReuseSessionId (a restore;
     # atrium cannot resume a wt session id). Toggle with 'gwt open <atrium|wt>'.
     if (-not $NoClaude -and -not $ReuseSessionId -and (_GwtOpener) -eq 'atrium') {
         if (_LaunchOnAtrium -Path $Path -Title $Branch -Why "gwt $Branch" -Tags @('gwt', $Repo) -PromptText $PromptText -Repo $Repo -Branch $Branch) {
             return
         }
-        Write-Color "  atrium not running -- opening a windows terminal tab instead" DarkGray
+        $reason = if (_GetAtriumBoard) { 'atrium refused the launch' } else { 'atrium not running' }
+        Write-Color "  $reason" Yellow
+        $ans = Read-Host "  open it in a windows terminal tab instead? (y/N)"
+        if ($ans -notmatch '^(y|yes)$') { Write-Color "  not launched" Yellow; return }
     }
 
     # Resolve picker sentinels here, the single chokepoint that records the window
@@ -513,8 +517,7 @@ function _ArchiveAtriumCardForCwd {
 #
 # The daemon writes its own address to %LOCALAPPDATA%\atrium\daemon.json, so the
 # port is discovered, never hardcoded. A missing file means the daemon is not
-# running: return $false so the caller can fall back to the wt-tab path rather
-# than leaving the user with no session at all. The listener is loopback-only by
+# running: return $false so the caller can offer the wt-tab path. The listener is loopback-only by
 # design, so no auth applies. Returns $true only when a card was actually created.
 function _LaunchOnAtrium {
     param([string]$Path, [string]$Title, [string]$Why, [string[]]$Tags = @('gwt'), [string]$PromptText,
@@ -549,16 +552,55 @@ function _LaunchOnAtrium {
             break
         }
     }
+    # A `gwt pr` launch becomes a review card that owns the review of that PR until clint is done.
+    # No @review handoff. The alias is the part of the title before the colon.
+    $rv = $script:AtriumReview
+    if ($rv) {
+        $slug = "pr-$($rv.Repo)-$($rv.Number)"
+        $payload.title      = "${slug}: review $($rv.Org)/$($rv.Repo)#$($rv.Number)"
+        $payload.tags       = @($Tags) + @('review', 'pr')
+        $payload.source_kind = 'pr'
+        $payload.source_url  = $rv.Url
+        $payload.lean       = $false
+        # The worktree is on the PR branch. Without a base, the agent guesses one, usually a stale main.
+        $diff = if ($rv.Base) { " Diff origin/$($rv.Base)...$($rv.Branch)." } else { " Branch $($rv.Branch)." }
+        # Leading /review-panel invokes the skill outright, so the panel runs with no typing from clint.
+        $preamble = "/review-panel $($rv.Url).$diff You own this review; hand off to no one. " +
+            "Do not edit code or offer to. Post nothing to the PR. Stay until clint is done."
+        $payload.prompt = if ($PromptText) { "$preamble`n`n$PromptText" } else { $preamble }
+    } elseif ((Split-Path -Leaf $Path) -match '^pr-\d+$') {
+        Write-Color "  this is a PR worktree. 'gwt pr <n>' starts a review card, this launch is plain" DarkGray
+    }
+
     $body = $payload | ConvertTo-Json -Compress
 
-    try {
-        $task = Invoke-RestMethod -Method Post -Uri "$board/v1/launch" `
-            -ContentType 'application/json' -Body $body -TimeoutSec 10
-        Write-Color "  on the atrium board: $($task.display_title)  [$($task.wire_name)]" Green
-        return $true
-    } catch {
-        Write-Color "  atrium did not take it: $($_.Exception.Message)" Yellow
-        return $false
+    # A hub with several rooms attached refuses an unscoped launch with a 409 that lists
+    # the rooms. `gwt -Room <r>` names one up front. Otherwise the refusal becomes a
+    # picker and the launch is retried with X-Atrium-Room set to the pick.
+    $room = if ($script:AtriumRoom) { $script:AtriumRoom.Trim() } else { $null }
+    while ($true) {
+        $headers = @{}
+        if ($room) { $headers['X-Atrium-Room'] = $room }
+        try {
+            $task = Invoke-RestMethod -Method Post -Uri "$board/v1/launch" -Headers $headers `
+                -ContentType 'application/json' -Body $body -TimeoutSec 10
+            $where = if ($room) { " in room $room" } else { '' }
+            Write-Color "  on the atrium board$($where): $($task.display_title)  [$($task.wire_name)]" Green
+            return $true
+        } catch {
+            # The response body says why, and Exception.Message carries only the status line.
+            $why = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
+            $rooms = $null
+            try { $rooms = @(($why | ConvertFrom-Json -ErrorAction Stop).rooms | Where-Object { $_ }) } catch { }
+            if (-not $room -and $rooms.Count) {
+                $room = _TuiSelect -Items $rooms -Prompt 'atrium: launch in which room?'
+                if ($room) { continue }
+                Write-Color "  no room picked" Yellow
+                return $false
+            }
+            Write-Color "  atrium did not take it: $why" Yellow
+            return $false
+        }
     }
 }
 

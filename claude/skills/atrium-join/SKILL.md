@@ -1,6 +1,7 @@
 ---
 name: atrium-join
 description: Put this claude session on the atrium board and start gating its tool calls through it. Invoke when the user says "join atrium", "/atrium-join", "gate this session", "put this on the board", "watch this session", or asks for this session to be supervised by atrium. Takes effect immediately, without restarting the session. Use atrium-leave to undo it.
+disable-model-invocation: true
 ---
 
 # atrium-join

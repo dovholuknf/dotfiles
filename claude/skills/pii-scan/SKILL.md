@@ -1,12 +1,9 @@
 ---
 name: pii-scan
 description: >
-  Scan a file, directory, pasted block, or the last response for PII and secrets before you share it: emails, names,
-  phone numbers, public IPs, MACs, hostnames/FQDNs, Windows user paths, and credentials (JWTs, private keys, API
-  tokens, bearer tokens, enrollment tokens, .ziti identities). Reports findings grouped by category, secrets first,
-  with location and a MASKED snippet. Redaction is opt-in and writes a scrubbed COPY. Invoke with /pii-scan, or when
-  the user says "scan for PII", "any PII in here", "scrub this before I share it", "check for secrets". It never
-  uploads or sends anything anywhere.
+  Scan a file, directory, pasted block, or the last response for PII and secrets before sharing. Reports masked
+  findings and redacts into a copy only on request. Use for /pii-scan, "scan for PII", "any PII in here", "scrub
+  this before I share it", "check for secrets". Never uploads.
 ---
 
 # pii-scan

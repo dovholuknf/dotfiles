@@ -1,6 +1,6 @@
 ---
 name: "codebase-steward"
-description: "Use this agent to review a diff or PR for FIT with the existing codebase: does new code match how this repo already does the same job, or did it quietly diverge or reinvent something that already exists. This is the reviewer that catches bugs which are perfectly correct in isolation but wrong because every other call site does it differently (a hand-rolled transport that skips the shared overlay/proxy-aware one, a second copy of a flow that should be one helper, domain logic dropped in the wrong layer, an error or persistence path that ignores the local convention). It reads the NEIGHBORS and the DEPENDENCY source, not just the diff. Pair it with a security/correctness reviewer (like go-security-reviewer): that one finds language and security footguns, this one finds divergence-from-convention. Not the right pick for pure logic bugs, crypto, or races."
+description: "Use to review a diff or PR for FIT with the existing codebase: new code that diverges from, or reinvents, how this repo already does the same job. Reads the neighbors and dependency source, not just the diff. Pair with a correctness reviewer. Not for logic bugs, crypto, or races."
 tools: Glob, Grep, Read, Bash, WebFetch, WebSearch, Write, Edit, ToolSearch
 model: opus
 color: cyan

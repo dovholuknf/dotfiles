@@ -6,6 +6,7 @@ description: >
   user asks for a thumbnail, title slide, architecture diagram, deck slide, or "one of those slides"
   for an OpenZiti video, talk, or doc. Produces a self-contained SVG file; it does not publish or
   upload anything.
+disable-model-invocation: true
 ---
 
 # ziti-slide

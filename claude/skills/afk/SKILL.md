@@ -6,6 +6,7 @@ description: >
   to bed", "going AFK", "work on this while I'm out", "make progress while I'm away", "chug through this
   list", or hands over a batch of work with no intention of answering questions. The contract is: never
   block, never wait, decide and record. Do not invoke for ordinary interactive work.
+disable-model-invocation: true
 ---
 
 # afk

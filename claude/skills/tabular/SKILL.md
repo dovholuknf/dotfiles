@@ -5,6 +5,7 @@ description: >
   capped at 140 characters wide by default. Invoke when the user says "tabular", "tabular view", "render that in
   tabular", "as a table", or wants the last answer/findings reformatted into a table. Reshapes output
   format; it does not gather new data.
+disable-model-invocation: true
 ---
 
 # tabular

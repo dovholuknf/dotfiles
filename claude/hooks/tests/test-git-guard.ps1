@@ -3,7 +3,8 @@
 Comprehensive validation of the git policy in pre-tool-use-hook.ps1.
 
 Policy under test:
-  - push / pull / fetch          -> ALWAYS blocked (no remote, ever)
+  - push / pull / fetch          -> blocked, except exactly 'git push [-u] hub <branch>' and 'git fetch hub'
+      (or atrium-hub) when that remote points at the room's atrium forwarder (hub forge design 5.3)
   - branch-naming verbs          -> the NAMED branch must start 'claude/'
       (branch create/delete/rename, 'checkout -b', 'switch [-c]')
   - current-branch verbs         -> the CHECKED-OUT branch must start 'claude/'
@@ -56,15 +57,55 @@ $detachedRepo     = Join-Path $root 'detached-repo'
 _midRebase $rebaseClaudeRepo 'refs/heads/claude/test'
 _midRebase $rebaseMainRepo   'refs/heads/main'
 _midRebase $detachedRepo     $null
+# atrium hub remote (hub forge design 5.3): the hook reads the room's agent address from
+# %LOCALAPPDATA%\atrium\daemon.json, so each case runs the hook with LOCALAPPDATA pointed at a
+# fake one. 'nodaemon' has no daemon.json at all, which must refuse every hub op.
+$agent = 'http://127.0.0.1:7777'
+$appData = Join-Path $root 'appdata'
+New-Item -ItemType Directory -Path (Join-Path $appData 'atrium') -Force | Out-Null
+@{ agent = $agent; board = 'http://127.0.0.1:7781' } | ConvertTo-Json |
+    Set-Content -Path (Join-Path $appData 'atrium\daemon.json') -Encoding UTF8
+$noDaemonAppData = Join-Path $root 'appdata-empty'
+New-Item -ItemType Directory -Path $noDaemonAppData -Force | Out-Null
+
+function _hubRepo($path, $hubUrl) {
+    _initRepo $path 'claude/test'
+    & git -C $path remote add origin 'https://github.com/o/r.git' 2>$null
+    & git -C $path remote add hub $hubUrl 2>$null
+    & git -C $path remote add atrium-hub $hubUrl 2>$null
+}
+$hubGood = "$agent/git/hub/github.com/o/r.git"
+$hubRepo      = Join-Path $root 'hub-repo'
+$evilHubRepo  = Join-Path $root 'evil-hub-repo'
+$pushUrlRepo  = Join-Path $root 'pushurl-repo'
+$insteadRepo  = Join-Path $root 'insteadof-repo'
+$otherPort    = Join-Path $root 'otherport-repo'
+$pushInstead  = Join-Path $root 'pushinsteadof-repo'
+_hubRepo $pushInstead $hubGood
+& git -C $pushInstead config "url.https://git.example.com/.pushInsteadOf" "$agent/git/" 2>$null
+_hubRepo $hubRepo     $hubGood
+_hubRepo $evilHubRepo 'https://git.example.com/o/r.git'
+_hubRepo $pushUrlRepo $hubGood
+& git -C $pushUrlRepo config remote.hub.pushurl 'https://git.example.com/o/r.git' 2>$null
+_hubRepo $insteadRepo $hubGood
+& git -C $insteadRepo config "url.https://git.example.com/.insteadOf" "$agent/git/" 2>$null
+_hubRepo $otherPort   'http://127.0.0.1:9999/git/hub/github.com/o/r.git'
+
 $repos = @{
     claude = $claudeRepo; main = $mainRepo
     'rebase-claude' = $rebaseClaudeRepo; 'rebase-main' = $rebaseMainRepo; detached = $detachedRepo
+    hub = $hubRepo; 'evil-hub' = $evilHubRepo; pushurl = $pushUrlRepo; insteadof = $insteadRepo
+    'other-port' = $otherPort; nodaemon = $hubRepo; pushinsteadof = $pushInstead
 }
 
-function Invoke-Hook($cmd, $cwd, $tool = 'Bash') {
+function Invoke-Hook($cmd, $cwd, $tool = 'Bash', $localAppData = $appData) {
     # Returns $true when the hook BLOCKS, $false when it allows (no block decision emitted).
     $payload = @{ tool_name = $tool; tool_input = @{ command = $cmd }; cwd = $cwd } | ConvertTo-Json -Compress
-    $out = $payload | & pwsh -NoProfile -File $hook
+    $saved = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $localAppData
+        $out = $payload | & pwsh -NoProfile -File $hook
+    } finally { $env:LOCALAPPDATA = $saved }
     return ("$out" -match '"decision"\s*:\s*"block"')
 }
 
@@ -169,13 +210,64 @@ $cases = @(
     @{ cmd = 'git status; git status';           repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
     @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'block'; tool = 'Bash' }
     @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
+
+    # --- atrium hub remote: the only remote ops allowed, and only to this room's forwarder ---
+    @{ cmd = 'git push hub claude/test';         repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git push hub fix/x';               repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git push -u hub fix/x';            repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git fetch hub';                    repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git push atrium-hub fix/x';        repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git push -u atrium-hub fix/x';     repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git fetch atrium-hub';             repo = 'hub'; expect = 'allow' }
+    @{ cmd = 'git push hub fix/x';               repo = 'hub'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = 'git fetch hub';                    repo = 'hub'; expect = 'allow'; tool = 'PowerShell' }
+    # force, '+' / ':' refspecs, deletes, bulk pushes
+    @{ cmd = 'git push -f hub fix/x';            repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push --force hub fix/x';       repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push --force-with-lease hub fix/x'; repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x --force';       repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x -f';            repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub +fix/x';              repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub :fix/x';              repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x:main';          repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push --delete hub fix/x';      repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub --delete fix/x';      repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push -d hub fix/x';            repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push --mirror hub';            repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push --all hub';               repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push --tags hub';              repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x other/y';       repo = 'hub'; expect = 'block' }   # one branch only
+    @{ cmd = 'git push hub';                     repo = 'hub'; expect = 'block' }   # no branch named
+    # other remotes and other verbs
+    @{ cmd = 'git push origin fix/x';            repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push -u origin fix/x';         repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git fetch origin';                 repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git fetch hub main';               repo = 'hub'; expect = 'block' }   # bare 'git fetch hub' only
+    @{ cmd = 'git fetch --all';                  repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git pull hub fix/x';               repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git -c http.extraHeader=x push hub fix/x'; repo = 'hub'; expect = 'block' }
+    # an allowed form glued to something else
+    @{ cmd = 'git fetch hub && git push origin fix/x'; repo = 'hub'; expect = 'block' }
+    @{ cmd = "git push hub fix/x`ngit push origin fix/x"; repo = 'hub'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x; git push origin fix/x'; repo = 'hub'; expect = 'block'; tool = 'PowerShell' }
+    # the remote must point at this room's forwarder, url and pushurl, after insteadOf
+    @{ cmd = 'git push hub fix/x';               repo = 'evil-hub';   expect = 'block' }
+    @{ cmd = 'git fetch hub';                    repo = 'evil-hub';   expect = 'block' }
+    @{ cmd = 'git push hub fix/x';               repo = 'pushurl';    expect = 'block' }
+    @{ cmd = 'git push hub fix/x';               repo = 'insteadof';  expect = 'block' }
+    @{ cmd = 'git push hub fix/x';               repo = 'pushinsteadof'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x';               repo = 'other-port'; expect = 'block' }
+    @{ cmd = 'git push hub fix/x';               repo = 'main';       expect = 'block' }   # no hub remote at all
+    @{ cmd = 'git push hub fix/x';               repo = 'nodaemon';   expect = 'block'; appdata = $noDaemonAppData }
+    @{ cmd = 'git fetch hub';                    repo = 'nodaemon';   expect = 'block'; appdata = $noDaemonAppData }
 )
 
 $pass = 0; $fail = 0; $failed = @()
 foreach ($c in $cases) {
     $cwd = $repos[$c.repo]
     $tool = if ($c.tool) { $c.tool } else { 'Bash' }
-    $blocked = Invoke-Hook $c.cmd $cwd $tool
+    $ad = if ($c.appdata) { $c.appdata } else { $appData }
+    $blocked = Invoke-Hook $c.cmd $cwd $tool $ad
     $got = if ($blocked) { 'block' } else { 'allow' }
     if ($got -eq $c.expect) {
         $pass++

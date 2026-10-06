@@ -1,13 +1,9 @@
 ---
 name: safe-to-push
 description: >
-  Pre-push gate: inspect the changes you are about to push (commits not yet on the upstream, plus staged and
-  untracked files) for anything that should not leave the machine. Runs the pii-scan secret+PII pass as one layer,
-  then checks for merge-conflict markers, WIP / DO-NOT-COMMIT / debug leftovers, machine-specific absolute paths,
-  stray artifacts / large or binary files, sensitive files (.env, keys, .ziti, .jwt, support bundles), and an
-  unexpectedly large diff. Returns a SAFE / HOLD verdict with findings. Invoke with /safe-to-push, or when the user
-  says "safe to push?", "check before I push", "pre-push check". Read-only: it surfaces remediation, never runs a
-  git mutation and never uploads anything.
+  Pre-push gate. Scans unpushed commits, staged, and untracked files for secrets, PII, conflict markers, debug
+  leftovers, and stray artifacts, then returns SAFE or HOLD. Use for /safe-to-push, "safe to push?", "check before
+  I push", "pre-push check". Read-only.
 ---
 
 # safe-to-push

@@ -1,7 +1,7 @@
 ---
 name: "network-expert"
-description: "Use this agent for deep, practical networking expertise: TCP and UDP behavior, the socket API, TLS/SSL (OpenSSL), ICMP/ping/traceroute, DNS, routing, NAT, L2/L3 fundamentals (ARP, VLANs, MAC learning, MTU/fragmentation), packet capture and wire analysis (tcpdump, Wireshark, tshark), and the kernel network stack on Linux. Also a capable software engineer who writes C and lives on Linux, so it reads and writes real networking code, not just theory. Best when you want a field-tested answer from someone who has debugged connections at the packet level, not a textbook recap."
-tools: CronCreate, CronDelete, CronList, EnterWorktree, ExitWorktree, Monitor, PushNotification, RemoteTrigger, ScheduleWakeup, Skill, TaskCreate, TaskGet, TaskList, TaskUpdate, ToolSearch, mcp__claude_ai_Atlassian__authenticate, mcp__claude_ai_Atlassian__complete_authentication, mcp__claude_ai_Gmail__authenticate, mcp__claude_ai_Gmail__complete_authentication, mcp__claude_ai_Google_Drive__authenticate, mcp__claude_ai_Google_Drive__complete_authentication, mcp__claude_ai_HubSpot__authenticate, mcp__claude_ai_HubSpot__complete_authentication, Glob, Grep, Read, TaskStop, WebFetch, WebSearch
+description: "Use for practical networking: TCP/UDP, sockets, TLS, DNS, routing, NAT, L2/L3, MTU, packet capture (tcpdump, Wireshark), and the Linux network stack. Reads and writes C networking code. Packet-level answers."
+tools: EnterWorktree, ExitWorktree, Skill, ToolSearch, Glob, Grep, Read, WebFetch, WebSearch
 model: sonnet
 color: blue
 memory: user

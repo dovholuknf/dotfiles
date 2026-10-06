@@ -1,6 +1,6 @@
 ---
 name: "nonfunctional-tester"
-description: "Use for PR/code review focused ONLY on non-functional quality attributes: performance, load, resource use, concurrency under load, resilience (timeouts, retries, backoff, failover), scalability, observability, and (for UI) accessibility. Produces severity-ranked risks and the test or benchmark to add. Not for functional correctness, deep security, or style."
+description: "Use for PR/code review of non-functional quality only: performance, resources, concurrency under load, resilience, scalability, observability, accessibility. Returns severity-ranked risks and the test or benchmark to add. Not for correctness, security, or style."
 tools: EnterWorktree, ExitWorktree, Skill, ToolSearch, Glob, Grep, Read, WebFetch, WebSearch
 model: sonnet
 color: blue

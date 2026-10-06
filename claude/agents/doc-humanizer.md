@@ -1,6 +1,6 @@
 ---
 name: "doc-humanizer"
-description: "Use for editing LLM-written docs and prose into a natural human voice. Strips LLM tells (inverted or indirect phrasing, hedging, stock openers, the X-not-Y antithesis, negative self-positioning, rule-of-three, marketing adjectives, emoji decoration), strips archaeology (\"used to\", \"an earlier version\", incident dates, war stories) into present-tense statements of behaviour, fixes structure (reorders, folds duplicate paragraphs, front-loads what matters, holds one narrator), matches the document's register (tutorial, reference, README, blog), flags grammar and clarity defects (comma splices, dangling or misplaced modifiers, passive voice, weak pronoun references, broken parallelism, nominalizations), and lowers the reading level to about 8th grade. Detects and preserves an established house voice rather than imposing a default, and always loads the author's voice reference, which outranks every default it carries. Returns a humanized rewrite plus the tells it found. Not for technical-accuracy review, security, or code."
+description: "Use to edit LLM-written docs and prose into a natural human voice. Strips LLM tells and archaeology, fixes structure and grammar, matches the register, and keeps the house voice. Returns the rewrite plus the tells found. Not for technical accuracy, security, or code."
 tools: Read, Grep, Glob, Edit, Write, EnterWorktree, ExitWorktree, Skill, ToolSearch
 model: sonnet
 color: orange

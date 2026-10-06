@@ -126,8 +126,15 @@ Example of what to print before dispatching:
 
 ## 4. Dispatch in parallel
 
-Launch all selected agents in a SINGLE message with one `Agent` tool call each, so they run
-concurrently in isolated contexts. Give every agent the same shared context:
+If atrium is available (the `atrium_launch` tool exists), launch every reviewer, verifier and critic as an
+atrium session, NOT with the `Agent` tool: the work is then watchable on the board and kept in history. Check
+`atrium_peers` first and keep launched running sessions at or under 10. Per reviewer, call `atrium_launch` with
+`cwd` set to the repo, the mandate and shared context in `brief`, and an instruction to write its JSON array to a
+file under C:/temp and then `atrium_say` the conductor. Collect results by reading those files. Use the `Agent`
+tool only when atrium is unavailable.
+
+Launch all selected reviewers in a SINGLE message, one call each, so they run concurrently in isolated
+contexts. Give every reviewer the same shared context:
 
 - the repo absolute path
 - the captured diff text and its range (or the PR number) so they all review the identical snapshot

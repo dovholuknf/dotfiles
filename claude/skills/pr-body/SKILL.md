@@ -5,6 +5,7 @@ description: >
   motivation first, delivered as clean copy-pasteable plain text. Invoke when the user wants a PR body,
   PR description, commit body, or says "pr body", "make it a story", "write the PR message", "make it
   human". Reshapes/authors the prose; it does not open the PR.
+disable-model-invocation: true
 ---
 
 # pr-body

@@ -63,7 +63,8 @@ if ($json.tool_name -eq "Write" -or $json.tool_name -eq "Edit" -or $json.tool_na
     }
 }
 
-if ($json.tool_name -eq "Task") {
+# Claude Code renamed the subagent tool from Task to Agent. Match both, or the gate goes dead.
+if ($json.tool_name -in @('Task', 'Agent')) {
     # Redirect plain Claude subagents to real atrium sessions, so agent work is watchable
     # on the board and kept in history instead of being ephemeral. ON by default; set
     # ATRIUM_ONLY_SUBAGENTS=0 (or off/false/no) to allow normal subagents for a session --
@@ -152,9 +153,45 @@ if ($json.tool_input.command) {
         $depth++
     }
 
-    # 1. Remote ops: never, on any branch.
+    # 1. Remote ops: never, on any branch, with one exception: atrium's hub remote (hub forge
+    #    design 5.3, wall 1). The whole command must be exactly one of
+    #      git push hub <branch> | git push -u hub <branch> | git fetch hub
+    #    (or the same with 'atrium-hub'), and every url and pushurl of that remote, after
+    #    insteadOf rewrites, must start with this room's forwarder, <agent>/git/, where <agent>
+    #    comes from atrium's daemon.json. No force, no '+' or ':' refspec, no extra flags, and
+    #    no daemon.json means refused. The hub's pre-receive is the wall behind this one.
     if ($cmd -match '\bgit\s+(?:-\S+\s+)*(push|pull|fetch)\b') {
-        _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user."
+        $hubRemote = $null
+        # [ \t], not \s: a newline would end the git command and start another.
+        if ($cmd -match '^[ \t]*git[ \t]+push[ \t]+(?:-u[ \t]+)?(hub|atrium-hub)[ \t]+[A-Za-z0-9_][\w./-]*[ \t]*$' -or
+            $cmd -match '^[ \t]*git[ \t]+fetch[ \t]+(hub|atrium-hub)[ \t]*$') {
+            $hubRemote = $Matches[1]
+        }
+        $hubOk = $false
+        if ($hubRemote) {
+            $agent = ''
+            try {
+                # ATRIUM_LOCATION names this room's daemon.json when the machine runs more than one room.
+                $dj = if ($env:ATRIUM_LOCATION) { $env:ATRIUM_LOCATION } else { Join-Path $env:LOCALAPPDATA 'atrium\daemon.json' }
+                $agent = "$((Get-Content -LiteralPath $dj -Raw -ErrorAction Stop | ConvertFrom-Json).agent)".TrimEnd('/')
+            } catch { $agent = '' }
+            if ($agent -match '^http://127\.0\.0\.1:\d+$') {
+                $urls = @()
+                try {
+                    Push-Location -LiteralPath $gitCwd
+                    $urls += @(& git remote get-url --all $hubRemote 2>$null)
+                    $urls += @(& git remote get-url --push --all $hubRemote 2>$null)
+                } catch { $urls = @() } finally { Pop-Location }
+                $urls = @($urls | Where-Object { "$_".Trim() })
+                $hubOk = $urls.Count -gt 0
+                foreach ($u in $urls) {
+                    if (-not "$u".Trim().StartsWith("$agent/git/")) { $hubOk = $false }
+                }
+            }
+        }
+        if (-not $hubOk) {
+            _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user. The one exception is atrium's hub remote: exactly 'git push hub <branch>', 'git push -u hub <branch>' or 'git fetch hub', and only when that remote points at this room's atrium forwarder."
+        }
     }
 
     # 2a. checkout: allowed ONLY as 'checkout -b claude/*'. Plain 'git checkout <x>' is

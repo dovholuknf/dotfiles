@@ -5,6 +5,7 @@ description: >
   works out the target repo per bug (an optional `repo:` line, otherwise it asks), and hands you a ready
   `gh issue create` command per bug to run. Invoke with /to-issue, or when the user says "file these as issues",
   "turn bug.md into issues", "make issues from the bug list". It does NOT create the issues itself.
+disable-model-invocation: true
 ---
 
 # to-issue

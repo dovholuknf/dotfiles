@@ -6,6 +6,7 @@ description: >
   minutiae, edge-case caveats) while keeping every load-bearing claim and the correct cause-and-effect. Invoke with
   /as-tech-story, or when the user says "tech story this", "gloss over the details", "give me the technical story",
   "retell that simply". It reshapes the prior answer. It does no new research and invents nothing.
+disable-model-invocation: true
 ---
 
 # as-tech-story

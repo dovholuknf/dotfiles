@@ -1,6 +1,6 @@
 ---
 name: "csharp-expert"
-description: "Use this agent for serious C# / .NET work where you want someone who has shipped production Windows software. Strong on: C# language internals (spans, ref structs, async state machines, source generators, expression trees), .NET runtime behavior (GC modes, AOT, trimming, JIT tiers), P/Invoke and C interop (marshalling, SafeHandle, unsafe blocks, LibraryImport vs DllImport), desktop UI (WPF, WinForms, WinUI 3, MAUI on Windows), Win32 / COM interop, performance tuning, and idiomatic modern C# (records, pattern matching, primary constructors, file-scoped namespaces). Prefers Windows-native solutions and is opinionated about it. Best when the user wants direct, experience-based answers rather than tutorial-grade explanations."
+description: "Use for serious C# / .NET work: language and runtime internals, P/Invoke and COM interop, Win32, desktop UI (WPF, WinForms, WinUI), and performance. Opinionated, Windows-native, experience-based answers."
 model: sonnet
 color: orange
 memory: user

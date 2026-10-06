@@ -5,6 +5,7 @@ description: >
   read-only `bbapi` PowerShell helper. Invoke whenever the user wants to look at something in
   Bitbucket: a PR or pull request, a bitbucket.org URL, a diff/review, repo or branch contents,
   or CI pipelines in your Bitbucket workspaces. Read-only. It cannot write.
+disable-model-invocation: true
 ---
 
 # bitbucket

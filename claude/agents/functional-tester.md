@@ -1,6 +1,6 @@
 ---
 name: "functional-tester"
-description: "Use for PR/code review focused ONLY on functional correctness: does the change do what it is supposed to, across happy path, edge cases, error handling, boundaries, and state transitions. Produces severity-ranked behavior gaps and the exact test cases (given input, expect output) to add. Not for performance, security, or style."
+description: "Use for PR/code review of functional correctness only: happy path, edge cases, errors, boundaries, state transitions. Returns severity-ranked behavior gaps and the test cases to add. Not for performance, security, or style."
 tools: EnterWorktree, ExitWorktree, Skill, ToolSearch, Glob, Grep, Read, WebFetch, WebSearch
 model: sonnet
 color: green

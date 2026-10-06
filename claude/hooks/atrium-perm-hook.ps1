@@ -48,7 +48,7 @@ function _AtriumWired {
     return $false
 }
 
-$hubUrl = if ($env:ATRIUM_HUB_URL) { $env:ATRIUM_HUB_URL.TrimEnd('/') } else { 'http://localhost:7777' }
+$hubUrl = if ($env:ATRIUM_HUB_URL) { $env:ATRIUM_HUB_URL.TrimEnd('/') } else { 'http://127.0.0.1:7777' }
 
 # What this session calls itself. Resolved before the gate check, because the
 # daemon is asked about this exact name and `atrium join` uses the same rule.
@@ -58,25 +58,36 @@ $agentName = if ($env:ATRIUM_AGENT_NAME) {
     Split-Path -Leaf (Get-Location).Path
 }
 
-# Has this session joined atrium while running?
+# Has this session joined atrium while running, and is atrium answering at all?
 #
-# Gating used to be decided once, here, from the environment, which fixed the
-# answer for the life of the session. Asking the daemon is what makes
-# `atrium join` and `atrium leave` take effect immediately. An unreachable
-# daemon means no gating, matching the fail-open posture of the rest of this
-# script.
+# Asking the daemon is what makes `atrium join` and `atrium leave` take effect
+# immediately. It is ALSO the liveness probe, asked of every session including
+# forced and wired ones, because `/gate` reads the store. A room whose store is
+# frozen accepts the connection and never answers, and the `/permission` POST
+# below has no deadline (a human may take minutes), so without this probe one
+# frozen room holds every gated tool call on the machine. Returns $null when
+# atrium does not answer within the deadline, which means fail open.
+#
+# The window left open: a store that freezes between this probe and the POST.
+# That costs one tool call per session, where no probe cost all of them.
+$probeSec = 3
+if ($env:ATRIUM_PERM_PROBE_TIMEOUT) {
+    try { $probeSec = [Math]::Max(1, [int]$env:ATRIUM_PERM_PROBE_TIMEOUT) } catch {}
+}
 function _AtriumJoined {
     param([string]$Name)
     try {
         $resp = Invoke-RestMethod -Uri "$hubUrl/gate?agent=$([uri]::EscapeDataString($Name))" `
-            -Method Get -TimeoutSec 2 -ErrorAction Stop
+            -Method Get -TimeoutSec $probeSec -ErrorAction Stop
         return [bool]$resp.gate
     } catch {
-        return $false
+        return $null
     }
 }
 
-if (-not $forceGate -and -not (_AtriumWired) -and -not (_AtriumJoined $agentName)) { exit 0 }
+$joined = _AtriumJoined $agentName
+if ($null -eq $joined) { exit 0 }
+if (-not $forceGate -and -not $joined -and -not (_AtriumWired)) { exit 0 }
 
 try {
     $raw = [Console]::In.ReadToEnd()
@@ -85,15 +96,10 @@ try {
 
     # Tools we DON'T gate. Two categories:
     #   1. Pure-read built-ins: Read, Grep, Glob, WebFetch, WebSearch, etc.
-    #   2. MCP-provided tools (names prefixed with `mcp__`): trust comes from
-    #      having the MCP wired into .mcp.json. Crucially this prevents the
-    #      atrium-agent MCP's own `submit` from being gated, which would
-    #      otherwise demand a permission on every loop turn.
-    #   3. ToolSearch: claude's meta-tool for discovering other tools. No
+    #   2. ToolSearch: claude's meta-tool for discovering other tools. No
     #      side effects; the eventual tool call is what gets gated.
     $skipTools = @('Read','Grep','Glob','WebFetch','WebSearch','TodoWrite','Task','ToolSearch')
     if ($skipTools -contains $json.tool_name) { exit 0 }
-    if ("$($json.tool_name)" -like 'mcp__*') { exit 0 }
 
     $toolName = "$($json.tool_name)"
     $cmd = ''

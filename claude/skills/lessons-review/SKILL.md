@@ -5,6 +5,7 @@ description: >
   what to promote to reviewed knowledge, keep as memory, or delete. Invoke with /lessons-review [persona-id...], or
   when the user says "review what the agents learned", "lessons review", "prune agent memory", "what have the
   reviewers learned". Reads and edits files in the dotagents persona pack. It never commits or pushes.
+disable-model-invocation: true
 ---
 
 # lessons-review

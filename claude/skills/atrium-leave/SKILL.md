@@ -1,6 +1,7 @@
 ---
 name: atrium-leave
 description: Take this claude session off the atrium board and stop gating its tool calls. Invoke when the user says "leave atrium", "/atrium-leave", "stop gating this session", "take this off the board", "detach from atrium", or asks to stop atrium supervising this session. Takes effect immediately. Use atrium-join to put it back.
+disable-model-invocation: true
 ---
 
 # atrium-leave
