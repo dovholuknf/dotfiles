@@ -405,6 +405,11 @@
           {
             "type": "command",
             "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event prompt"
+          },
+          {
+            "type": "command",
+            "command": "D:/git/github/dovholuknf/dotfiles/claude/tools/clint/build.claude/clint.exe rw",
+            "timeout": 5
           }
         ]
       }
@@ -435,5 +440,12 @@
       "type": "command",
       "command": "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -File 'C:/Users/claude/.claude/sounds/log-hook.ps1'"
     }
-  ]
+  ],
+  "pluginConfigs": {
+    "cc-plugin-agents-md@builtin": {
+      "options": {
+        "instructionFiles": "claude-md-and-agents-md"
+      }
+    }
+  }
 }
