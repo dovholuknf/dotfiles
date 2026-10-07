@@ -1,0 +1,279 @@
+# clint grill scenarios. Each [reply id] block is one scenario:
+#   ask:   the setup: who you are, who is asking or what you were asked to write, and where
+#   true:  the facts the answer has to carry
+#   mark:  a phrase this scenario tests, one per line. If the user's reply still has it, they kept it.
+#   then the reply an LLM wrote
+# The user writes exactly how they would reply, or types = to send the LLM reply unchanged.
+#
+# How the set is built, so each answer teaches something new:
+# - Anyone can answer. The scenarios happen around the Thrombonifier, a made-up app that turns recipes into shopping
+#   lists, and around everyday work: chat with a coworker, email from a customer, a report from an AI assistant. The
+#   setup carries everything the reader needs, so nobody has to know a field to write a reply.
+# - One or two habits per reply, the rest written plainly. If a reply carries six habits, a rewrite can't show which
+#   one bothered the reader.
+# - Contrasts. Several habits appear twice, once where they grate and once where they are fine, in scenarios far
+#   apart so the first doesn't prime the second: a label vs a plain "honestly", asking before deleting vs offering
+#   the obvious next step, "genuine" as a fact vs as an intensifier, "ensure" as an instruction vs a claim, Critical
+#   as a rating vs as emphasis.
+# - Controls. Some replies are already plain. Typing = on those shows what the reader keeps, and rewriting them anyway
+#   shows a habit no rule names yet.
+# - Mixed registers: chat, reports, change logs, help pages, notes in instructions, bug reports, release notes,
+#   customer email, a blog opening. Mixed lengths, with no two long replies in a row.
+# - The first scenario is a short control, so the reader learns = before the work starts.
+# Lines starting with # are comments before the first block. Edit freely, ids only need to be unique.
+
+[reply changelog-plain]
+ask: You help build the Thrombonifier, an app that turns recipes into shopping lists. The team keeps a change log that the other two developers read. Write today's entry.
+true: The app crashed when someone deleted a recipe while it was still open on screen. Now it closes the recipe instead of crashing.
+Fix a crash when an open recipe is deleted
+
+The recipe screen read the recipe's title after the recipe was gone. It now checks first and closes the screen.
+
+[reply praise-open]
+ask: A coworker messages you in team chat: "quick one, does the app or the server decide when someone gets logged out?"
+true: The server decides. The app only passes requests along.
+mark: Great question
+Great question! The server decides when someone gets logged out. The app only passes requests along and never checks how long someone has been signed in.
+
+[reply status-done]
+ask: The team's shared inbox let "free gift" spam through and blocked real invoices. You asked an AI assistant to fix the spam filter. This is its report.
+true: It changed the filter to look only at the subject line. It sent itself three spam emails and two invoices: the spam was caught and the invoices arrived.
+mark: Done.
+mark: live
+mark: parse-clean
+mark: load-bearing
+Done. The filter is live and parse-clean. Matching only the subject line is the load-bearing change, so "free gift" emails get caught and invoices get through. I sent three spam emails and two invoices to test, and all five behaved.
+
+[reply backup-too-long]
+ask: You ask a coworker in chat: "what time does the nightly backup run?"
+true: 2 a.m.
+mark: Note that
+mark: keep in mind
+The nightly backup runs at 2 a.m. by default. This is configurable in the admin settings under Backups, where you can also set how many copies to keep. Note that the time is in the server's time zone, not yours, so if you're in a different time zone you'll want to convert it. If you're planning maintenance, keep in mind that the backup can take up to an hour on busy days.
+
+[reply honest-label]
+ask: You ask a teammate whether the new version of the Thrombonifier works on older phones.
+true: They tried it on phones from the last three years and it worked on all of them. Nobody tried anything older, or any tablet.
+mark: One honest caveat
+Yes. I tried it on phones from the last three years and it worked on all of them. One honest caveat: I haven't tried anything older, or any tablet, so those are unknown.
+
+[reply change-headers]
+ask: You added a way to export a shopping list as a spreadsheet. Before it goes live, a teammate reviews your change. Write the short description they read first.
+true: There is a new "Export to spreadsheet" button on the list screen. You tried it by hand with a few lists.
+mark: ## Summary
+mark: seamless
+## Summary
+This change adds seamless spreadsheet export support to the shopping list screen.
+
+## Changes
+- Added an "Export to spreadsheet" button
+
+## Testing
+- Manually tested with a few lists
+
+[reply note-story]
+ask: You are adding a note to the office printer's setup instructions, for whoever looks after the printer after you. The note explains why setup tries to connect five times.
+true: The printer refuses connections for a few seconds after it wakes up, so setup tries 5 times, 2 seconds apart.
+mark: originally
+mark: Now we
+Note: We originally tried connecting once, but setup kept failing because the printer refuses connections for a few seconds after it wakes up. Now we try up to 5 times with a 2 second wait instead.
+
+[reply destructive-ask]
+ask: You asked an AI assistant to clean up old project folders on the shared drive. This is its report.
+true: Three folders were for finished projects, and it deleted them. The fourth, "Spring launch", has two files someone edited yesterday.
+mark: Want me to delete it
+I deleted the three finished project folders. "Spring launch" has two files someone edited yesterday, budget.xlsx and plan.docx. Want me to delete it anyway?
+
+[reply customer-angry]
+ask: A customer emails support, angry. The Thrombonifier logs them out every 10 minutes and they lose the list they were typing. You answer the email.
+true: It is a known bug in version 1.2.0. Version 1.2.1 fixes it and came out yesterday.
+mark: I completely understand
+mark: The good news
+mark: don't hesitate
+I'm really sorry for the frustration this has caused, and I completely understand how disruptive it is to lose your list. The good news is that this is a known issue in version 1.2.0, and it's fixed in 1.2.1, which was released yesterday. Updating the app should resolve it. Please don't hesitate to reach out if you have any further questions!
+
+[reply design-seam]
+ask: Your manager asks in chat whether adding a French version of the app is a big job.
+true: Every screen already reads its words from one file, so translating that file covers most of it. Only the date formats and three screens with words baked into pictures need extra work.
+mark: the seam
+mark: The real work
+Not huge. The text file is already the seam a second language would plug into, since every screen reads its words from there. The real work is the date formats and three screens with text baked into images.
+
+[reply bug-plain]
+ask: The Thrombonifier just did something wrong in front of you. Write the bug report for the team's tracker.
+true: Signing in with an expired password shows "Error 0" and nothing else, instead of saying the password expired.
+Signing in with an expired password shows "Error 0"
+
+Sign in with a password that has expired. The app shows "Error 0" and stays on the sign-in screen.
+
+Expected: a message that says the password expired and how to reset it.
+
+[reply blog-cadence]
+ask: Write the first two sentences of a company blog post about the app's new offline mode.
+true: The app now works with no internet connection and catches up when the connection comes back.
+mark: isn't a feature, it's
+mark: isn't just
+mark: —
+Offline mode isn't a feature, it's a promise. And it isn't just a cache with better marketing — it's a way to plan meals in a basement with no signal and have everything catch up when you're back.
+
+[reply hedge-stack]
+ask: Your manager asks in chat when the iPhone version will be ready.
+true: Two of the three parts are done. The third is Apple's review, which has no date.
+mark: hard to say for certain
+mark: might potentially
+mark: possibly
+It's hard to say for certain, but I'd estimate it might potentially be ready sometime next week, possibly, assuming everything goes smoothly. Two of the three pieces are done. The remaining piece is somewhat blocked on Apple's review.
+
+[reply offer-next]
+ask: The app is built automatically every night, and last night's build failed. You asked an AI assistant why. This is its answer.
+true: A library the app uses got a new version, and the file that lists library versions was not updated to match. One command updates the file.
+mark: Want me to
+The build failed because the version list is missing an entry for the updated date library. Running `update-versions` fixes it. Want me to run it and push the fix?
+
+[reply honestly-plain]
+ask: Years ago the team wrote its own small tool that retries failed photo uploads. A teammate asks in chat whether to keep it.
+true: Since last spring the upload service retries failed uploads by itself, so with the tool every failed upload is retried twice over.
+mark: Honestly
+Honestly, I'd drop it. The upload service retries on its own since last spring, so the homemade tool just doubles the retries.
+
+[reply release-critical]
+ask: Write the release notes for version 1.4.2. Users see them in the app store.
+true: It fixes a security hole that let other users read your lists, rated Critical by the security team. It also fixes the app slowing down after a long session.
+mark: Critical
+mark: crucial
+## 1.4.2
+
+- Security: fixes a hole that let other users read your lists (rated Critical). Update now.
+- Fixes the app slowing down after long sessions.
+
+It is crucial that all users update immediately.
+
+[reply log-preamble]
+ask: You asked an AI assistant to read last night's server log and tell you what happened.
+true: The server restarted at 11:12 p.m. and again at 11:40 p.m. Both times it ran out of memory. Memory use started climbing after a short network outage at 10:58 p.m.
+mark: Here's what I found
+mark: In summary
+Here's what I found after going through the logs. The server restarted twice, at 11:12 p.m. and 11:40 p.m. Both times it ran out of memory. Memory climbed steadily after a short network outage at 10:58 p.m.
+
+In summary, a network outage triggered a memory climb that led to two restarts.
+
+[reply grade-reader]
+ask: In a planning meeting you suggested the app remember the weather forecast for an hour, instead of asking the weather service on every screen. A teammate answers in the meeting notes.
+true: You are right, it asks on every screen. Remembering it for an hour is safe because the service only updates the forecast once an hour.
+mark: sharp instinct
+mark: exactly right
+That's a sharp instinct, and you're exactly right. The app asks the weather service on every screen. Remembering the forecast for an hour is safe because the service only updates it hourly anyway.
+
+[reply status-plain]
+ask: The app has three automatic checks that run on every change. You asked an AI assistant to move them to the new version of the programming language. This is its report.
+true: All three checks now use the new version. All three passed.
+The style, test and release checks now use Python 3.13. All three passed on the change.
+
+[reply review-soft]
+ask: A teammate asked you to review their change. Their code saves a file, but it ignores the error the computer can report at the very end of saving. Write your review comment.
+true: That last error is the only way to learn the save failed, so ignoring it can lose a user's data without anyone knowing.
+mark: Great work overall
+mark: worth flagging
+mark: might want to consider
+mark: Just a thought
+Great work overall! One small thing worth flagging: we might want to consider checking the error when the file finishes saving here, since that's the step that tells you whether the save actually succeeded. Just a thought!
+
+[reply help-punct]
+ask: Write one line for the help page that explains the "Strict" setting on the recipe import screen.
+true: Strict makes any warning stop the import. It is off by default. It is meant for people who import lots of recipes at once.
+mark: ;
+mark: —
+Strict turns warnings into errors; the import stops on any warning — useful for big batches. It's off by default.
+
+[reply genuine-fact]
+ask: You are adding a note to the instructions for the app's sync feature, for whoever maintains it after you. The note explains when sync stops retrying.
+true: Sync gives up only when the server itself says the list does not exist. During maintenance a holding page also answers "not found", and sync should keep retrying through that.
+mark: genuine
+Note: Give up only on a genuine "not found" from the server. During maintenance, the holding page also says "not found", and that one should be retried.
+
+[reply changelog-claims]
+ask: Write today's entry in the change log the other developers read.
+true: The health check, which asks the server every minute whether it is up, now gives up after 30 seconds. Before, it could wait forever when the server stopped answering.
+mark: robust
+mark: ensures
+mark: significantly
+Add a robust timeout mechanism to the health check. This change ensures the health check can no longer hang indefinitely when the server stops responding, significantly improving reliability.
+
+[reply setup-ensure]
+ask: Write step 3 of the setup guide for the kitchen label printer that works with the app.
+true: The printer has to be switched on before you pair it with the app, or pairing hangs without an error.
+mark: Ensure
+3. Ensure the printer is switched on before you pair it. If it isn't, pairing hangs with no error.
+
+[reply genuinely-intensifier]
+ask: Last night all customer records were copied to a new database. You asked whether it worked.
+true: The copy job said it succeeded, but its log was deleted overnight. The record counts match for two of the three kinds of record. Nobody has checked the third.
+mark: genuinely
+The job said it succeeded, but the log was deleted overnight, so we genuinely can't tell from it whether every step ran. Record counts match for two of the three kinds of record. I haven't checked the third yet.
+
+[reply speaker-labels]
+ask: A customer emails asking how to get their smart speaker at home to read their Thrombonifier list out loud.
+true: It needs a speaker made after 2022. Turn on "Home skills" in the speaker's app, then say "Thrombonifier, read my list". If the phone is off, the speaker can't read the list, but the speaker's other features keep working.
+mark: Two things worth knowing
+mark: **Requirement:**
+mark: The catch that will bite you
+Two things worth knowing before you start:
+
+**Requirement:** this only works with speakers made after 2022.
+**The catch that will bite you:** when your phone is off, the speaker can't read your list, though everything else keeps working.
+
+To set it up, turn on Home skills in the speaker's app, then say "Thrombonifier, read my list".
+
+[reply customer-plain]
+ask: A customer emails asking if the free plan includes shared family lists.
+true: No. Shared lists come with the Family plan. The free plan gives one person one list. Prices are at thrombonifier.com/pricing.
+No, shared lists come with the Family plan. The free plan has one list for one person. Prices for each plan are at thrombonifier.com/pricing.
+
+[reply agent-jargon]
+ask: You asked an AI assistant what is left to do before the next release.
+true: Two changes still need to be merged: the help page update and the tablet fix. After that, you publish the release.
+mark: land
+mark: surface
+Two changes still need to land: the help page update and the tablet fix. Once those land, I'll surface the publish command for you to run.
+
+[reply over-answer]
+ask: You ask a teammate in chat: "can I delete the 'old exports' folder on the shared drive?"
+true: Yes. Nothing uses it and nobody has opened it in a year.
+mark: extra careful
+mark: Alternatively
+Yes, it's safe to delete. Nothing uses it and nobody has opened it in a year. If you want to be extra careful, you could move it to an archive folder first and delete it after a few weeks, or rename it so anyone who needs it will notice. Alternatively, you could zip it and keep the archive somewhere else.
+
+[reply undefined-terms]
+ask: Since this morning, browsers show a security warning on the Thrombonifier website. You ask the teammate who runs the website why.
+true: The website's security certificate, which makes the padlock show, ran out this morning. It renews itself automatically, but the renewal failed because a password it needs was changed last week. Put the new password in and renew.
+The browser warning is because the TLS cert expired: the ACME renewal cron failed the DNS-01 challenge since the API token rotated last week. Update the token in the secret store and re-run the renewal.
+
+[reply help-marketing]
+ask: Write the first paragraph of the Thrombonifier's help page.
+true: The Thrombonifier turns your recipes into one shopping list, grouped by store aisle. It is free for one person.
+mark: powerful
+mark: Leveraging
+mark: seamlessly
+mark: empowering
+The Thrombonifier is a powerful, intuitive tool that helps you make your shopping effortless. Leveraging smart recipe analysis, it seamlessly turns your recipes into organized shopping lists, empowering you to shop with confidence.
+
+[reply explain-plain]
+ask: A new teammate asks how a change to a shopping list gets from your phone to your partner's phone.
+true: The app sends the change to the server. The server saves it and tells every phone on that shared list. Each phone downloads the change. A phone that is offline gets it when it reconnects.
+When you change the list, your phone sends the change to our server. The server saves it and tells every other phone on that shared list. Each of those phones downloads the change and updates the screen. A phone that's offline gets it the next time it connects.
+
+[reply decision-menu]
+ask: The app's "Groceries" menu was renamed "Lists". An AI assistant needs your decision: keep "Groceries" working as an old name too, or remove it.
+true: Three teams have shortcuts that still use "Groceries". Keeping both names costs a few minutes of work and a little clutter.
+mark: a few ways we could go
+mark: tradeoffs
+mark: What would you like to do
+There are a few ways we could go here, each with tradeoffs. We could keep "Groceries" as an old name that still works, which keeps the three teams' shortcuts working but adds some clutter. Alternatively, we could make a clean break, which simplifies things but would require those teams to update their shortcuts. What would you like to do?
+
+[reply celebrate]
+ask: An automatic test of the app failed at random, about one run in ten. You asked an AI assistant to fix it. This is its report.
+true: The test waited 5 seconds for the app to start, and slow machines needed more. It now waits 30 seconds. It passed 50 runs in a row.
+mark: 🎉
+mark: rock solid
+mark: !
+🎉 All 50 runs passed! The flaky test is fixed — I bumped the wait from 5s to 30s, and it's rock solid now!

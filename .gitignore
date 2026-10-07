@@ -80,6 +80,7 @@ secrets.*
 .vs/
 .vscode/*.log
 node_modules/
+build.claude/
 __pycache__/
 *.pyc
 
