@@ -83,6 +83,9 @@ Look at the changed files and the shape of the change, then choose from the avai
 - any non-trivial code change in any language -> `codebase-steward` (fit and divergence is language
   agnostic, so it runs on almost every panel)
 - `*.go` -> add `go-security-reviewer` (Go language and security footguns)
+- `*.js` / `*.mjs` / `*.cjs` / `*.ts` / `*.html` -> add `web-security-reviewer` (Node/Express, reverse proxies,
+  browser clients, cookies, CSRF, OIDC, the origin model). When a PR changes both a server and its client, run two
+  instances, one scoped to each side.
 - `*.c` / `*.h` -> add `c-systems-reviewer`
 - `*.cs` -> add `csharp-expert`
 - Windows admin surface (registry, GPO, MSI, services, `*.admx` / `*.adml`, Intune) ->
@@ -94,6 +97,9 @@ Look at the changed files and the shape of the change, then choose from the avai
   would actually notice. A periodic background tick (a posture check every 20s, a housekeeping sweep) has
   no such surface: adding this agent there yields six "add a benchmark" findings that never reach the
   report. Skip it.
+- the diff ADDS a server, reverse proxy, session store, cache, rate limit, or retry loop -> ALWAYS add
+  `nonfunctional-tester`. Each of those is load and failure surface by construction. The PR 967 panel skipped it
+  on a PR that added a server, a proxy, a session store and refresh single-flight.
 
 Adjust with judgment. The selection rule: name the concrete surface in THIS diff each agent needs to exist,
 and skip the agent when that surface is absent. A diff that only touches docs or generated files may need no
@@ -125,6 +131,13 @@ Example of what to print before dispatching:
 `Panel for main...HEAD (6 files): c-systems-reviewer (new C API, 4 TLS backends), codebase-steward (new vtable member). Verify pass + critic to follow. Dispatching.`
 
 ## 4. Dispatch in parallel
+
+Before dispatch, make dependency source readable, so reviewers can meet the quote rule. In the review worktree,
+install without running anything the packages ship: `npm ci --ignore-scripts` (or `pnpm install --frozen-lockfile
+--ignore-scripts`, `yarn install --frozen-lockfile --ignore-scripts`) for a lockfile, `go mod download` for
+`go.mod`. Skip a step whose dependencies are already present. If an install fails, say so in the selection line:
+dependency claims then stay "needs verification" rather than being dropped. The PR 967 panel ran with no
+`node_modules`, so no reviewer could quote Express or http-proxy-middleware.
 
 If atrium is available (the `atrium_launch` tool exists), launch every reviewer, verifier and critic as an
 atrium session, NOT with the `Agent` tool: the work is then watchable on the board and kept in history. Check
@@ -165,6 +178,10 @@ confident-but-wrong criticals. Before merging, refute them.
   that raised it (falling back to `general-purpose`), and prompt it to REFUTE, not confirm: reproduce
   the exact failing path from `evidence`, or show the state is unreachable / the claim is false. It must
   read the real code, not the finding text. Default to refuted when it cannot reproduce.
+- Tell every verifier to weigh the PR's intent over repo docs the PR makes stale. A doc that calls a file
+  deprecated, or a path dev-only, does not refute a finding when the PR makes that file the production path. The
+  PR 967 verifier refuted a valid mount-path finding because `AGENTS.md` called `server.js` deprecated, in the PR
+  that made it production.
 - Each verifier returns `{ "verdict": "confirmed|refuted|uncertain", "reason": "...", "corrected_severity": "..." }`.
 - Apply the verdicts: drop `refuted`, keep `confirmed` (with any corrected severity), and demote
   `uncertain` to `low` with a note. Carry each verdict into the report.
@@ -189,8 +206,12 @@ When verification is done, consolidate into ONE report. Do not just concatenate.
   low-confidence false positives and say why.
 - Rank by severity across the merged set.
 - Coverage check: spawn one final `general-purpose` completeness critic. Hand it the diff and the merged
-  finding list and ask what dimension NO reviewer covered (thread-safety, error paths, tests, i18n,
-  perf, docs, backward compat). Its output is a short "possible gaps" list, not new confirmed findings.
+  finding list. Its prompt LEADS with: "List the new attack surface this PR creates: routes, proxied paths,
+  headers passed through, cookies, stored state, outbound calls, and anything a client now trusts. Then check
+  each item against the merged findings and say which ones no reviewer examined." Only after that, ask what
+  other dimension NO reviewer covered (thread-safety, error paths, tests, i18n, perf, docs, backward compat).
+  On PR 967 the critic alone found 7+ findings the specialists missed, all from that attack-surface list. Its
+  output is a short "possible gaps" list, not new confirmed findings.
   Do NOT list "does it build / compile / vet" as a candidate gap and do NOT let it run a build -- CI owns
   that; it reasons from reading the code only.
 

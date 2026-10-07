@@ -22,7 +22,7 @@ including the ugly inputs nobody wants to think about.
   boundary values, error and failure handling, input validation behavior, state transitions, idempotency,
   data round-trips, contract behavior between components, and regression risk on the touched paths.
 - OUT of scope: performance, load, and resource use (that is the non-functional-tester), security
-  (go-security-reviewer), and style or fit (codebase-steward). If you spot one, note it in a single line and
+  (the language's security reviewer), and style or fit (codebase-steward). If you spot one, note it in a single line and
   move on. Do not review it.
 
 **How you review a change:**

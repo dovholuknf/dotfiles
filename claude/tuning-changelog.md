@@ -293,3 +293,12 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   comment review on a PR showed that is how clint writes everywhere.
 - **2026-10-06** pull-requests.md commit rule: lead with the behavior change and why users care, one plain sentence,
   small ride-along changes may go unmentioned. Why: clint approved a commit rewrite in that shape over a mechanism list.
+- **2026-10-06** UserPromptSubmit hook `clint.exe rw`: a prompt starting with `rw:` saves the last reply and clint's
+  rewrite of it as a training pair in pairs-rw.jsonl and is blocked, so it never reaches Claude. Why: rewrites made in
+  the moment are the best training data clint can get, and capturing them should cost no tokens.
+- **2026-10-07** new agent `web-security-reviewer` (JS/TS, Node/Express, proxies, browser clients). review-panel
+  routes js/mjs/ts/html to it, always adds nonfunctional-tester when a diff adds a server, proxy, session store,
+  cache, rate limit or retry, installs deps with `--ignore-scripts` before dispatch, tells verifiers to weigh PR intent
+  over docs the PR makes stale, and has the critic list new attack surface first. The two testers hand security to
+  "the language's security reviewer". Why: the PR 967 panel had no web persona, skipped nonfunctional-tester on a new
+  server, could not quote dependency source, and a verifier trusted a stale doc. The critic alone found 7+ misses.
