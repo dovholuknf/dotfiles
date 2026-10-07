@@ -13,6 +13,8 @@ once the status line has logged enough of it.
 | `../statusline-command.sh` | Appends a sample to `~/.claude/usage-log.jsonl` when a session's 5h or 7d percent changes, else at most once a minute |
 | `UsageCommon.ps1` | Price table (with its source), the transcript scanner, the weekly window. Dot-sourced by the others |
 | `Get-UsageReport.ps1` | Markdown report of tokens and cost: per day and hour, the top day, baseline, models, cold wakes, context size |
+| `Get-TokenReport.ps1` | Markdown report of tokens per prompt: the costliest prompts, the worst turns by kind, and an evaluation |
+| `PromptScan.cs` | The scanner behind `Get-TokenReport.ps1`: charges each API call to the prompt before it |
 | `Get-BurnFit.ps1` | Fits the logged meter against cost, then predicts when the week hits 100% and how many calls fit |
 | `Test-BurnFit.ps1` | Builds a synthetic meter with known weights and checks that the fit recovers them |
 
@@ -59,6 +61,45 @@ How it counts:
   its uncached input. That undercounts cold wakes a little, because a wake re-writes the whole prefix.
 - "Compact at N" is the cost of every token above N on every call. It is an upper bound: it ignores the compaction
   call and any re-reading it causes.
+
+## The prompt segment
+
+The status line ends with `prompt 123k 9k 12k`: the tokens every API call since your last prompt re-read from
+context, wrote to cache, and output. It grows while the turn runs and resets when you send the next prompt, a
+background task wakes the session, or an atrium message arrives. Output includes thinking, so a short reply can
+show hundreds of tokens.
+
+It reads the transcript incrementally. `~/.claude/usage-log.state/<session>.turn` holds the byte offset already
+read and the running totals, so a render with no new transcript lines starts no process, and a busy one runs
+`tail` and `jq` over the new lines only. The first render of a large transcript starts 4 MB from the end. Subagent
+calls live in their own transcripts and are not counted.
+
+## Get-TokenReport.ps1
+
+```powershell
+./Get-TokenReport.ps1                                   # last 7 days, to stdout
+./Get-TokenReport.ps1 -Days 1 -Top 20 -OutFile today.md
+./Get-TokenReport.ps1 -Project '*atrium*'               # one project, by folder-name wildcard
+./Get-TokenReport.ps1 -Json                             # one row per prompt, for other tools
+```
+
+It takes about 15 seconds for a week. Everything is in tokens, not dollars. A prompt's total is the sum over its
+calls of input, cache writes, cache reads and output, so the context re-read on every call dominates.
+
+How it counts:
+
+- A turn starts at a user entry that is not a tool result, injected context (`isMeta`) or local command output.
+  Its kind is `prompt` (typed, or a slash command), `notification` (a background task finished), `atrium` (a peer
+  message), `resume` (a compaction summary) or `subagent` (the task a subagent got).
+- Every assistant call after it, up to the next turn, is charged to it. Calls merge by `message.id` like
+  `UsageScan`, and a call copied into a resumed session counts once, in the first file that holds it.
+- Visible output is the characters of text and tool input a call wrote. Output tokens beyond about a quarter of
+  that are thinking.
+- A wait is a call to `TaskOutput`, `BashOutput` or `Monitor`, a command with `sleep`, `Start-Sleep` or an `until`
+  loop, or a read of a background task's `.output` file.
+
+The evaluation applies fixed thresholds and sorts findings by the tokens they cover. Findings overlap, so their
+shares add to more than 100%.
 
 ## Get-BurnFit.ps1
 

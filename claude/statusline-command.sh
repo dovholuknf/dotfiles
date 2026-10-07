@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Claude Code statusline, fork-minimized. Exactly one jq, one git, one stat per
-# render; everything else is a bash builtin (printf '%()T' for the clock,
+# Claude Code statusline, fork-minimized. One jq, one git, one stat per render, plus tail + jq for the
+# prompt segment only when the transcript grew. Everything else is a bash builtin (printf '%()T' for the clock,
 # printf -v / $'...' for string building, a here-string into jq instead of cat).
 # The earlier version forked cat + jq + two git + date + ~10 printf subshells
 # and ran ~1s per render; this trims that to three external processes.
@@ -175,5 +175,61 @@ if [ -f "$tpath" ]; then
         right+=$tmp
     fi
 fi
+
+# "1234567" -> "1.2M", "12345" -> "12k". Sets K.
+fmtk() {
+    local n=${1:-0}
+    if   [ "$n" -ge 1000000 ]; then printf -v K '%d.%dM' $((n/1000000)) $(((n%1000000)/100000))
+    elif [ "$n" -ge 1000 ];    then K="$((n/1000))k"
+    else K=$n
+    fi
+}
+
+# Tokens since the last prompt: context re-read, cache written, output. It grows while the turn runs and
+# resets on the next prompt. Counted incrementally: "<key>.turn" holds the byte offset already read plus the
+# running totals, so a render with no new transcript lines forks nothing, and a busy one reads only the new
+# lines (tail + jq). Streamed replies repeat one message id across entries, so the open id is kept apart and
+# merged by max. A first look at a big transcript starts 4 MB from the end.
+turn_tokens() {
+    local dir=$HOME/.claude/usage-log.state key=${sid//[^A-Za-z0-9-]/} st n res
+    local off=0 r=0 w=0 o=0 cid=- cr=0 cw=0 co=0
+    [ -n "$key" ] && [ "${bytes:-0}" -gt 0 ] 2>/dev/null || return 0
+    [ -d "$dir" ] || mkdir -p "$dir" || return 0
+    st=$dir/$key.turn
+    [ -f "$st" ] && read -r off r w o cid cr cw co < "$st"
+    [[ $off =~ ^[0-9]+$ ]] && [ "$off" -le "$bytes" ] || { off=0 r=0 w=0 o=0 cid=- cr=0 cw=0 co=0; }
+    if [ "$bytes" -gt "$off" ]; then
+        [ "$off" -eq 0 ] && [ "$bytes" -gt 4000000 ] && off=$(( bytes - 4000000 ))
+        res=$(tail -c +$(( off + 1 )) "$tpath" | jq -Rrs --argjson st "[$r,$w,$o,\"$cid\",$cr,$cw,$co]" '
+            def prompt: .type == "user" and (.isMeta | not) and (.isSidechain | not) and
+              ( ((.message.content | type) == "string"
+                  and (.message.content | test("^\\s*<(local-command|bash-)") | not))
+                or ((.message.content | type) == "array" and any(.message.content[]; .type == "text")
+                  and all(.message.content[]; .type != "tool_result")) );
+            . as $s | split("\n") as $l
+            | reduce ($l[:-1][] | fromjson?) as $e ($st;
+                if ($e | prompt) then [0, 0, 0, "-", 0, 0, 0]
+                elif $e.type == "assistant" and $e.message.usage != null and ($e.isSidechain | not) then
+                  $e.message.usage as $u
+                  | [(($u.cache_read_input_tokens // 0) + ($u.input_tokens // 0)),
+                     ($u.cache_creation_input_tokens // 0), ($u.output_tokens // 0)] as $c
+                  | if $e.message.id == .[3] then
+                      .[4] = ([.[4], $c[0]] | max) | .[5] = ([.[5], $c[1]] | max) | .[6] = ([.[6], $c[2]] | max)
+                    else [.[0] + .[4], .[1] + .[5], .[2] + .[6], ($e.message.id // "-"), $c[0], $c[1], $c[2]] end
+                else . end)
+            | "\(($s | utf8bytelength) - ($l[-1] | utf8bytelength)) \(map(tostring) | join(" "))"' 2>/dev/null)
+        read -r n r w o cid cr cw co <<<"$res"
+        [[ $n =~ ^[0-9]+$ ]] || return 0
+        off=$(( off + n ))
+        printf '%s %s %s %s %s %s %s %s\n' "$off" "$r" "$w" "$o" "$cid" "$cr" "$cw" "$co" > "$st"
+    fi
+    local kr kw ko
+    fmtk $(( r + cr )); kr=$K
+    fmtk $(( w + cw )); kw=$K
+    fmtk $(( o + co )); ko=$K
+    printf -v tmp '\033[90m  | prompt\033[0m %s %s %s' "$kr" "$kw" "$ko"
+    right+=$tmp
+}
+turn_tokens 2>/dev/null
 
 printf '%s%s' "$left" "$right"
