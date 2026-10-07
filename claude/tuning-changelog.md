@@ -302,3 +302,10 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   over docs the PR makes stale, and has the critic list new attack surface first. The two testers hand security to
   "the language's security reviewer". Why: the PR 967 panel had no web persona, skipped nonfunctional-tester on a new
   server, could not quote dependency source, and a verifier trusted a stale doc. The critic alone found 7+ misses.
+- **2026-10-07** pre-tool-use-hook: the hub-remote exception accepts one leading `cd`/`sl`/`Set-Location`/`pushd`
+  (newline or `&&`) and checks the hub remote in that dir. The path must mean the same dir to the hook and the shell
+  (no `$`, backtick, glob, `~`, `cd -`, bare relative). Why: a card in one repo could not fetch its sibling repo's hub
+  branch and had to ask clint. Same change closes three ways past the remote block: an alias after a newline was not
+  expanded, only the first `git <word>` was, and aliases were looked up only in the session's repo, not one the
+  command changes into. A `git <word>` in command position that is neither a git command nor a resolved alias is now
+  blocked (external `git flow` publishes), and `git lfs push/pull/fetch` is a remote op.

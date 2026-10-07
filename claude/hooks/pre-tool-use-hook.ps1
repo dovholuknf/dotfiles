@@ -135,22 +135,68 @@ if ($json.tool_input.command) {
         _GitBlock "claude may not create or unset git aliases (an alias can hide a blocked verb or run a shell command). Hand it to the user."
     }
 
-    # 0b. Resolve an alias in the subcommand position BEFORE the checks below, so an alias
-    #     cannot smuggle a blocked verb past the text match. Expand up to 5 levels; a
-    #     '!'-shell alias is arbitrary code and is blocked outright. Real verbs (commit,
-    #     push, ...) are not aliases, so 'config --get' returns empty and nothing changes.
-    $depth = 0
-    while ($depth -lt 5 -and $cmd -match '\bgit\s+(?:-\S+\s+)*([A-Za-z][\w-]*)') {
-        $sub = $Matches[1]
-        $exp = ''
-        try { $exp = "$(& git -C "$gitCwd" config --get "alias.$sub" 2>$null)".Trim() } catch { $exp = '' }
-        if (-not $exp) { break }
-        if ($exp.StartsWith('!')) {
-            _GitBlock "git alias '$sub' is a shell alias ('!...') -- claude may not run it (arbitrary command). Hand it to the user."
+    # 0b. Resolve aliases in the subcommand position BEFORE the checks below, so an alias
+    #     cannot smuggle a blocked verb past the text match. Every 'git <word>' in the command
+    #     is expanded in place, not just the first, and in every repo the command may run in:
+    #     the session's, and each dir a cd / Set-Location / pushd names. A '!'-shell alias is
+    #     arbitrary code and is blocked outright. Real verbs (commit, push, ...) cannot be
+    #     aliased, so 'config --get' returns empty for them and nothing changes.
+    $aliasDirs = @($gitCwd)
+    $cdAnyRe = '(?:^|[\r\n;&|({])[ \t]*(?:Set-Location|Push-Location|cd|sl|pushd|chdir)[ \t]+' +
+               '(?:-(?:LiteralPath|Path)[ \t]+)?(?:"([^"\r\n]+)"|''([^''\r\n]+)''|([^\s"''&;|)]+))'
+    foreach ($m in [regex]::Matches($cmd, $cdAnyRe, 'IgnoreCase')) {
+        $d = "$($m.Groups[1].Value)$($m.Groups[2].Value)$($m.Groups[3].Value)"
+        if ($d -match '^/([A-Za-z])(/.*)?$') { $d = "$($Matches[1]):$($Matches[2])/" }
+        try {
+            if (-not [IO.Path]::IsPathRooted($d)) { $d = Join-Path $gitCwd $d }
+            if (Test-Path -LiteralPath $d -PathType Container) { $aliasDirs += $d }
+        } catch { }
+    }
+    $subRe = [regex]::new('\bgit\s+(?:-\S+\s+)*([A-Za-z][\w-]*)', 'IgnoreCase')
+    $expansions = 0
+    do {
+        $changed = $false
+        foreach ($m in $subRe.Matches($cmd)) {
+            $sub = $m.Groups[1].Value
+            $exp = ''
+            foreach ($d in $aliasDirs) {
+                try { $exp = "$(& git -C "$d" config --get "alias.$sub" 2>$null)".Trim() } catch { $exp = '' }
+                if ($exp) { break }
+            }
+            if (-not $exp) { continue }
+            if ($exp.StartsWith('!')) {
+                _GitBlock "git alias '$sub' is a shell alias ('!...') -- claude may not run it (arbitrary command). Hand it to the user."
+            }
+            $g = $m.Groups[1]
+            $cmd = $cmd.Substring(0, $g.Index) + $exp + $cmd.Substring($g.Index + $g.Length)
+            $changed = $true
+            $expansions++
+            break   # indexes moved, so match again from the top
         }
-        $rest = ($cmd -replace ('^.*?\bgit\s+(?:-\S+\s+)*' + [regex]::Escape($sub) + '\b'), '')
-        $cmd  = "git $exp$rest"
-        $depth++
+    } while ($changed -and $expansions -lt 10)
+    if ($changed) {
+        _GitBlock "Too many git aliases to resolve in one command. Run the real git verbs instead."
+    }
+
+    # 0c. A git word in command position that is neither a git command nor a resolved alias
+    #     is an alias in a repo the hook cannot see (a cd to a path it cannot resolve) or an
+    #     external git-* program, and either can reach a remote unseen. Blocked. git-lfs is
+    #     allowed except for the verbs that talk to a remote.
+    $cmdPosRe = '(?:^|[\r\n;&|({`]|\$\()[ \t]*(?:&[ \t]*)?git(?:\.exe)?[ \t]+(?:-\S+[ \t]+)*([A-Za-z][\w-]*)'
+    $posSubs = @([regex]::Matches($cmd, $cmdPosRe, 'IgnoreCase') | ForEach-Object { $_.Groups[1].Value })
+    if ($posSubs.Count) {
+        $known = @()
+        try { $known = @(& git --list-cmds=builtins,main 2>$null) } catch { $known = @() }
+        foreach ($sub in $posSubs) {
+            if ($known -contains $sub) { continue }
+            if ($sub -eq 'lfs') {
+                if ($cmd -match '\bgit\s+lfs\s+(?:-\S+\s+)*(push|pull|fetch|clone|post-checkout|pre-push)\b') {
+                    _GitBlock "claude never pushes, pulls, or fetches, and 'git lfs $($Matches[1])' reaches a remote. Hand it to the user."
+                }
+                continue
+            }
+            _GitBlock "'git $sub' is not a git command, or is an alias claude cannot resolve here, or an external git-$sub program. Any of those could reach a remote unseen, so it is blocked. Use the real git verb, or hand it to the user."
+        }
     }
 
     # 1. Remote ops: never, on any branch, with one exception: atrium's hub remote (hub forge
@@ -160,11 +206,45 @@ if ($json.tool_input.command) {
     #    insteadOf rewrites, must start with this room's forwarder, <agent>/git/, where <agent>
     #    comes from atrium's daemon.json. No force, no '+' or ':' refspec, no extra flags, and
     #    no daemon.json means refused. The hub's pre-receive is the wall behind this one.
+    #    One leading directory change is allowed (cd, sl, Set-Location or pushd, then a newline
+    #    or '&&'), so a card can fetch the hub branch of a sibling repo. The remote is then
+    #    checked in that directory, which must exist and be a git repo. The path has to mean
+    #    the same directory to the hook and to the shell, so it may hold only word characters,
+    #    space, '.', '-', slashes and a drive colon: no '$' or backtick (expansion), no '*?[]'
+    #    (Set-Location and bash glob), no '~', and no leading '-' ('cd -' is the last dir). A
+    #    relative path must start with './' or '../', so bash's CDPATH cannot redirect it.
+    $hubCdOk = $false
     if ($cmd -match '\bgit\s+(?:-\S+\s+)*(push|pull|fetch)\b') {
+        $hubCmd = $cmd
+        $hubCwd = $gitCwd
+        # Matched on the command as typed, not the alias-expanded $cmd: the expansion above
+        # looked up aliases in the session's repo, not the one this changes into.
+        $cdRe = '^[ \t]*(?:Set-Location|cd|sl|pushd)[ \t]+(?:-(?:LiteralPath|Path)[ \t]+)?' +
+                '(?:"([^"\r\n]+)"|''([^''\r\n]+)''|([^\s"''&;|]+))[ \t]*(?:\r?\n|&&)[ \t]*(git[ \t][^\r\n]*)\r?\n?$'
+        if ("$($json.tool_input.command)" -match $cdRe) {
+            $dir = "$($Matches[1])$($Matches[2])$($Matches[3])"
+            $hubCmd = $Matches[4]
+            $hubCwd = $null
+            $hubCdOk = $true
+            # The Bash tool's spelling of a drive path: /d/git/x is D:/git/x.
+            if ($dir -match '^/([A-Za-z])(/.*)?$') { $dir = "$($Matches[1]):$($Matches[2])/" }
+            $safe = ($dir -match '^[\w .\\/:-]+$') -and
+                    ($dir -match '^(?:[A-Za-z]:[\\/]|\.\.?(?:[\\/]|$))') -and
+                    ($dir.LastIndexOf(':') -le 1)
+            if ($safe) {
+                if (-not [IO.Path]::IsPathRooted($dir)) { $dir = Join-Path $gitCwd $dir }
+                if (Test-Path -LiteralPath $dir -PathType Container) {
+                    $gd = ''
+                    try { $gd = "$(& git -C "$dir" rev-parse --git-dir 2>$null)".Trim() } catch { $gd = '' }
+                    if ($gd) { $hubCwd = $dir }
+                }
+            }
+        }
         $hubRemote = $null
         # [ \t], not \s: a newline would end the git command and start another.
-        if ($cmd -match '^[ \t]*git[ \t]+push[ \t]+(?:-u[ \t]+)?(hub|atrium-hub)[ \t]+[A-Za-z0-9_][\w./-]*[ \t]*$' -or
-            $cmd -match '^[ \t]*git[ \t]+fetch[ \t]+(hub|atrium-hub)[ \t]*$') {
+        if ($hubCwd -and (
+            $hubCmd -match '^[ \t]*git[ \t]+push[ \t]+(?:-u[ \t]+)?(hub|atrium-hub)[ \t]+[A-Za-z0-9_][\w./-]*[ \t]*$' -or
+            $hubCmd -match '^[ \t]*git[ \t]+fetch[ \t]+(hub|atrium-hub)[ \t]*$')) {
             $hubRemote = $Matches[1]
         }
         $hubOk = $false
@@ -178,7 +258,7 @@ if ($json.tool_input.command) {
             if ($agent -match '^http://127\.0\.0\.1:\d+$') {
                 $urls = @()
                 try {
-                    Push-Location -LiteralPath $gitCwd
+                    Push-Location -LiteralPath $hubCwd
                     $urls += @(& git remote get-url --all $hubRemote 2>$null)
                     $urls += @(& git remote get-url --push --all $hubRemote 2>$null)
                 } catch { $urls = @() } finally { Pop-Location }
@@ -190,7 +270,7 @@ if ($json.tool_input.command) {
             }
         }
         if (-not $hubOk) {
-            _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user. The one exception is atrium's hub remote: exactly 'git push hub <branch>', 'git push -u hub <branch>' or 'git fetch hub', and only when that remote points at this room's atrium forwarder."
+            _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user. The one exception is atrium's hub remote: exactly 'git push hub <branch>', 'git push -u hub <branch>' or 'git fetch hub', optionally after one 'cd <dir>' (newline or &&), and only when that remote points at this room's atrium forwarder."
         }
     }
 
@@ -244,7 +324,7 @@ if ($json.tool_input.command) {
         }
     }
 
-    if ($cmd -match '(^|;|\n)\s*cd\s+\S.*&&') {
+    if (-not $hubCdOk -and $cmd -match '(^|;|\n)\s*cd\s+\S.*&&') {
         @{
             decision = "block"
             reason   = "Do not use compound 'cd /path && command' patterns. Run 'cd /path' as a standalone command first, then run subsequent commands without cd prefixes."

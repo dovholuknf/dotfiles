@@ -4,7 +4,8 @@ Comprehensive validation of the git policy in pre-tool-use-hook.ps1.
 
 Policy under test:
   - push / pull / fetch          -> blocked, except exactly 'git push [-u] hub <branch>' and 'git fetch hub'
-      (or atrium-hub) when that remote points at the room's atrium forwarder (hub forge design 5.3)
+      (or atrium-hub) when that remote points at the room's atrium forwarder (hub forge design 5.3),
+      optionally after one directory change, which moves the remote check to that dir
   - branch-naming verbs          -> the NAMED branch must start 'claude/'
       (branch create/delete/rename, 'checkout -b', 'switch [-c]')
   - current-branch verbs         -> the CHECKED-OUT branch must start 'claude/'
@@ -95,17 +96,47 @@ $repos = @{
     claude = $claudeRepo; main = $mainRepo
     'rebase-claude' = $rebaseClaudeRepo; 'rebase-main' = $rebaseMainRepo; detached = $detachedRepo
     hub = $hubRepo; 'evil-hub' = $evilHubRepo; pushurl = $pushUrlRepo; insteadof = $insteadRepo
-    'other-port' = $otherPort; nodaemon = $hubRepo; pushinsteadof = $pushInstead
+    'other-port' = $otherPort; nodaemon = $hubRepo; pushinsteadof = $pushInstead; root = $root
 }
+
+# A directory change in front of a hub op checks the remote in the new dir. These are good hub
+# repos whose literal name would mean another dir to the shell: a glob that matches the evil
+# repo, and a '$(...)' that pwsh would run. Created through git init, which takes the name as is.
+function _litHubRepo($path) {
+    & git init -q $path 2>$null
+    & git -C $path remote add hub $hubGood 2>$null
+}
+$globRepo = Join-Path $root '[e]vil-hub-repo'
+$subRepo  = Join-Path $root '$(git push origin main)'
+_litHubRepo $globRepo
+_litHubRepo $subRepo
+$plainDir = Join-Path $root 'plain-dir'
+New-Item -ItemType Directory -Path $plainDir -Force | Out-Null
+$bashHub  = '/' + $hubRepo.Substring(0, 1).ToLower() + ($hubRepo.Substring(2) -replace '\\', '/')
+# Aliases the session's repo does not have: one only in another repo, a chain, a loop, and a
+# harmless one that must keep working.
+$aliasRepo = Join-Path $root 'alias-repo'
+_initRepo $aliasRepo 'claude/test'
+& git -C $aliasRepo config alias.zz push 2>$null
+& git -C $claudeRepo config alias.a1 a2 2>$null
+& git -C $claudeRepo config alias.a2 push 2>$null
+& git -C $claudeRepo config alias.l1 l2 2>$null
+& git -C $claudeRepo config alias.l2 l1 2>$null
+& git -C $claudeRepo config alias.lg 'log --oneline' 2>$null
+$nl = "`n"
 
 function Invoke-Hook($cmd, $cwd, $tool = 'Bash', $localAppData = $appData) {
     # Returns $true when the hook BLOCKS, $false when it allows (no block decision emitted).
     $payload = @{ tool_name = $tool; tool_input = @{ command = $cmd }; cwd = $cwd } | ConvertTo-Json -Compress
+    # ATRIUM_LOCATION wins over LOCALAPPDATA in the hook, and a session on a room has it set to
+    # the real daemon.json, so clear it or the fake one is never read.
     $saved = $env:LOCALAPPDATA
+    $savedLoc = $env:ATRIUM_LOCATION
     try {
         $env:LOCALAPPDATA = $localAppData
+        $env:ATRIUM_LOCATION = $null
         $out = $payload | & pwsh -NoProfile -File $hook
-    } finally { $env:LOCALAPPDATA = $saved }
+    } finally { $env:LOCALAPPDATA = $saved; $env:ATRIUM_LOCATION = $savedLoc }
     return ("$out" -match '"decision"\s*:\s*"block"')
 }
 
@@ -260,10 +291,107 @@ $cases = @(
     @{ cmd = 'git push hub fix/x';               repo = 'main';       expect = 'block' }   # no hub remote at all
     @{ cmd = 'git push hub fix/x';               repo = 'nodaemon';   expect = 'block'; appdata = $noDaemonAppData }
     @{ cmd = 'git fetch hub';                    repo = 'nodaemon';   expect = 'block'; appdata = $noDaemonAppData }
+
+    # --- one leading directory change: the hub remote is checked in the new dir ---
+    # The session sits in 'main', which has no hub remote, as a card in one repo that needs another.
+    @{ cmd = "cd $hubRepo${nl}git fetch hub";                       repo = 'main'; expect = 'allow' }
+    @{ cmd = "cd $hubRepo${nl}git fetch hub";                       repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "cd `"$hubRepo`" && git fetch hub";                    repo = 'main'; expect = 'allow' }
+    @{ cmd = "cd `"$hubRepo`" && git fetch hub";                    repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "Set-Location -LiteralPath `"$hubRepo`"${nl}git fetch hub"; repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "Set-Location -Path '$hubRepo'${nl}git fetch hub";     repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "sl $hubRepo${nl}git fetch hub";                       repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "pushd $hubRepo${nl}git fetch hub";                    repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "cd $hubRepo`r${nl}git fetch hub`r$nl";                repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "cd $bashHub && git fetch hub";                        repo = 'main'; expect = 'allow' }
+    @{ cmd = "cd ../hub-repo${nl}git fetch hub";                    repo = 'main'; expect = 'allow' }
+    @{ cmd = "cd ..\hub-repo${nl}git fetch hub";                    repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    @{ cmd = "cd ./hub-repo${nl}git fetch hub";                     repo = 'root'; expect = 'allow' }
+    @{ cmd = "cd $hubRepo${nl}git fetch atrium-hub";                repo = 'main'; expect = 'allow' }
+    @{ cmd = "cd $hubRepo${nl}git push hub claude/x";               repo = 'main'; expect = 'allow' }
+    @{ cmd = "cd $hubRepo${nl}git push -u hub claude/x";            repo = 'main'; expect = 'allow'; tool = 'PowerShell' }
+    # the new dir has no hub remote, or one that is not this room's forwarder
+    @{ cmd = "cd $mainRepo${nl}git fetch hub";                      repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $evilHubRepo${nl}git fetch hub";                   repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $evilHubRepo${nl}git push hub claude/x";           repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $pushUrlRepo${nl}git push hub claude/x";           repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $insteadRepo${nl}git push hub claude/x";           repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $pushInstead${nl}git push hub claude/x";           repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $otherPort${nl}git push hub claude/x";             repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push hub claude/x";               repo = 'main'; expect = 'block'; appdata = $noDaemonAppData }
+    # the new dir is not a git repo, or does not exist
+    @{ cmd = "cd $plainDir${nl}git fetch hub";                      repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd $root\nope${nl}git fetch hub";                     repo = 'hub';  expect = 'block' }
+    # any other remote op after the directory change
+    @{ cmd = "cd $hubRepo${nl}git fetch origin";                    repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo && git fetch origin";                     repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git pull";                            repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git pull hub claude/x";               repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push origin claude/x";            repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push";                            repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git fetch hub main";                  repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git p hub claude/x";                  repo = 'main'; expect = 'block' }   # alias, not resolved there
+    @{ cmd = "cd $hubRepo${nl}git -c http.extraHeader=x push hub claude/x"; repo = 'main'; expect = 'block' }
+    # force and refspec tricks after the directory change
+    @{ cmd = "cd $hubRepo${nl}git push -f hub x";                   repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push --force hub x";              repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push hub +x";                     repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push hub :x";                     repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push hub x:main";                 repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git push hub x --force";              repo = 'main'; expect = 'block' }
+    # anything glued on after the hub op, or a second directory change
+    @{ cmd = "cd $hubRepo${nl}git fetch hub && rm x";               repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo && git fetch hub && rm x";                repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd $hubRepo${nl}git fetch hub; git push origin x";    repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd $hubRepo${nl}git fetch hub${nl}git push origin x"; repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}git fetch hub | git push origin x";   repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo${nl}cd $evilHubRepo${nl}git push hub x";  repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo; git fetch hub";                          repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd `"$hubRepo`" & git fetch hub";                     repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "git push origin x${nl}cd $hubRepo${nl}git fetch hub"; repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo && cd $evilHubRepo && git push hub x";    repo = 'main'; expect = 'block' }
+    # a path that would mean another dir to the shell than to the hook
+    @{ cmd = "cd `"$globRepo`"${nl}git push hub x";                 repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd '$subRepo'${nl}git push hub x";                    repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd `"$subRepo`"${nl}git push hub x";                  repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd hub-repo${nl}git fetch hub";                       repo = 'root'; expect = 'block' }   # bare relative: CDPATH
+    @{ cmd = "cd -${nl}git fetch hub";                              repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd ~${nl}git fetch hub";                              repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd C:hub-repo${nl}git fetch hub";                     repo = 'hub';  expect = 'block' }
+    @{ cmd = "cd `"FileSystem::$hubRepo`"${nl}git fetch hub";       repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd (`"$hubRepo`")${nl}git fetch hub";                 repo = 'main'; expect = 'block'; tool = 'PowerShell' }
+    # the compound-cd rule still binds everything else
+    @{ cmd = "cd $hubRepo && git status";                           repo = 'main'; expect = 'block' }
+
+    # --- aliases anywhere in the command, and in any repo it changes into ---
+    @{ cmd = "echo hi${nl}git p origin main";                       repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "git status${nl}git p origin main";                    repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "git status && git p origin main";                     repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "git status; git p origin main";                       repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "Write-Output (git p origin main)";                    repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "echo `$(git p origin main)";                          repo = 'claude'; expect = 'block' }
+    @{ cmd = "GIT p origin main";                                   repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "cd $aliasRepo${nl}git zz origin main";                repo = 'main';   expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "Set-Location `"$aliasRepo`"; git zz origin main";     repo = 'main';   expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "pushd ../alias-repo${nl}git zz hub claude/x";         repo = 'main';   expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "git a1 origin main";                                  repo = 'claude'; expect = 'block' }   # chain a1 -> a2 -> push
+    @{ cmd = "git l1";                                              repo = 'claude'; expect = 'block' }   # loop
+    @{ cmd = "git lg -5";                                           repo = 'claude'; expect = 'allow' }   # harmless alias
+    @{ cmd = "git status${nl}git lg -5";                            repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
+    # --- a git word that is not a command: an alias the hook cannot see, or an external program ---
+    @{ cmd = "git zz origin main";                                  repo = 'main';   expect = 'block' }
+    @{ cmd = "cd `$env:TEMP${nl}git zz origin main";                repo = 'main';   expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = "git flow feature publish x";                          repo = 'claude'; expect = 'block' }
+    @{ cmd = "git lfs push origin main";                            repo = 'claude'; expect = 'block' }
+    @{ cmd = "git lfs fetch";                                       repo = 'claude'; expect = 'block' }
+    @{ cmd = "git lfs pull";                                        repo = 'claude'; expect = 'block' }
+    @{ cmd = "git lfs ls-files";                                    repo = 'claude'; expect = 'allow' }
+    @{ cmd = "echo git is fun";                                     repo = 'claude'; expect = 'allow' }   # not command position
 )
 
 $pass = 0; $fail = 0; $failed = @()
 foreach ($c in $cases) {
+    $shown = $c.cmd -replace "`r", '\r' -replace "`n", '\n'
     $cwd = $repos[$c.repo]
     $tool = if ($c.tool) { $c.tool } else { 'Bash' }
     $ad = if ($c.appdata) { $c.appdata } else { $appData }
@@ -271,14 +399,14 @@ foreach ($c in $cases) {
     $got = if ($blocked) { 'block' } else { 'allow' }
     if ($got -eq $c.expect) {
         $pass++
-        Write-Host ("PASS  [{0,-10}] {1,-6} {2}" -f "$($c.repo)/$tool", $got, $c.cmd) -ForegroundColor DarkGray
+        Write-Host ("PASS  [{0,-10}] {1,-6} {2}" -f "$($c.repo)/$tool", $got, $shown) -ForegroundColor DarkGray
     } else {
         $fail++; $failed += $c
-        Write-Host ("FAIL  [{0,-10}] want {1} got {2}  ::  {3}" -f "$($c.repo)/$tool", $c.expect, $got, $c.cmd) -ForegroundColor Red
+        Write-Host ("FAIL  [{0,-10}] want {1} got {2}  ::  {3}" -f "$($c.repo)/$tool", $c.expect, $got, $shown) -ForegroundColor Red
     }
 }
 
-Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host ("{0} passed, {1} failed, {2} total" -f $pass, $fail, $cases.Count) -ForegroundColor ($(if ($fail) { 'Red' } else { 'Green' }))
 if ($fail) { exit 1 } else { exit 0 }
