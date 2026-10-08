@@ -55,6 +55,31 @@ What worked, what didn't, and why, in the order it was found. The blog post draw
   lint.
 - **Keep code, inline code and URLs out of it.** `--flag` is not a dash.
 
+## Testing the writer
+
+The checker is a means. The goal is an LLM that writes text Clint would ship. The test is blind: a fresh agent that
+never saw the originals writes from the facts alone, and Clint picks between its draft and his own text, A or B in
+random order. Each original is removed from a copy of the training data first, and `clint` scores both sides with a
+model trained on that copy.
+
+- **Round 1: 0 of 5.** Clint picked his own text every time and rejected both drafts that had no original. His
+  reasons were the same each time: too many words and too specific. "the random pick used the endpoint count, not the
+  candidate count" lost to "use the proper container when selecting model list size".
+- **One register rule was wrong.** voice-clint said text under his name is all lowercase. That holds for chat with
+  colleagues. His replies to outside users are sentence case, thank the reporter, show the fix and close the issue.
+  PR bodies and commits are lowercase. Splitting the one register into three fixed it.
+- **Round 2: 3 of 5.** After the split, a "fewest words" rule and a "vague over specific" rule, Clint picked the draft
+  three times and called one of the other two a tossup. The writer model also changed (Sonnet), and he recognized one
+  of his originals, so the jump is not all the rules.
+- **The score passes but does not rank.** In round 2 every text scored 0.85 or higher and the score matched his pick
+  three times out of five. In round 1 it passed two drafts he rejected. Held-out pair accuracy said 96%. Real picks
+  are the eval that matters.
+- **Length beats the model on reactions.** On replies he approved or complained about, the model scores AUC 0.54 to
+  0.56 and "shorter is better" scores 0.62 to 0.66.
+- **Ask the rewrite, and get the rule.** Each "why" in a pick named a rule nobody had written down: bullets for a
+  squash commit with several changes, list the changes that look unrelated in a PR body, "< 60" over "within a
+  minute", no aside wedged in before the payoff ("I gave it a full blog post I wrote, start to finish, and got 0.02").
+
 ## Ops
 
 - **`curl -o NUL` in Git Bash makes a real file named NUL.** Windows then can't delete or move the folder. Remove it

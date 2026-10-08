@@ -309,3 +309,13 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   expanded, only the first `git <word>` was, and aliases were looked up only in the session's repo, not one the
   command changes into. A `git <word>` in command position that is neither a git command nor a resolved alias is now
   blocked (external `git flow` publishes), and `git lfs push/pull/fetch` is a remote op.
+- **2026-10-07** pre-tool-use-hook: `git branch claude/x <start>` passes. Only the new name must be `claude/*`, the
+  start point is any commit-ish made of ref characters. Rename, delete, copy and upstream forms still check every name.
+  Why: orchestrator-sg4-control could not branch from a sha or tag because the start point was read as a branch name.
+- **2026-10-08** atrium .git/hooks commit-msg and pre-push refuse a commit naming claude or anthropic as author,
+  committer or co-author. Global git identity on sg4 and m1mini set to dovholuknf. resign-and-push.ps1 rewrites claude
+  identities and takes -From to rewrite commits already on main. Why: claude@sg4.local on 6463fc35 put Claude on the
+  GitHub contributor list.
+- **2026-10-08** voice-clint splits text under clint's name into professional, terse and informal registers, and
+  /clintify adds "vague over specific" and test-every-word. Why: a blind bake-off showed the old all-lowercase rule was
+  wrong for replies to users, and that drafts lost on word count.

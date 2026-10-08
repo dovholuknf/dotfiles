@@ -4,10 +4,10 @@ This file is the gold standard for prose written for or by Clint Dovholuk (OpenZ
 samples he wrote, not from generic style advice. **When any rule in an agent definition disagrees with this file, this
 file wins.** Say in your report which default you set aside.
 
-Three registers. They are not interchangeable, and mixing them is the most common failure. Decide which one applies before
-editing a sentence.
+Five registers: doc, blog, and three for text posted under his name. They are not interchangeable, and mixing them is
+the most common failure. Decide which one applies before editing a sentence.
 
-## Shared across both registers
+## Shared across doc and blog
 
 - Plain word order, subject first. No inverted clauses ("with retries on, the client reconnects") and no colon-led
   fragments ("no timeout: a slow peer stalls").
@@ -73,10 +73,63 @@ Rules:
 - **TL;DR at the top** of longer posts. **Pull-quotes** mid-article for emphasis.
 - Ends with the project's standard "Share the Project" call to action. That block is boilerplate, leave it alone.
 
-## Posted-as-clint register
+## Posted-as-clint registers
 
-Applies to text posted under Clint's name to other people: PR comments, review replies, issue comments, and messages
-to teammates. Commit messages keep their own rule (one line). The shared rules above do not apply here.
+Text posted under Clint's name to other people. The shared rules above do not apply here. Two rules hold for all of
+it:
+
+- **Fewest words.** If a word can go without losing meaning, it goes. A PR body that explained each change in a full
+  sentence ("the random pick used the endpoint count, not the candidate count") was rejected as too many words.
+- **Not precise.** Vague beats specific. Leave out file:line refs, byte counts, constant names and inner workings
+  unless the point depends on them. A symbol beats a phrase: "uptime is < 60", not "within a minute of boot".
+
+### Professional: replies to users, issue and discussion comments
+
+Sample (his reply on openziti/ziti#4311, picked blind over an LLM draft):
+
+> Hi @philippsteinberg, thanks for the report. This one is working as designed, but the design isn't documented
+> anywhere, so it's easy to see the confusion...  `claimsProperty` is evaluated as an RFC 6901 JSON Pointer, not as a
+> literal claim name.
+>
+> [...]
+>
+> I'm going to close this as it's not actually a problem it's just maybe a bit better doc that'd help (and to be
+> fair, I'm gonna bet other people hit this even IF we doc it better) :)
+>
+> [...]
+>
+> Re-open if that doesn't work for you?
+
+Rules:
+
+- **Normal sentence case.** Greet the person by handle and thank them for the report.
+- Say what is true, show them what to do, then close and move on. Invite a re-open if it doesn't work.
+- Loose is fine: run-ons, "gonna", "..." and a ":)".
+- No profanity.
+
+### Terse: PR bodies and commit messages
+
+Samples (his, picked blind over LLM drafts of the same diff):
+
+> another attempt to address when uptime is < 60
+
+> https://github.com/openziti/ziti-sdk-c/pull/1116/changes fixed the math but it left behind a small gap when
+> offline_time ==  0
+>
+> * added tests
+> * use the proper container when selecting model list size else it would read by the list
+> * add d->offline_time == 0 and if true add it to the list to check
+
+Rules:
+
+- **Lowercase.** A commit with one change is one line. A squash commit with several changes is a short title plus
+  one tiny bullet per change.
+- Link the earlier PR or issue instead of describing it.
+- Bullets are tiny and vague. One short clause each, no "why" unless it is the point.
+- A PR body lists every change, including ones that look unrelated to the fix ("rename `collect_posture` to
+  `ztx_collect_posture`", "added tests"). That is the one place an extra line beats fewer words.
+
+### Informal: chat and email to colleagues
 
 Sample (illustrative, in the approved shape):
 
@@ -87,9 +140,7 @@ Sample (illustrative, in the approved shape):
 Rules:
 
 - **All lowercase** except code identifiers. No capital at the start of a sentence, none on "i".
-- **Casual and loose.** Comma splices are fine. "stuff" is fine.
-- **Not precise.** Leave out file:line refs, exact byte counts and constant names unless the point depends on them.
-  A draft full of line refs, byte counts and constant names was rejected as "i'm never this precise".
+- **Casual and loose.** Comma splices are fine. "stuff" is fine. Profanity is fine and used freely.
 - Say what changed and why, the way one dev tells another, and stop.
 
 ## What he rejects, stated plainly
