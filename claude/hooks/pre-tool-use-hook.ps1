@@ -293,9 +293,17 @@ if ($json.tool_input.command) {
     }
     # 2c. branch: every branch-name argument (create/delete/rename) must be claude/*.
     #     No name args (a listing: 'git branch', '-a', '-r', '-v') passes.
+    #     A plain create ('git branch [-f] [-t] claude/x [<start>]') checks only the new name. The start point is any
+    #     commit-ish, limited to ref characters so it cannot hide a chained or substituted command.
     elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*branch\b') {
         $after = ($cmd -replace '^.*?\bgit\s+(?:-\S+\s+)*branch\b', '').Trim()
-        $names = @($after -split '\s+' | Where-Object { $_ -and ($_ -notmatch '^-') })
+        $tokens = @($after -split '\s+' | Where-Object { $_ })
+        $flags  = @($tokens | Where-Object { $_ -match '^-' })
+        $names  = @($tokens | Where-Object { $_ -notmatch '^-' })
+        $createFlags = '^(?:-f|--force|-t|--track(?:=\S+)?|--no-track|-q|--quiet)$'
+        $isCreate = ($names.Count -eq 2) -and -not @($flags | Where-Object { $_ -notmatch $createFlags }).Count `
+            -and ($names[1] -match '^[\w./@^~:{}+-]+$')
+        if ($isCreate) { $names = @($names[0]) }
         foreach ($n in $names) {
             if ($n -notmatch '^claude/') { _GitBlock "claude may only create/delete/rename claude/* branches. '$n' is not one." }
         }

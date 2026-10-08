@@ -191,6 +191,21 @@ $cases = @(
     @{ cmd = 'git branch feature/x';            repo = 'claude'; expect = 'block' }
     @{ cmd = 'git branch -D main';              repo = 'claude'; expect = 'block' }
     @{ cmd = 'git branch -m main claude/b';     repo = 'claude'; expect = 'block' }
+    # a start point is any commit-ish; only the new branch name must be claude/*
+    @{ cmd = 'git branch claude/foo 7f736df';           repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git branch claude/foo v1.2.3';            repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git branch -f --track claude/foo origin/main'; repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git branch feature/x 7f736df';            repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch -m claude/a main';             repo = 'claude'; expect = 'block' }   # rename: both names checked
+    @{ cmd = 'git branch -D claude/a main';             repo = 'claude'; expect = 'block' }   # delete: every name checked
+    @{ cmd = 'git branch claude/foo $(git rev-parse x)'; repo = 'claude'; expect = 'block' }  # start point must be ref chars
+    @{ cmd = "git branch claude/foo 7f736df`ngit commit -m x"; repo = 'main'; expect = 'block' }  # chained line not hidden
+    @{ cmd = 'git checkout -b claude/new 7f736df';      repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git checkout -b claude/new v1.2.3';       repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git checkout -b feature/x 7f736df';       repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git switch -c claude/new 7f736df';        repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git switch -c claude/new v1.2.3';         repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git switch -c feature/x 7f736df';         repo = 'claude'; expect = 'block' }
 
     # --- read-only git: ALWAYS allow ---
     @{ cmd = 'git status';                      repo = 'main';   expect = 'allow' }
