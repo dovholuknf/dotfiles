@@ -37,9 +37,9 @@
 
 .PARAMETER AllowPath
     Paths outside the profile that the account must still reach, such as a models directory on a data
-    drive. Each is granted read and execute AFTER the drive-level denies are applied. A deny on the
-    drive root beats a later allow underneath it, so a path listed here gets its parent chain opened
-    just enough to traverse to it.
+    drive. Each is granted read and execute AFTER the drive-level denies are applied. The grant is set
+    on the path itself and wins over the deny it inherits from the drive root. The root deny and the
+    parent folders are left alone, so the rest of the drive stays closed. A drive root is refused.
 
 .PARAMETER AllowWrite
     Treat AllowPath entries as read/write rather than read-only. Use for a models directory the account
@@ -228,9 +228,13 @@ if ($PSCmdlet.ShouldProcess($programData, "deny write to $AccountName")) {
 # ---------------------------------------------------------------------------------------------------
 # 5. Paths the account still needs
 # ---------------------------------------------------------------------------------------------------
-# A deny on a drive root beats an allow further down, so each allowed path needs its parent chain opened
-# for traversal. Granting (RX) without inheritance on each parent lets the account walk to the target
-# without being able to enumerate siblings meaningfully.
+# The drive-root deny from step 2 stays in place. Below the root it is an INHERITED deny, and an explicit
+# allow on the target is checked before any inherited ACE, so the grant wins on the target. Files and
+# folders under the target inherit that nearer allow ahead of the root's farther deny, so they open too.
+#
+# The parents need nothing. Users hold "Bypass traverse checking" by default, so the account can open the
+# target by its full path without any right on V:\ or V:\work. An earlier version stripped the deny from
+# every ancestor, the drive root included, which reopened the whole drive to get one folder.
 
 if ($AllowPath.Count -gt 0) {
     Write-Host ''
@@ -246,21 +250,10 @@ if ($AllowPath.Count -gt 0) {
 
         $full = (Resolve-Path -LiteralPath $p).Path
 
-        # Walk up from the target to the drive root, granting traversal on each ancestor.
-        $ancestors = @()
-        $cur = Split-Path -Parent $full
-        while ($cur) {
-            $ancestors += $cur
-            $parent = Split-Path -Parent $cur
-            if ($parent -eq $cur) { break }
-            $cur = $parent
-        }
-
-        foreach ($a in ($ancestors | Sort-Object Length)) {
-            if ($PSCmdlet.ShouldProcess($a, "grant traverse to $AccountName")) {
-                & icacls $a /remove:d $AccountName 2>$null | Out-Null
-                & icacls $a /grant "${AccountName}:(RX)" 2>$null | Out-Null
-            }
+        # Granting a drive root would undo step 2 for that whole drive.
+        if ((Split-Path -Parent $full) -eq '') {
+            Write-Warning "    skipping drive root: $full. Allow a folder on it instead."
+            continue
         }
 
         if ($PSCmdlet.ShouldProcess($full, "grant $(if ($AllowWrite) {'modify'} else {'read'}) to $AccountName")) {

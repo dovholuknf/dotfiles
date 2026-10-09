@@ -189,9 +189,30 @@ What it does:
 - **Denies write to `C:\ProgramData`**, read intact. Several subtrees there grant `Users` write, which
   is a persistence path. Read has to stay or shell startup breaks.
 
-Deny ACEs beat allow ACEs regardless of order, which is what makes this hold when inherited permissions
-change later. It is also why `-AllowPath` re-opens the whole ancestor chain: a deny at a drive root
-beats an allow nested underneath it.
+Deny ACEs beat allow ACEs on the same object regardless of order, which is what makes this hold when
+inherited permissions change later. Below the root the drive deny is inherited, and an explicit allow on
+a folder is checked ahead of an inherited deny. That is how `-AllowPath` opens one folder: it grants on the
+folder itself and leaves the root deny and the parent folders alone. The parents need no grant, because
+`Users` hold "Bypass traverse checking" by default. An earlier version stripped the deny from every
+ancestor, the drive root included, which reopened the whole drive. On a host hardened with that version,
+check `icacls <drive>:\` and re-run the current script to put the deny back.
+
+#### One more folder later
+
+To give an already-hardened account another folder, usually on another drive, run
+`grant-localai-path.ps1` on the host from an elevated shell. It works under Windows PowerShell 5.1.
+
+```powershell
+.\grant-localai-path.ps1 -Path V:\work\localai -AllowWrite -WhatIf
+.\grant-localai-path.ps1 -Path V:\work\localai -AllowWrite
+```
+
+It creates the folder if missing, grants read (or modify with `-AllowWrite`) on that folder only, and adds
+a junction in the account's profile (`C:\Users\localai\localai` here) as a short path. The junction is a
+shortcut, not the access: the grant is. It refuses a drive root, and it ends by printing the account's
+entries on the folder and on the drive root so you can see one open and the other still denied.
+`-AccountName` takes another account (`'sg3\claude'`), `-LinkName` renames the junction, and `-NoLink`
+skips it.
 
 What stays reachable, unavoidably:
 
