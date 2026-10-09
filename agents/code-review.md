@@ -10,6 +10,8 @@ How I want code reviewed -- both when I give a review and when I receive one.
   for this PR but worth a follow-up." Don't expand the PR's scope by demanding adjacent cleanups.
 - Prioritize: real bugs > correctness > performance > style. Don't lead with bikesheds. If something is
   pure preference, mark it `(nit:)` so I can ignore it without offense.
+- Churn against main is a finding: rewording, recasing or reordering untouched lines by hand. A fix that restores
+  main's text is a churn fix, not a comment fix. Churn from a formatter, or from moving code where it belongs, is not a finding.
 - Look for what's MISSING, not just what's wrong with what's there. The most common review failure is
   approving a PR that should have had an additional test, an additional path, or an additional
   consideration that wasn't on the diff.
@@ -40,6 +42,15 @@ When you're drafting a review I'll post:
 - Suggest a concrete change, not a vague "consider X." If you want a change, say what the change is.
 - Don't pretend to be polite. If a thing is broken, just say it's broken. Don't add "Awesome work
   overall!" at the end.
+
+## Replying to a reviewer for me
+
+- The reviewer has none of our context. They did not see the test run, the failure, or the dead ends.
+- Say what failed and where: "i hit this in my azure test matrix, 2 of 72 runs: an openssl dialer to a
+  go fips host". Then say what the code tried.
+- If the change was wrong, say so plainly: "this was my first attempt at a fix and it was misguided".
+  Then say what replaced it. Do not defend code we have since removed.
+- Never answer with "removed, the failure was X only" alone. That assumes the reviewer knows the failure.
 
 ## Anti-patterns I push back on
 

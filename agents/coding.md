@@ -31,6 +31,30 @@ How I want code to read. Most of this is "less is more" applied to source.
 - Don't write configuration knobs for hypotheticals. Add the knob when the second use case actually
   shows up.
 
+## Before you hand me a diff
+
+Re-read the whole diff against the base branch, not just your last edit. I review what you show me, and
+slop I miss goes out under my name. Look for:
+
+- Duplicated logic: the same if/else pattern in three places, four identical free-and-null blocks, the
+  same timer kick in two functions. Extract it when the copies are real, or say why not.
+- Helpers that already exist. Before writing a guard, deleter, or fixture, check the file and its
+  neighbors. A second `ctx_guard` next to an existing `tls_ctx_deleter` is slop.
+- The same explanation in several comments. Say it once, at the definition, and nowhere else.
+- Dead code your change left behind, such as a return expression that can no longer be true.
+- A combined condition that re-tests its own parts inside the body. Split it back into separate blocks.
+- A parameter or knob that only one caller ever sets.
+- Code that breaks the project's established patterns. Read the project's guides on code and tests first. With no
+  guide, read how main already does it and follow that. A code-alignment question is not a question for me.
+
+## Tests
+
+- Test our code, not the dependency. A test that proves the TLS library or the OS does its job is noise.
+- Add a test to the existing file for that area. Do not create a new file per fix.
+- Do not copy production logic into a test helper. Call the real function, or expose it.
+- A shared test header holds only what more than one test file uses. The rest lives in its one user.
+- No test case with a single SECTION, no fixture options nobody varies.
+
 ## Hardcoded values
 
 - Never bake environment-specific values into code or tests: my machine hostname, absolute paths, or

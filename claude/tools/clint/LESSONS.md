@@ -67,18 +67,77 @@ model trained on that copy.
   candidate count" lost to "use the proper container when selecting model list size".
 - **One register rule was wrong.** voice-clint said text under his name is all lowercase. That holds for chat with
   colleagues. His replies to outside users are sentence case, thank the reporter, show the fix and close the issue.
-  PR bodies and commits are lowercase. Splitting the one register into three fixed it.
+  PR bodies and commits are lowercase. Round 3 showed lowercase to an outside user reads fine too. Mixed casing is
+  what reads wrong.
 - **Round 2: 3 of 5.** After the split, a "fewest words" rule and a "vague over specific" rule, Clint picked the draft
-  three times and called one of the other two a tossup. The writer model also changed (Sonnet), and he recognized one
-  of his originals, so the jump is not all the rules.
-- **The score passes but does not rank.** In round 2 every text scored 0.85 or higher and the score matched his pick
-  three times out of five. In round 1 it passed two drafts he rejected. Held-out pair accuracy said 96%. Real picks
+  three times and called one of the other two a tossup. The writer model also changed, from the session default to
+  Sonnet, and he recognized one of his originals.
+- **Round 3: 4 of 5, on the old rules.** The writer read the rule files from a worktree that had been reset after the
+  edits moved to main, so it ran on the round 1 rules with Sonnet. In one task Clint was sure the draft was his. So
+  the jump from round 1 came from the writer model or the tasks, not from the rule edits. Check which rule files a
+  writer actually read before crediting the rules.
+- **His old text is not always the target.** In round 3 he picked the draft over his own words four times. His
+  reaction: "whhjhaaat -- that's f***ing nuts". The goal is text he would ship today, and some of what he wrote years
+  ago, which trains the model as "good", he would now reject.
+- **Round 4: Discourse, 0 of 4, every draft "good" or "fine".** He found his own text each time by a habit the rules
+  didn't name: the same greeting for every first-time poster, quoting each point of a long post and answering it
+  underneath, more words and hand-holding for learners, and a typo. Discourse is its own register. It is a learning
+  forum, so it is the one place he writes more words, not fewer.
+- **Clean the originals before showing them.** A typo told him which side was his. So do greetings he uses every
+  time. Drop any pair where a fixed habit gives the answer away, or teach the writer the habit first.
+- **The score passes but does not rank.** In rounds 2 and 3 the score matched his pick three times out of five each
+  time. In round 2 every text scored 0.85 or higher. In round 4 it matched all four picks, on Discourse posts it had
+  never trained on. In round 1 it passed two drafts he rejected. Held-out pair accuracy said 96%. Real picks
   are the eval that matters.
 - **Length beats the model on reactions.** On replies he approved or complained about, the model scores AUC 0.54 to
   0.56 and "shorter is better" scores 0.62 to 0.66.
 - **Ask the rewrite, and get the rule.** Each "why" in a pick named a rule nobody had written down: bullets for a
   squash commit with several changes, list the changes that look unrelated in a PR body, "< 60" over "within a
   minute", no aside wedged in before the payoff ("I gave it a full blog post I wrote, start to finish, and got 0.02").
+- **A rule gets applied wherever it can be.** Pointed at the terse register for a code-comment walk, an agent
+  lowercased "FIPS" because the first terse rule is "lowercase". Clint called it dumb. The model lowercases its input,
+  so a case-only change never moves the score either. Scope each rule to the text it was learned from.
+
+## Explaining a score
+
+Rewriting a blog section one point at a time, a paragraph failed at 0.31 and nothing said why. The agent regenerated
+it blind: guess a fix, score five variants, keep the best. That works, but it is slow and wastes tokens. The goal is a
+check that tells a harness what to change, so it gets to a pass in one or two tries.
+
+- **The model is linear, so a score splits exactly.** `clint score -why` adds up each word's weight, its share of the
+  character n-grams, and the shape tokens, and the parts sum to the logit. It shows what moved the score.
+- **Word lists were not useful.** The top words pulling a paragraph down were "the", "a", "it", "i" and ".". The top
+  words pulling it up were topic words like "openziti" and "issue". Neither tells a writer what to change. Clint read
+  them and said so. They stay behind `-why` for debugging the model.
+- **Read the evidence before blaming the model.** The function words looked like the model punishing grammar, and so
+  punishing his blog prose. Retrained with his blog held out, it passed 115 of 120 of his blog paragraphs, mean 0.93.
+  The paragraph that scored 0.06 came from an agent-written draft, not from him. The model passes his prose. It fails
+  LLM prose that only has the grammar.
+- **What actually moved the score was shape.** The 0.31 paragraph went to 0.84 with fewer, longer sentences joined by
+  "but" and "which", and contractions. That is what a harness can act on.
+- **Score a sentence by removing it.** One sentence is too short for this model to score on its own, which is why
+  paragraphs under 40 characters are skipped. Scoring the paragraph again without each sentence keeps the context and
+  still names the sentence that drags it down.
+- **Compare shape to the author's norm.** Sentences per paragraph, words per sentence and contractions, measured
+  against his own paragraphs of the same register, give the writer a target instead of a guess.
+- **The norm and the model disagreed.** His blog paragraphs have a median of 2 sentences of 15 words and almost no
+  contractions. Rewriting a 0.76 paragraph to that shape dropped it to 0.62 and 0.52. The model accepts that shape
+  from him, so shape is not what it reacts to in a draft. Shape stats describe; they do not predict the score.
+- **Drag points at content too.** On a passing paragraph, the sentence whose removal helps most was the one carrying
+  the point. Drag is shown only for failing paragraphs, and the fix is a rewrite of that sentence, not a delete.
+- **Named style features barely separate him from an LLM.** Contractions, comma splices, ellipses, smileys, fragments,
+  tech tokens, sentence length and the rest were measured per paragraph (`C:\temp\clint-style\measure-style.ps1`). No
+  single one passed 0.68 AUC, against 0.99 for the n-gram model. The best were sentence length and comma splices on
+  blog prose, and em dashes on chat, which lint already catches. They would add little as model inputs.
+- **The teacher's rewrites don't look like him.** The same measurement showed the teacher's rewrites, the largest
+  source of "Clint" examples, have the fewest contractions (0.7 per 100 words, his text has 1.7 to 3.4), the most
+  fragments (16% of sentences, his 3 to 11%) and the shortest sentences (11.5 words, his about 16). The model learns
+  that shape as his.
+- **Down-weighting the teacher did not fix ranking.** Ten clear picks from the bake-offs (`pick-eval.ps1`): every
+  weighting, from teacher rewrites at full weight to zero, scored the picked side higher 5 times of 10. That is a coin
+  flip, and the same 5 each time. Down-weighting only cost pair accuracy (97.5% to 68.8%) and reaction AUC. The model
+  tells his text from an LLM's. It cannot tell which of two texts that both sound like him is better. That needs his
+  preferences as training data: grill, rw: and bake-off picks, not more LLM-versus-Clint examples.
 
 ## Ops
 

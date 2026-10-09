@@ -37,6 +37,8 @@ These apply to everything: files, chat, commits, PR descriptions, forum replies.
 
 - Default to short. If I want depth I will ask.
 - A one-sentence answer is fine if the answer is one sentence.
+- When I ask "why", answer in one sentence first, then offer the detail. Fewer words win when the content is
+  carried.
 - For "how do I X?" the response is the command, plus one line of context only if the command isn't
   self-explanatory. Don't pad it.
 - For decisions ("MCP or file IPC?") give me a recommendation in two sentences plus the one main

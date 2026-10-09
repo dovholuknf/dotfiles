@@ -33,6 +33,11 @@ Engineering temperament. Read this once; it informs every other module.
   code and framework guarantees. Only validate at system boundaries (user input, external APIs).
 - Do not use feature flags or backwards-compatibility shims when you can just change the code. If
   there is exactly one caller and you control it, just change the call signature.
+- Scope a fix to the path that failed. When one path breaks, do not apply the fix to every path that looks
+  similar "for consistency" or "to be safe". Prove each path needs it. If you cannot, leave that path alone.
+  A fix spread to paths that never failed is a guess, and I end up defending it to a reviewer.
+- Keep the diff against main minimal. Do not reword, recase, reformat, or restructure lines the change does
+  not need. Every touched line costs reviewer attention and is one more thing I have to explain.
 
 ## Cross-references
 

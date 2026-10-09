@@ -14,6 +14,7 @@ once the status line has logged enough of it.
 | `UsageCommon.ps1` | Price table (with its source), the transcript scanner, the weekly window. Dot-sourced by the others |
 | `Get-UsageReport.ps1` | Markdown report of tokens and cost: per day and hour, the top day, baseline, models, cold wakes, context size |
 | `Get-TokenReport.ps1` | Markdown report of tokens per prompt: the costliest prompts, the worst turns by kind, and an evaluation |
+| `Get-HookReport.ps1` | Markdown report of hook blocks and denials: per tool, per rule, per week, and the denials |
 | `PromptScan.cs` | The scanner behind `Get-TokenReport.ps1`: charges each API call to the prompt before it |
 | `Get-BurnFit.ps1` | Fits the logged meter against cost, then predicts when the week hits 100% and how many calls fit |
 | `Test-BurnFit.ps1` | Builds a synthetic meter with known weights and checks that the fit recovers them |
@@ -100,6 +101,30 @@ How it counts:
 
 The evaluation applies fixed thresholds and sorts findings by the tokens they cover. Findings overlap, so their
 shares add to more than 100%.
+
+## Get-HookReport.ps1
+
+```powershell
+./Get-HookReport.ps1                                    # last 30 days, to stdout
+./Get-HookReport.ps1 -Days 7 -OutFile hooks.md
+./Get-HookReport.ps1 -Project '*atrium*'                # one project, by folder-name wildcard
+./Get-HookReport.ps1 -Json                              # one row per blocked or denied call
+```
+
+It answers whether a defensive hook still earns its place. It takes about 50 seconds for a week.
+
+How it counts:
+
+- A block is a tool result that reads `PreToolUse:<tool> hook error: <reason>`. The rule is the first sentence of
+  the reason, with paths, numbers and quoted names folded, so one rule is one row.
+- atrium delivers peer messages and context warnings on the same channel. Those count as notices, not blocks.
+- A denial is a result saying the user did not want to proceed (`user-deny`) or a permission was denied
+  (`gate-deny`).
+- "Next call ok" is how often the next call to the same tool in the same session succeeded. A rule with a high
+  number mostly costs a retry. A rule with a low one either held or made the agent give up. The next call may be
+  unrelated, so read it as a hint.
+- Denials are matched by their text. A denial worded some other way, such as an auto mode classifier refusal, is
+  counted as a plain error, not a denial.
 
 ## Get-BurnFit.ps1
 

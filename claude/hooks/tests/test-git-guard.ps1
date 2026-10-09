@@ -13,12 +13,25 @@ Policy under test:
   - read-only git                -> always allowed (status, log, diff, show, remote, branch listing)
   - non-claude/ branch or remote -> blocked
 
-Run:  pwsh -NoProfile -File claude/hooks/tests/test-git-guard.ps1
+Run:  pwsh -NoProfile -File claude/hooks/tests/test-git-guard.ps1 [-Hook <path>] [-Runtime 7|51|exe]
+  -Runtime 7    runs a .ps1 hook under pwsh (default)
+  -Runtime 51   runs it under powershell.exe 5.1, the way claude/settings.json launches it in production
+  -Runtime exe  launches the hook directly, for a compiled gate
 Exits non-zero if any case fails.
 #>
+param(
+    [string]$Hook = $(if ($env:GIT_GUARD_HOOK) { $env:GIT_GUARD_HOOK } else { 'C:/Users/claude/.claude/hooks/pre-tool-use-hook.ps1' }),
+    [ValidateSet('7', '51', 'exe')]
+    [string]$Runtime = '7'
+)
 $ErrorActionPreference = 'Stop'
-$hook = if ($env:GIT_GUARD_HOOK) { $env:GIT_GUARD_HOOK } else { 'C:/Users/claude/.claude/hooks/pre-tool-use-hook.ps1' }
+$hook = $Hook
 if (-not (Test-Path $hook)) { Write-Host "hook not found: $hook" -ForegroundColor Red; exit 2 }
+$hookExe, $hookArgs = switch ($Runtime) {
+    '7'   { 'pwsh', "-NoProfile -File `"$hook`"" }
+    '51'  { "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe", "-NoProfile -File `"$hook`"" }
+    'exe' { $hook, '' }
+}
 
 # --- build two throwaway repos: one on 'claude/test', one on 'main' ---
 $root = Join-Path ([IO.Path]::GetTempPath()) ("githook-test-" + [guid]::NewGuid().ToString('N').Substring(0,8))
@@ -125,21 +138,6 @@ _initRepo $aliasRepo 'claude/test'
 & git -C $claudeRepo config alias.lg 'log --oneline' 2>$null
 $nl = "`n"
 
-function Invoke-Hook($cmd, $cwd, $tool = 'Bash', $localAppData = $appData) {
-    # Returns $true when the hook BLOCKS, $false when it allows (no block decision emitted).
-    $payload = @{ tool_name = $tool; tool_input = @{ command = $cmd }; cwd = $cwd } | ConvertTo-Json -Compress
-    # ATRIUM_LOCATION wins over LOCALAPPDATA in the hook, and a session on a room has it set to
-    # the real daemon.json, so clear it or the fake one is never read.
-    $saved = $env:LOCALAPPDATA
-    $savedLoc = $env:ATRIUM_LOCATION
-    try {
-        $env:LOCALAPPDATA = $localAppData
-        $env:ATRIUM_LOCATION = $null
-        $out = $payload | & pwsh -NoProfile -File $hook
-    } finally { $env:LOCALAPPDATA = $saved; $env:ATRIUM_LOCATION = $savedLoc }
-    return ("$out" -match '"decision"\s*:\s*"block"')
-}
-
 # repo: 'claude' (HEAD=claude/test) | 'main' (HEAD=main). expect: 'allow' | 'block'.
 $cases = @(
     # --- current-branch verbs on a claude/* branch: ALLOW ---
@@ -206,6 +204,32 @@ $cases = @(
     @{ cmd = 'git switch -c claude/new 7f736df';        repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git switch -c claude/new v1.2.3';         repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git switch -c feature/x 7f736df';         repo = 'claude'; expect = 'block' }
+
+    # --- global options before the verb: -c/-C/--git-dir/--work-tree take a value, which is not the verb ---
+    @{ cmd = 'git -c core.editor=true cherry-pick --continue'; repo = 'claude'; expect = 'block' }   # -c rule
+    @{ cmd = 'git -c core.editor=true commit -m x';      repo = 'claude'; expect = 'block' }   # -c rule
+    @{ cmd = 'git -c core.editor=true commit -m x';      repo = 'main';   expect = 'block' }
+    @{ cmd = 'GIT_EDITOR=true git cherry-pick --continue'; repo = 'claude'; expect = 'allow' }  # the -c rule's advice
+    @{ cmd = 'git --no-pager -c x=y log';                repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git --config-env=core.pager=P log';        repo = 'claude'; expect = 'block' }
+    @{ cmd = "ls && git -c x=y status";                  repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git log -c';                               repo = 'claude'; expect = 'allow' }   # -c after the verb
+    @{ cmd = 'git -c x=y push';                          repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git -c "a.b=c d" push origin x';           repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git --work-tree . push';                   repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git -c x=y checkout -b feature/x';         repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git -c x=y branch claude/foo 7f736df';     repo = 'claude'; expect = 'block' }   # -c rule
+    @{ cmd = 'git -C . status';                          repo = 'claude'; expect = 'block' }   # -C rule, not "git ."
+    @{ cmd = 'GIT -C . status';                          repo = 'claude'; expect = 'block' }   # -C rule is case-exact on -C only
+
+    # --- Bash redirects: fd duplication passes, writing a file blocks ---
+    @{ cmd = 'git log -5 2>&1 | tail -5';                repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git log -5 >&2';                           repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git log -5 > out.txt';                     repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git log -5 2>/dev/null';                   repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git log -5 >&out.txt';                     repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git log -5 2>&1 > out.txt';                repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git status ; git log -5';                  repo = 'claude'; expect = 'block' }
 
     # --- read-only git: ALWAYS allow ---
     @{ cmd = 'git status';                      repo = 'main';   expect = 'allow' }
@@ -404,14 +428,41 @@ $cases = @(
     @{ cmd = "echo git is fun";                                     repo = 'claude'; expect = 'allow' }   # not command position
 )
 
-$pass = 0; $fail = 0; $failed = @()
-foreach ($c in $cases) {
-    $shown = $c.cmd -replace "`r", '\r' -replace "`n", '\n'
-    $cwd = $repos[$c.repo]
+# Each case is one hook process, about 1.3 s for a .ps1, so the cases run in parallel. Each child gets its own
+# environment block: LOCALAPPDATA points at the fake daemon.json, and ATRIUM_LOCATION is removed because it wins
+# over LOCALAPPDATA in the hook and a session on a room has it set to the real one. Setting $env: here instead
+# would race between the parallel runs, since the environment is process-wide.
+$throttle = [Math]::Max(2, [Environment]::ProcessorCount)
+for ($i = 0; $i -lt $cases.Count; $i++) { $cases[$i].idx = $i }
+$results = $cases | ForEach-Object -ThrottleLimit $throttle -Parallel {
+    $c = $_
     $tool = if ($c.tool) { $c.tool } else { 'Bash' }
-    $ad = if ($c.appdata) { $c.appdata } else { $appData }
-    $blocked = Invoke-Hook $c.cmd $cwd $tool $ad
-    $got = if ($blocked) { 'block' } else { 'allow' }
+    $ad = if ($c.appdata) { $c.appdata } else { $using:appData }
+    $payload = @{ tool_name = $tool; tool_input = @{ command = $c.cmd }; cwd = ($using:repos)[$c.repo] } |
+        ConvertTo-Json -Compress
+    $psi = [Diagnostics.ProcessStartInfo]::new($using:hookExe, $using:hookArgs)
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.Environment['LOCALAPPDATA'] = $ad
+    [void]$psi.Environment.Remove('ATRIUM_LOCATION')
+    $p = [Diagnostics.Process]::Start($psi)
+    $errTask = $p.StandardError.ReadToEndAsync()
+    $p.StandardInput.Write($payload)
+    $p.StandardInput.Close()
+    $out = $p.StandardOutput.ReadToEnd()
+    [void]$errTask.Result
+    $p.WaitForExit()
+    [pscustomobject]@{ Case = $c; Tool = $tool; Blocked = ($out -match '"decision"\s*:\s*"block"') }
+} | Sort-Object { $_.Case.idx }
+
+$pass = 0; $fail = 0; $failed = @()
+foreach ($r in $results) {
+    $c = $r.Case
+    $tool = $r.Tool
+    $shown = $c.cmd -replace "`r", '\r' -replace "`n", '\n'
+    $got = if ($r.Blocked) { 'block' } else { 'allow' }
     if ($got -eq $c.expect) {
         $pass++
         Write-Host ("PASS  [{0,-10}] {1,-6} {2}" -f "$($c.repo)/$tool", $got, $shown) -ForegroundColor DarkGray

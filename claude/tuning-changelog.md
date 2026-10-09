@@ -323,3 +323,23 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   (sg4 only). Why: other sessions can now draft in clint's voice and gate it with `clint check`.
 - **2026-10-08** Orchestrator memory no-inflight-recaps: worker reports and watch-ended notices get no reply text, only
   milestones, blockers and decisions. Why: clint flagged intra-agent and nuisance chattiness during f-room-spec.
+- **2026-10-09** pre-tool-use-hook: `2>&1`, `>&2` and `>&-` pass the Bash redirect rule, `git -c k=v <verb>` is read as
+  `<verb>` by every git check, and the `git -C` rule no longer fires on `-c` (it used a case-blind match). `git -c` and
+  `git --config-env` now have their own explicit block that points to `GIT_EDITOR=true git ...`. The `;` message names
+  `&&`. Why: an ops session lost calls to `2>&1 | tail`, and the 7-day hook report shows 293 redirect blocks and 28
+  "not a git command" blocks. `-c` was only blocked by accident before, and config values like core.pager,
+  core.sshCommand and alias.x=!cmd run programs.
+- **2026-10-09** settings.json: `leftArrowOpensAgents: false`. Why: Left on an empty prompt backgrounded clint's session
+  into agent view mid-conversation. `disableAgentView` was already set but atrium cards skip user settings
+  (`--setting-sources project,local`), so atrium's own `--settings` needs the same key (r-runner-settings-no-agent-view).
+- **2026-10-09** agents/principles.md, coding.md, code-review.md: scope fixes to the failing path, minimal diff vs main,
+  a self-review checklist (DRY, reuse existing helpers, dead code), test rules, and reviewer replies that give context.
+  Why: PR 1166 (win32crypto e2ee) shipped slop clint missed in review, and ekoby caught it.
+- **2026-10-09** memory review-screen-fit (sdk-golang): review messages fit one screen, else open with a
+  `SCROLL BACK TO HERE` marker line. Why: a 90-line diff message was too much to read at once.
+- **2026-10-09** dotagents: scoped AGENTS.md for ziti-sdk-c (`library/e2ee`, `tests`, branch-only
+  `scripts/fips-windows`), tlsuv `src/win32crypto`, sdk-golang e2ee-tls branch, ziti controller build flags, ZDEW
+  fips Q2. Why: FIPS_MODE, e2ee interop and matrix lessons from PR 1166 lived only in untracked worktree notes.
+- **2026-10-09** agents pack: follow the project's established patterns without asking (`coding.md`), answer "why"
+  in one sentence first (`communication.md`), what counts as churn (`code-review.md`). Why: lessons from the
+  sdk-golang PR 1040 self-review.

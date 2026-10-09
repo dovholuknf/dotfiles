@@ -416,6 +416,7 @@
     ]
   },
   "disableAgentView": true,
+  "leftArrowOpensAgents": false,
   "enableArtifact": false,
   "statusLine": {
     "type": "command",

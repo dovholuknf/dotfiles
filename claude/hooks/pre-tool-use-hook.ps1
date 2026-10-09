@@ -128,9 +128,15 @@ if ($json.tool_input.command) {
     }
     $gitCwd = if ($json.cwd) { "$($json.cwd)" } else { (Get-Location).Path }
 
+    # Global options between 'git' and the verb. Every check below finds the verb through this, so they all agree
+    # on it. The options that take a separate value consume it too: a bare '-\S+' skip read 'git -c core.editor=x
+    # cherry-pick' as verb 'core', and 'git -c x=y push' was only blocked because 'x' is not a git command.
+    $gOpt = '(?:(?:-c|-C|--git-dir|--work-tree|--namespace|--config-env|--super-prefix)[ \t]+' +
+            '(?:"[^"\r\n]*"|''[^''\r\n]*''|[^\s"'']\S*)[ \t]+|-\S+[ \t]+)*'
+
     # 0a. No creating/unsetting git aliases. An alias is a bypass: it can hide a blocked
     #     verb ('co'=checkout) or run a shell command ('!...'). Reads (--get/--list) pass.
-    if ($cmd -match '\bgit\s+(?:-\S+\s+)*config\b' -and $cmd -match '\balias\.' -and
+    if ($cmd -match ('\bgit\s+' + $gOpt + 'config\b') -and $cmd -match '\balias\.' -and
         $cmd -notmatch '--(get|get-all|get-regexp|list)\b') {
         _GitBlock "claude may not create or unset git aliases (an alias can hide a blocked verb or run a shell command). Hand it to the user."
     }
@@ -152,7 +158,7 @@ if ($json.tool_input.command) {
             if (Test-Path -LiteralPath $d -PathType Container) { $aliasDirs += $d }
         } catch { }
     }
-    $subRe = [regex]::new('\bgit\s+(?:-\S+\s+)*([A-Za-z][\w-]*)', 'IgnoreCase')
+    $subRe = [regex]::new('\bgit\s+' + $gOpt + '([A-Za-z][\w-]*)', 'IgnoreCase')
     $expansions = 0
     do {
         $changed = $false
@@ -182,7 +188,7 @@ if ($json.tool_input.command) {
     #     is an alias in a repo the hook cannot see (a cd to a path it cannot resolve) or an
     #     external git-* program, and either can reach a remote unseen. Blocked. git-lfs is
     #     allowed except for the verbs that talk to a remote.
-    $cmdPosRe = '(?:^|[\r\n;&|({`]|\$\()[ \t]*(?:&[ \t]*)?git(?:\.exe)?[ \t]+(?:-\S+[ \t]+)*([A-Za-z][\w-]*)'
+    $cmdPosRe = '(?:^|[\r\n;&|({`]|\$\()[ \t]*(?:&[ \t]*)?git(?:\.exe)?[ \t]+' + $gOpt + '([A-Za-z][\w-]*)'
     $posSubs = @([regex]::Matches($cmd, $cmdPosRe, 'IgnoreCase') | ForEach-Object { $_.Groups[1].Value })
     if ($posSubs.Count) {
         $known = @()
@@ -214,7 +220,7 @@ if ($json.tool_input.command) {
     #    (Set-Location and bash glob), no '~', and no leading '-' ('cd -' is the last dir). A
     #    relative path must start with './' or '../', so bash's CDPATH cannot redirect it.
     $hubCdOk = $false
-    if ($cmd -match '\bgit\s+(?:-\S+\s+)*(push|pull|fetch)\b') {
+    if ($cmd -match ('\bgit\s+' + $gOpt + '(push|pull|fetch)\b')) {
         $hubCmd = $cmd
         $hubCwd = $gitCwd
         # Matched on the command as typed, not the alias-expanded $cmd: the expansion above
@@ -276,7 +282,7 @@ if ($json.tool_input.command) {
 
     # 2a. checkout: allowed ONLY as 'checkout -b claude/*'. Plain 'git checkout <x>' is
     #     ambiguous with file restore, so it is blocked; use 'git switch' to move branches.
-    if ($cmd -match '\bgit\s+(?:-\S+\s+)*checkout\b') {
+    if ($cmd -match ('\bgit\s+' + $gOpt + 'checkout\b')) {
         if ($cmd -match '\bcheckout\s+(?:-\S+\s+)*-[bB]\s+(\S+)') {
             if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only create claude/* branches. '$($Matches[1])' is not one." }
         } else {
@@ -284,7 +290,7 @@ if ($json.tool_input.command) {
         }
     }
     # 2b. switch: 'switch -c <n>' (create) or 'switch <n>' (move). Target must be claude/*.
-    elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*switch\b') {
+    elseif ($cmd -match ('\bgit\s+' + $gOpt + 'switch\b')) {
         if ($cmd -match '\bswitch\s+(?:-c\s+)?(?:-\S+\s+)*([^\s-]\S*)') {
             if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only switch to claude/* branches. '$($Matches[1])' is not one." }
         } else {
@@ -295,8 +301,8 @@ if ($json.tool_input.command) {
     #     No name args (a listing: 'git branch', '-a', '-r', '-v') passes.
     #     A plain create ('git branch [-f] [-t] claude/x [<start>]') checks only the new name. The start point is any
     #     commit-ish, limited to ref characters so it cannot hide a chained or substituted command.
-    elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*branch\b') {
-        $after = ($cmd -replace '^.*?\bgit\s+(?:-\S+\s+)*branch\b', '').Trim()
+    elseif ($cmd -match ('\bgit\s+' + $gOpt + 'branch\b')) {
+        $after = ($cmd -replace ('^.*?\bgit\s+' + $gOpt + 'branch\b'), '').Trim()
         $tokens = @($after -split '\s+' | Where-Object { $_ })
         $flags  = @($tokens | Where-Object { $_ -match '^-' })
         $names  = @($tokens | Where-Object { $_ -notmatch '^-' })
@@ -309,7 +315,7 @@ if ($json.tool_input.command) {
         }
     }
     # 3. Current-branch verbs: the checked-out branch must be claude/*.
-    elseif ($cmd -match '\bgit\s+(?:-\S+\s+)*(commit|add|rebase|reset|restore|clean)\b') {
+    elseif ($cmd -match ('\bgit\s+' + $gOpt + '(commit|add|rebase|reset|restore|clean)\b')) {
         $verb = $Matches[1]
         $branch = ''
         try { $branch = "$(& git -C "$gitCwd" rev-parse --abbrev-ref HEAD 2>$null)".Trim() } catch { $branch = '' }
@@ -340,10 +346,21 @@ if ($json.tool_input.command) {
         exit 0
     }
 
-	if ($cmd -match '(^|;|\n)\s*git\s+((?:-C\s+\S+)|(?:.*--git-dir=\S+))') {
+	# -cmatch: '-C' (a directory) and '-c' (a config value) differ only by case, and -match ignores case.
+	if ($cmd -cmatch '(^|;|\n)\s*(?i:git)\s+((?:-C\s+\S+)|(?i:.*--git-dir=\S+))') {
 		@{
 			decision = "block"
 			reason   = "Do not use 'git -C <path>' or 'git --git-dir=<path>' patterns. Run 'cd /path' as a standalone command first, then run the git command normally."
+		} | ConvertTo-Json -Compress
+		exit 0
+	}
+
+	# 'git -c' runs programs through core.pager, core.sshCommand, alias.x=!cmd, credential.helper, core.fsmonitor.
+	# Only global options before the verb count, so 'git switch -c' and 'git log -c' pass.
+	if ($cmd -cmatch '(^|;|\n|&&|\|\|?)\s*(?i:git)\s+(?:--?[\w-]+(?:=\S+)?\s+)*(?:-c(?:\s|$)|--config-env\b)') {
+		@{
+			decision = "block"
+			reason   = "Do not use 'git -c <key>=<value>' or 'git --config-env'. Config values can run programs. To skip the editor, use 'GIT_EDITOR=true git ...'."
 		} | ConvertTo-Json -Compress
 		exit 0
 	}
@@ -393,12 +410,13 @@ if ($json.tool_input.command) {
 		if ($cmd -match ';') {
 			@{
 				decision = "block"
-				reason   = "Do not chain multiple commands with ';'. Run one command at a time."
+				reason   = "Do not chain multiple commands with ';'. Use '&&', or run one command per call."
 			} | ConvertTo-Json -Compress
 			exit 0
 		}
 
-		if ($cmd -match '[>]{1,2}\s*\S+') {
+		# '2>&1', '>&2' and '>&-' only point one stream at another, so they pass. '>&file' (no digit) writes a file.
+		if ($cmd -match '[>]{1,2}(?!&[\d-])\s*\S+') {
 			@{
 				decision = "block"
 				reason   = "Use tee instead of > or >> for output redirection."
