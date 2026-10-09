@@ -319,3 +319,7 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 - **2026-10-08** voice-clint splits text under clint's name into professional, terse and informal registers, and
   /clintify adds "vague over specific" and test-every-word. Why: a blind bake-off showed the old all-lowercase rule was
   wrong for replies to users, and that drafts lost on word count.
+- **2026-10-08** /clintify is linked into ~/.claude/skills and `clint.exe` is on PATH from C:\Users\claude\apps\clint
+  (sg4 only). Why: other sessions can now draft in clint's voice and gate it with `clint check`.
+- **2026-10-08** Orchestrator memory no-inflight-recaps: worker reports and watch-ended notices get no reply text, only
+  milestones, blockers and decisions. Why: clint flagged intra-agent and nuisance chattiness during f-room-spec.

@@ -71,6 +71,32 @@ log_usage() {
 }
 log_usage 2>/dev/null
 
+# The context limit is autoCompactWindow, read from the settings files Claude Code reads it from,
+# lowest precedence first. Re-read at most once a minute: the value and the epoch it was read at
+# are cached per session ("limit epoch"), so most renders cost one builtin read. -1 means no file
+# sets it. A missing file slurps /dev/null, an empty array, so one absent file never fails the rest.
+ctx_limit_of() {
+    local dir=$HOME/.claude/statusline-ctx.state key=${sid//[^A-Za-z0-9-]/} lim ts f files=()
+    [ -n "$key" ] || key=nosession
+    [ -f "$dir/$key" ] && read -r lim ts < "$dir/$key"
+    if [[ $lim =~ ^-?[0-9]+$ ]] && [[ $ts =~ ^[0-9]+$ ]] && [ $(( now_epoch - ts )) -lt 60 ]; then
+        CTX_LIMIT=$lim
+        return 0
+    fi
+    for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" \
+             "$cwd/.claude/settings.json" "$cwd/.claude/settings.local.json"; do
+        [ -f "$f" ] && files+=("$f") || files+=(/dev/null)
+    done
+    lim=$(jq -n --slurpfile a "${files[0]}" --slurpfile b "${files[1]}" --slurpfile c "${files[2]}" \
+        '[$a[0], $b[0], $c[0]] | map(.autoCompactWindow? // empty) | last // -1')
+    [[ $lim =~ ^-?[0-9]+$ ]] || lim=-1
+    CTX_LIMIT=$lim
+    [ -d "$dir" ] || mkdir -p "$dir" || return 0
+    printf '%s %s\n' "$lim" "$now_epoch" > "$dir/$key"
+}
+CTX_LIMIT=-1
+ctx_limit_of 2>/dev/null
+
 # Branch: one git call. rev-parse --abbrev-ref already fails cleanly outside a
 # repo, so the separate --git-dir probe the old version ran was redundant.
 git_branch=$(git --no-optional-locks -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -134,11 +160,12 @@ seg " wk " "$wk_pct"
 
 # Context: raw tokens over the limit the session is cleared at, with a zone that gets louder as
 # it fills: under 75% sweet, 75-95% getting full, over 95% LAND THE PLANE. The limit is
-# a flat 300000 everywhere, in and out of atrium. Never the model window: on a 1M model that
-# read 18% while the session was nearly due to compact.
+# autoCompactWindow (ctx_limit_of above). The model window only when no file sets it: on a 1M
+# model that read 18% while the session was nearly due to compact.
 u=${ctx_used%%.*}
-z=300000
-if [ -n "$u" ] && [ "$u" -ge 0 ] 2>/dev/null; then
+z=$CTX_LIMIT
+[ "$z" -gt 0 ] 2>/dev/null || z=${ctx_size%%.*}
+if [ -n "$u" ] && [ "$u" -ge 0 ] 2>/dev/null && [ "$z" -gt 0 ] 2>/dev/null; then
     pct=$(( u * 100 / z ))
     if [ "$pct" -gt 95 ]; then
         printf -v tmp '\033[90m  |\033[0m\033[1;97;41m  LAND THE PLANE  %s/%s  (%s%%)  /compact  \033[0m' "$u" "$z" "$pct"

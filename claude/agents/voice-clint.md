@@ -4,7 +4,7 @@ This file is the gold standard for prose written for or by Clint Dovholuk (OpenZ
 samples he wrote, not from generic style advice. **When any rule in an agent definition disagrees with this file, this
 file wins.** Say in your report which default you set aside.
 
-Five registers: doc, blog, and three for text posted under his name. They are not interchangeable, and mixing them is
+Six registers: doc, blog, and four for text posted under his name. They are not interchangeable, and mixing them is
 the most common failure. Decide which one applies before editing a sentence.
 
 ## Shared across doc and blog
@@ -102,10 +102,23 @@ Sample (his reply on openziti/ziti#4311, picked blind over an LLM draft):
 
 Rules:
 
-- **Normal sentence case.** Greet the person by handle and thank them for the report.
+- **Sentence case or all lowercase, but one or the other.** Both read fine. Mixed casing ("It's cool to know... do
+  you want to add...") reads out of place. Greet the person by handle and thank them for the report.
 - Say what is true, show them what to do, then close and move on. Invite a re-open if it doesn't work.
 - Loose is fine: run-ons, "gonna", "..." and a ":)".
 - No profanity.
+
+### Forum: Discourse replies
+
+openziti.discourse.group is a learning forum. Readers are not ziti experts, so this is the one place he writes more
+words, not fewer. The professional rules above still apply.
+
+- **First-time posters** get the same greeting every time: "Hi @user welcome to the community and to OpenZiti!"
+- **Quote and answer.** When a post makes several points, quote each one back in a `[quote]` block and answer it
+  underneath. Intertwined points are hard to follow without that.
+- **Hand-hold.** Say where to look ("scroll to the section that starts with `ctrl:` near the top"), give commands
+  they can paste with placeholders, and say how to confirm it worked.
+- Asides and humor are fine: "#i mean -maybe not 10 years? but it's up to you", "men and women of culture! :)".
 
 ### Terse: PR bodies and commit messages
 
@@ -124,10 +137,14 @@ Rules:
 
 - **Lowercase.** A commit with one change is one line. A squash commit with several changes is a short title plus
   one tiny bullet per change.
+- **Say what it fixes, not how.** The how is in the code. "fix posture test" beat "posture tests capture the process
+  callback and answer it later", which he called a "read the code" message.
 - Link the earlier PR or issue instead of describing it.
 - Bullets are tiny and vague. One short clause each, no "why" unless it is the point.
 - A PR body lists every change, including ones that look unrelated to the fix ("rename `collect_posture` to
   `ztx_collect_posture`", "added tests"). That is the one place an extra line beats fewer words.
+- **Code comments** follow the same rules: fewest words, and say what, not how. Casing stays as written. Never
+  lowercase an acronym or an identifier, and never propose a change that only changes case.
 
 ### Informal: chat and email to colleagues
 
