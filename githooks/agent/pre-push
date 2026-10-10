@@ -1,0 +1,21 @@
+#!/bin/sh
+# pre-push for the agent account (claude): the attribution scan from ../lib/attribution.sh on the commits this push
+# introduces, then the repo's own pre-push. The agent pushes only to atrium's hub, and clint's pre-push scans again on
+# the way to GitHub.
+. "$(dirname "$0")/../lib/attribution.sh"
+
+input=$(cat)
+bad=0
+while read -r l_ref l_sha r_ref r_sha; do
+    case "$l_sha" in *[!0]*) ;; *) continue ;; esac
+    if ! out=$(attr_scan_commits "$l_sha" --not --remotes="$1"); then
+        printf 'pre-push: refused %s. These commits would credit an LLM:\n%s\n' "$r_ref" "$out" >&2
+        bad=1
+    fi
+done <<EOF
+$input
+EOF
+[ "$bad" -ne 0 ] && exit 1
+
+[ -z "$input" ] && { attr_run_repo_hook pre-push "$@" < /dev/null; exit $?; }
+printf '%s\n' "$input" | attr_run_repo_hook pre-push "$@"

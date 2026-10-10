@@ -53,8 +53,6 @@ On `Bash` tool calls, the hook emits `{decision: "block", reason: "..."}` for:
 - `cd /path && command` compounds. Run `cd` as a standalone command first.
 - `git -C <path>` or `git --git-dir=<path>`. Same fix: `cd` first.
 - bare `find ...`. Use glob patterns.
-- `;` chaining. Run one command at a time.
-- `> file` or `>> file`. Use `tee` instead.
 - `gh api` that does not start with `gh api -X GET`. The only exception is the PR inline-comments endpoint.
 - inline env-prefixed docker: `FOO=bar docker ...`. Pass env via `docker run -e VAR=val`, a compose block, or
   `--env-file`. Allows `sudo docker`, `time docker`, `docker run -e FOO=bar` and other prefixes that are not

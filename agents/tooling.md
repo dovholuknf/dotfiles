@@ -6,10 +6,8 @@ gets blocked at runtime.
 ## Shell
 
 - **Bash for one-off checks only.** No python or ruby to poke at things. Pure shell or skip it.
-- **No `;` chaining.** Run one command at a time.
 - **No `cd /path && command`.** Run `cd /path` as its own command, then run the next one.
 - **No bare `find`.** Use glob patterns. (`fd` if available.)
-- **Use `tee` instead of `>` or `>>`.** Output redirection via shell operators is blocked.
 - **`gh api` calls must start with `gh api -X GET`.** The exception is the PR inline-comments endpoint.
 - **For multi-check validation blocks**, add echo banners and blank lines so the output is readable.
 - **SSH is mine to run.** Batch the remote commands for me; do not call ssh from a tool.

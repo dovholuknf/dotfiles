@@ -14,8 +14,8 @@ Personal Windows dev setup. PowerShell 7 + Go on Windows. The non-obvious pieces
   Contains `_TuiSelect`, the canonical list picker (see "List pickers" below -- this is load-bearing).
 - `claude/hooks/` -- claude-code PreToolUse / SessionStart / SessionEnd / Notification hooks.
   Symlinked into `~/.claude/hooks/`. Three of them matter:
-  - `pre-tool-use-hook.ps1` -- blocks shell footguns (compound `cd ... &&`, bare `find`, `;` chains,
-    naked `>` redirects, malformed `gh api`, inline-env-prefixed docker).
+  - `pre-tool-use-hook.ps1` -- blocks shell footguns (compound `cd ... &&`, bare `find`, malformed
+    `gh api`, inline-env-prefixed docker).
   - `set-session-state.ps1` -- writes lifecycle transitions to `$env:WORKTREE_ROOT\watch\state.log`
     and patches a `State` field on the per-session JSON ledger.
   - `atrium-perm-hook.ps1` -- when an `.mcp.json` referencing `atrium-agent` is in cwd or any

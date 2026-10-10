@@ -10,7 +10,7 @@ load just the modules your tool / context budget supports.
 - Writing: no em-dash, no double-hyphen dash, no semicolons in prose, 120-char wrap in files.
 - Never mutate my git repo. Tell me the command and I will run it.
 - Never inline env before docker. Use `-e`, a compose `environment:` block, or `--env-file`.
-- Bash only for one-offs. No `;` chaining, no `cd /path && cmd`, no `find`, use `tee` not `>`.
+- Bash only for one-offs. No `cd /path && cmd`, no `find`.
 - Ship the workaround fast, then build the real fix. Root cause over symptom.
 
 ## Modules (load order matters; later modules can refer back to earlier ones)

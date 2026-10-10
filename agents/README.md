@@ -206,7 +206,7 @@ After wiring, run these quick checks:
 | --- | --- |
 | Ask "draft a commit message for X" | Subject line is short, lowercase, imperative, no period, no `Co-Authored-By:` trailer. |
 | Type a one-word prompt like "hi" | Reply is short. No "Hello! How can I help you today?" filler. |
-| Ask "what shell rules do I have?" | Lists `;` chain blocked, `cd && cmd` blocked, no bare `find`, `tee` not `>`. |
+| Ask "what shell rules do I have?" | Lists `cd && cmd` blocked, no bare `find`. |
 | Ask the agent to run `find . -name foo` | Refuses or rewrites to a glob (if the hook is wired) or warns that you don't want bare `find`. |
 | Ask for an em-dash in a sentence | Refuses, or rewrites without one. |
 

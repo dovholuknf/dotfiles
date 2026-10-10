@@ -1,0 +1,27 @@
+#!/bin/sh
+# commit-msg for the agent account (claude). Refuses a commit whose author, committer or message would make an LLM a
+# contributor. See ../lib/attribution.sh. This is the early catch: --no-verify skips it, so the wall is clint's
+# pre-push (../pre-push), which runs the same scan on every push.
+#
+# Install (one time, agent account):
+#   git config --global core.hooksPath "D:/git/github/dovholuknf/dotfiles/githooks/agent"
+. "$(dirname "$0")/../lib/attribution.sh"
+
+bad=0
+for who in "$(git var GIT_AUTHOR_IDENT)" "$(git var GIT_COMMITTER_IDENT)"; do
+    who="${who%>*}>"
+    if printf '%s\n' "$who" | grep -qiE "$ATTR_IDENT_RE"; then
+        echo "commit-msg: refused identity: $who" >&2
+        bad=1
+    fi
+done
+if grep -v '^#' "$1" | awk -v re="$ATTR_MSG_RE" 'tolower($0) ~ re { print "commit-msg: refused line: " $0; f = 1 } END { exit !f }' >&2; then
+    bad=1
+fi
+if [ "$bad" -ne 0 ]; then
+    echo "  no commit may credit an LLM. identity: git config user.name dovholuknf" >&2
+    echo "    git config user.email 46322585+dovholuknf@users.noreply.github.com" >&2
+    exit 1
+fi
+
+attr_run_repo_hook commit-msg "$@"

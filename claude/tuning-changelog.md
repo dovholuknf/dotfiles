@@ -343,3 +343,14 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 - **2026-10-09** agents pack: follow the project's established patterns without asking (`coding.md`), answer "why"
   in one sentence first (`communication.md`), what counts as churn (`code-review.md`). Why: lessons from the
   sdk-golang PR 1040 self-review.
+- **2026-10-09** gate: the drive-root guard checks NotebookEdit's `notebook_path` too, and the hook suite covers the
+  non-git rules under 5.1 and pwsh 7. Why: the guard read only `file_path`, so notebook writes skipped it.
+- **2026-10-10** gate: removed the Bash `;` and `>`/`>>` rules, dropped them from the agents pack and docs, and started
+  `claude/hooks/docs/gate-decisions.md` (decision, why, evidence per rule) with `tests/hook-blocks.ps1` to recount
+  blocks from transcripts. Why: 1,154 of about 2,000 blocks in 7 days, none protective, since `&&` and `tee` pass.
+- **2026-10-10** githooks: attribution gate (`githooks/lib/attribution.sh`) refuses any commit naming claude or
+  anthropic as author, committer or co-author. `githooks/agent/` (claude's commit-msg, pre-push and chain stubs) and
+  clint's `githooks/pre-push` run it. clint's profile wraps `git` with `-c core.hooksPath=` so a repo-local hooksPath
+  cannot replace it. Why: claude@sg4.local on 6463fc35 forced recreating github.com/dovholuknf/atrium.
+- **2026-10-10** githooks: set the claude account's global `core.hooksPath` to `githooks/agent`, so the attribution gate
+  runs on every claude commit and push. Why: layer 3 was written but inactive until this config was set.

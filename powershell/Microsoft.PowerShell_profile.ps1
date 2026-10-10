@@ -33,6 +33,18 @@ $env:WORKTREE_ROOT   = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:
 $localSecrets = Join-Path $HOME '.profile.secrets.ps1'
 if (Test-Path $localSecrets) { . $localSecrets }
 
+# clint-only: every git in this shell runs dotfiles' githooks (main-push prompt, signature gate, attribution gate).
+# Passed with -c, not left to the global core.hooksPath, because -c beats a repo-local core.hooksPath and claude can
+# write the .git/config of any repo under D:\git. Tools that call git.exe directly skip this, git itself does not.
+$script:GitExe = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+function git {
+    if ($MyInvocation.ExpectingInput) {
+        $input | & $script:GitExe -c "core.hooksPath=$env:DOTFILES/githooks" @args
+    } else {
+        & $script:GitExe -c "core.hooksPath=$env:DOTFILES/githooks" @args
+    }
+}
+
 # clint-only: alias for the dotfiles onpath dir
 function add-dotfiles_onpath    { update-path -EnvVarName DOVHOLUK_ONPATH -First }
 function remove-dotfiles_onpath { update-path -EnvVarName DOVHOLUK_ONPATH -Remove }

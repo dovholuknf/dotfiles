@@ -115,12 +115,25 @@ EOF
     fi
 fi
 
-# Chain to the repo's own pre-push (found via --git-dir so it ignores the global
-# hooksPath), replaying the buffered ref list on its stdin.
-local_hook="$(git rev-parse --git-dir)/hooks/pre-push"
-if [ -x "$local_hook" ] && [ "$local_hook" != "$0" ]; then
-    printf '%s\n' "$input" | "$local_hook" "$@"
-    exit $?
+# Attribution gate: no pushed commit may credit an LLM as author, committer or co-author (lib/attribution.sh). It runs
+# even with the signature gate off, because re-signing a commit makes its signature valid but keeps its trailers.
+. "$(dirname "$0")/lib/attribution.sh"
+attr_bad=0
+while read -r l_ref l_sha r_ref r_sha; do
+    case "$l_sha" in *[!0]*) ;; *) continue ;; esac
+    if ! out=$(attr_scan_commits "$l_sha" --not --remotes); then
+        printf '\n  BLOCKED: %s. These commits would credit an LLM:\n%s\n' "$r_ref" "$out" 1>&2
+        attr_bad=1
+    fi
+done <<EOF
+$input
+EOF
+if [ "$attr_bad" -ne 0 ]; then
+    printf '  Rewrite the identity or drop the line, then push again. --no-verify skips this, do not.\n' 1>&2
+    exit 1
 fi
 
-exit 0
+# Chain to the repo's own pre-push (its common dir, so a worktree finds it too, or its own core.hooksPath), replaying
+# the buffered ref list on its stdin.
+[ -z "$input" ] && { attr_run_repo_hook pre-push "$@" < /dev/null; exit $?; }
+printf '%s\n' "$input" | attr_run_repo_hook pre-push "$@"

@@ -11,7 +11,7 @@ turn-key install.
   with a real state machine (MAIN / ACTIVE / DIRTY / PRUNE / ORPHAN / etc), pruning, and a session ledger that tracks
   every claude-code instance launched into a worktree. See `powershell/docs/gwt-states.md`.
 - **claude-code hooks** -- `claude/hooks/pre-tool-use-hook.ps1` blocks a handful of footguns (compound `cd ... &&`,
-  `git -C`, bare `find`, `;`-chained commands, naked redirects, malformed `gh api`, inline env-prefixed docker). The
+  `git -C`, bare `find`, malformed `gh api`, inline env-prefixed docker). The
   `set-session-state.ps1` hook tags each session as `thinking` / `idle` / `needs-input` so `gwt sessions` can show
   what's actually busy across many parallel instances.
 - **Shared profile** -- `powershell/shared/common-tools.ps1` is dot-sourced by two users' pwsh profiles so PATH

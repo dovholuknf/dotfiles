@@ -18,8 +18,6 @@ Blocks Bash footguns. Maps to rules in `../tooling.md`:
 - `cd /path && command` compounds -> blocked.
 - `git -C <path>` or `git --git-dir=<path>` -> blocked.
 - bare `find ...` -> blocked.
-- `;` chaining in Bash -> blocked.
-- `>` / `>>` output redirection -> blocked. Use `tee`.
 - `gh api` that doesn't start with `gh api -X GET` -> blocked (PR inline-comments endpoint is the
   documented exception).
 - inline-env-prefixed docker (`FOO=bar docker ...`) -> blocked. Pass env via `-e`, compose, or

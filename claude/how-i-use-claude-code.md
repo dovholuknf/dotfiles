@@ -89,7 +89,7 @@ Claude Code hooks do two jobs here: block shell shapes I never want an agent to 
 monitoring reads. They run even though the agent is already a contained user, as defense in depth.
 
 - **Command gatekeeper.** A pre-tool-use hook screens each shell command and edit, refusing risky shapes like
-  `cd &&` chains, `git -C`, bare `find`, semicolon chains, and stray redirects. See
+  `cd &&` chains, `git -C`, and bare `find`. See
   `claude/hooks/pre-tool-use-hook.ps1`.
 - **Signed-push gate.** A pre-push hook rejects any pushed commit not signed by my key, scoped to only the commits the
   push actually introduces. See `githooks/pre-push`.

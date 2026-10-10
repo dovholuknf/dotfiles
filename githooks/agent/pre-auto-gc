@@ -1,0 +1,5 @@
+#!/bin/sh
+# Every hook name in this folder other than commit-msg is a copy of this file. core.hooksPath replaces .git/hooks, so
+# without these a repo's own hooks (git-lfs, atrium's pre-commit and pre-push) would stop running for the agent.
+. "$(dirname "$0")/../lib/attribution.sh"
+attr_run_repo_hook "$(basename "$0")" "$@"

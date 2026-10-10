@@ -1,8 +1,8 @@
 #requires -Version 7
 <#
-Comprehensive validation of the git policy in pre-tool-use-hook.ps1.
+Validation of every rule in pre-tool-use-hook.ps1. The non-git rules are listed above their cases at the end.
 
-Policy under test:
+Git policy under test:
   - push / pull / fetch          -> blocked, except exactly 'git push [-u] hub <branch>' and 'git fetch hub'
       (or atrium-hub) when that remote points at the room's atrium forwarder (hub forge design 5.3),
       optionally after one directory change, which moves the remote check to that dir
@@ -13,7 +13,7 @@ Policy under test:
   - read-only git                -> always allowed (status, log, diff, show, remote, branch listing)
   - non-claude/ branch or remote -> blocked
 
-Run:  pwsh -NoProfile -File claude/hooks/tests/test-git-guard.ps1 [-Hook <path>] [-Runtime 7|51|exe]
+Run:  pwsh -NoProfile -File claude/hooks/tests/test-gate.ps1 [-Hook <path>] [-Runtime 7|51|exe]
   -Runtime 7    runs a .ps1 hook under pwsh (default)
   -Runtime 51   runs it under powershell.exe 5.1, the way claude/settings.json launches it in production
   -Runtime exe  launches the hook directly, for a compiled gate
@@ -111,6 +111,14 @@ $repos = @{
     hub = $hubRepo; 'evil-hub' = $evilHubRepo; pushurl = $pushUrlRepo; insteadof = $insteadRepo
     'other-port' = $otherPort; nodaemon = $hubRepo; pushinsteadof = $pushInstead; root = $root
 }
+# The cmake rule only applies where the cwd has presets.
+$presetsDir = Join-Path $root 'presets-dir'
+New-Item -ItemType Directory -Path $presetsDir -Force | Out-Null
+Set-Content -Path (Join-Path $presetsDir 'CMakePresets.json') -Value '{}' -Encoding UTF8
+$repos.presets = $presetsDir
+# A drive-root folder that must not exist, for the root-folder rule.
+$noRoot = 'zz-gate-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+$emDash = [string][char]0x2014
 
 # A directory change in front of a hub op checks the remote in the new dir. These are good hub
 # repos whose literal name would mean another dir to the shell: a glob that matches the evil
@@ -150,10 +158,10 @@ $cases = @(
     @{ cmd = 'git restore foo.txt';             repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git clean -fd';                   repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git --no-pager commit -m x';      repo = 'claude'; expect = 'allow' }   # global option before verb still gated
-    @{ cmd = 'git -c core.pager=touch commit -m x'; repo = 'claude'; expect = 'block' } # 'git -c' is a config-exec vector: blocked
+    @{ cmd = 'git -c core.pager=touch commit -m x'; repo = 'claude'; expect = 'block'; reason = '' } # 'git -c' is a config-exec vector: blocked
 
     # --- same verbs on a non-claude branch: BLOCK ---
-    @{ cmd = 'git commit -m "wip"';            repo = 'main';   expect = 'block' }
+    @{ cmd = 'git commit -m "wip"';            repo = 'main';   expect = 'block'; reason = '' }
     @{ cmd = 'git add .';                       repo = 'main';   expect = 'block' }
     @{ cmd = 'git reset --hard';               repo = 'main';   expect = 'block' }
     @{ cmd = 'git restore foo.txt';             repo = 'main';   expect = 'block' }
@@ -161,7 +169,7 @@ $cases = @(
     @{ cmd = 'git rebase main';                 repo = 'main';   expect = 'block' }
 
     # --- remote ops: ALWAYS block ---
-    @{ cmd = 'git push';                        repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git push';                        repo = 'claude'; expect = 'block'; reason = '' }
     @{ cmd = 'git push origin claude/test';     repo = 'claude'; expect = 'block' }
     @{ cmd = 'git push -u claude claude/test';  repo = 'claude'; expect = 'block' }
     @{ cmd = 'git push --force';                repo = 'claude'; expect = 'block' }
@@ -173,21 +181,21 @@ $cases = @(
     # --- branch-naming: claude/* target ALLOW, else BLOCK ---
     @{ cmd = 'git checkout -b claude/new';      repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git checkout -B claude/new';      repo = 'claude'; expect = 'allow' }
-    @{ cmd = 'git checkout -b feature/x';       repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git checkout -b feature/x';       repo = 'claude'; expect = 'block'; reason = '' }
     @{ cmd = 'git checkout -b main';            repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git checkout main';               repo = 'claude'; expect = 'block' }   # plain checkout: blocked
+    @{ cmd = 'git checkout main';               repo = 'claude'; expect = 'block'; reason = '' }   # plain checkout: blocked
     @{ cmd = 'git checkout claude/test';        repo = 'claude'; expect = 'block' }   # plain checkout: blocked (use switch)
     @{ cmd = 'git checkout -- foo.txt';         repo = 'claude'; expect = 'block' }   # file restore: blocked
     @{ cmd = 'git switch -c claude/new';        repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git switch claude/other';         repo = 'claude'; expect = 'allow' }
-    @{ cmd = 'git switch -c feature/x';         repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git switch -c feature/x';         repo = 'claude'; expect = 'block'; reason = '' }
     @{ cmd = 'git switch main';                 repo = 'claude'; expect = 'block' }
     @{ cmd = 'git branch claude/foo';           repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git branch -d claude/foo';        repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git branch -D claude/foo';        repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git branch -m claude/a claude/b'; repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git branch feature/x';            repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git branch -D main';              repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch -D main';              repo = 'claude'; expect = 'block'; reason = '' }
     @{ cmd = 'git branch -m main claude/b';     repo = 'claude'; expect = 'block' }
     # a start point is any commit-ish; only the new branch name must be claude/*
     @{ cmd = 'git branch claude/foo 7f736df';           repo = 'claude'; expect = 'allow' }
@@ -219,17 +227,17 @@ $cases = @(
     @{ cmd = 'git --work-tree . push';                   repo = 'claude'; expect = 'block' }
     @{ cmd = 'git -c x=y checkout -b feature/x';         repo = 'claude'; expect = 'block' }
     @{ cmd = 'git -c x=y branch claude/foo 7f736df';     repo = 'claude'; expect = 'block' }   # -c rule
-    @{ cmd = 'git -C . status';                          repo = 'claude'; expect = 'block' }   # -C rule, not "git ."
+    @{ cmd = 'git -C . status';                          repo = 'claude'; expect = 'block'; reason = '' }   # -C rule, not "git ."
     @{ cmd = 'GIT -C . status';                          repo = 'claude'; expect = 'block' }   # -C rule is case-exact on -C only
 
-    # --- Bash redirects: fd duplication passes, writing a file blocks ---
+    # --- Bash redirects and ';' pass (no rule since 2026-10-10), but the git rules still read the whole line ---
     @{ cmd = 'git log -5 2>&1 | tail -5';                repo = 'claude'; expect = 'allow' }
-    @{ cmd = 'git log -5 >&2';                           repo = 'claude'; expect = 'allow' }
-    @{ cmd = 'git log -5 > out.txt';                     repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git log -5 2>/dev/null';                   repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git log -5 >&out.txt';                     repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git log -5 2>&1 > out.txt';                repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git status ; git log -5';                  repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git log -5 > out.txt';                     repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git log -5 2>/dev/null';                   repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git status ; git log -5';                  repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git status ; git push origin claude/x';    repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git status ; git commit -m x';             repo = 'main';   expect = 'block' }
+    @{ cmd = 'git push hub claude/x ; git push origin claude/x'; repo = 'hub'; expect = 'block' }
 
     # --- read-only git: ALWAYS allow ---
     @{ cmd = 'git status';                      repo = 'main';   expect = 'allow' }
@@ -249,9 +257,9 @@ $cases = @(
     @{ cmd = 'git ci -m x';                      repo = 'main';   expect = 'block' }   # ci -> commit, on main
     @{ cmd = 'git p';                            repo = 'claude'; expect = 'block' }   # p  -> push
     @{ cmd = 'git p origin claude/test';         repo = 'claude'; expect = 'block' }
-    @{ cmd = 'git evil';                         repo = 'claude'; expect = 'block' }   # '!'-shell alias
+    @{ cmd = 'git evil';                         repo = 'claude'; expect = 'block'; reason = '' }   # '!'-shell alias
     # --- alias creation: blocked; alias reads: allowed ---
-    @{ cmd = 'git config alias.x checkout';      repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git config alias.x checkout';      repo = 'claude'; expect = 'block'; reason = '' }
     @{ cmd = "git config --global alias.y '!sh'"; repo = 'claude'; expect = 'block' }
     @{ cmd = 'git config --unset alias.co';      repo = 'claude'; expect = 'block' }
     @{ cmd = 'git config --get-regexp alias';    repo = 'claude'; expect = 'allow' }
@@ -275,10 +283,10 @@ $cases = @(
     @{ cmd = 'git commit -m "co-authored-by: x"';repo = 'claude'; expect = 'block'; tool = 'PowerShell' }   # trailer ban
     @{ cmd = 'git status';                       repo = 'main';   expect = 'allow'; tool = 'PowerShell' }   # read-only still passes
 
-    # ';' and '>' are Bash-tool ergonomics: blocked under Bash, allowed under PowerShell.
-    @{ cmd = 'git status; git status';           repo = 'claude'; expect = 'block'; tool = 'Bash' }
+    # ';' and '>' pass under both shells.
+    @{ cmd = 'git status; git status';           repo = 'claude'; expect = 'allow'; tool = 'Bash' }
     @{ cmd = 'git status; git status';           repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
-    @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'block'; tool = 'Bash' }
+    @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'allow'; tool = 'Bash' }
     @{ cmd = 'git log > out.txt';                repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
 
     # --- atrium hub remote: the only remote ops allowed, and only to this room's forwarder ---
@@ -400,7 +408,7 @@ $cases = @(
     @{ cmd = "cd `"FileSystem::$hubRepo`"${nl}git fetch hub";       repo = 'main'; expect = 'block'; tool = 'PowerShell' }
     @{ cmd = "cd (`"$hubRepo`")${nl}git fetch hub";                 repo = 'main'; expect = 'block'; tool = 'PowerShell' }
     # the compound-cd rule still binds everything else
-    @{ cmd = "cd $hubRepo && git status";                           repo = 'main'; expect = 'block' }
+    @{ cmd = "cd $hubRepo && git status";                           repo = 'main'; expect = 'block'; reason = '' }
 
     # --- aliases anywhere in the command, and in any repo it changes into ---
     @{ cmd = "echo hi${nl}git p origin main";                       repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
@@ -414,18 +422,117 @@ $cases = @(
     @{ cmd = "Set-Location `"$aliasRepo`"; git zz origin main";     repo = 'main';   expect = 'block'; tool = 'PowerShell' }
     @{ cmd = "pushd ../alias-repo${nl}git zz hub claude/x";         repo = 'main';   expect = 'block'; tool = 'PowerShell' }
     @{ cmd = "git a1 origin main";                                  repo = 'claude'; expect = 'block' }   # chain a1 -> a2 -> push
-    @{ cmd = "git l1";                                              repo = 'claude'; expect = 'block' }   # loop
+    @{ cmd = "git l1";                                              repo = 'claude'; expect = 'block'; reason = '' }   # loop
     @{ cmd = "git lg -5";                                           repo = 'claude'; expect = 'allow' }   # harmless alias
     @{ cmd = "git status${nl}git lg -5";                            repo = 'claude'; expect = 'allow'; tool = 'PowerShell' }
     # --- a git word that is not a command: an alias the hook cannot see, or an external program ---
-    @{ cmd = "git zz origin main";                                  repo = 'main';   expect = 'block' }
+    @{ cmd = "git zz origin main";                                  repo = 'main';   expect = 'block'; reason = '' }
     @{ cmd = "cd `$env:TEMP${nl}git zz origin main";                repo = 'main';   expect = 'block'; tool = 'PowerShell' }
     @{ cmd = "git flow feature publish x";                          repo = 'claude'; expect = 'block' }
-    @{ cmd = "git lfs push origin main";                            repo = 'claude'; expect = 'block' }
+    @{ cmd = "git lfs push origin main";                            repo = 'claude'; expect = 'block'; reason = '' }
     @{ cmd = "git lfs fetch";                                       repo = 'claude'; expect = 'block' }
     @{ cmd = "git lfs pull";                                        repo = 'claude'; expect = 'block' }
     @{ cmd = "git lfs ls-files";                                    repo = 'claude'; expect = 'allow' }
     @{ cmd = "echo git is fun";                                     repo = 'claude'; expect = 'allow' }   # not command position
+
+    # ===== non-git rules. 'input' replaces tool_input, 'env' sets child env vars, 'reason' is a regex the
+    # reason text must match (one per rule, which pins the first match). expect may also be 'approve'. =====
+    # --- drive-root folders, in a command and in a written file path ---
+    @{ cmd = "mkdir C:\$noRoot";                                    repo = 'claude'; expect = 'block'; reason = 'root of a drive' }
+    @{ cmd = "mkdir /c/$noRoot";                                    repo = 'claude'; expect = 'block' }
+    @{ cmd = "New-Item -ItemType Directory C:\$noRoot";             repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = 'ls C:\Users';                                         repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'ls C:\Program Files';                                 repo = 'claude'; expect = 'allow' }   # truncated at the space
+    @{ cmd = 'ls /usr/bin';                                         repo = 'claude'; expect = 'allow' }
+    @{ tool = 'Write'; input = @{ file_path = "C:\$noRoot\x.txt"; content = 'x' };   repo = 'claude'; expect = 'block' }
+    @{ tool = 'Edit';  input = @{ file_path = "C:/$noRoot/x.txt"; old_string = 'a'; new_string = 'b' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'NotebookEdit'; input = @{ notebook_path = "C:\$noRoot\x.ipynb"; new_source = 'x' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\x.txt"; content = 'x' };        repo = 'claude'; expect = 'allow' }
+
+    # --- plain subagents: blocked unless ATRIUM_ONLY_SUBAGENTS is off, Explore and Plan exempt ---
+    @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block'; reason = 'ATRIUM_ONLY_SUBAGENTS' }
+    @{ tool = 'Task';  input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Agent'; input = @{ prompt = 'x' };                                    repo = 'claude'; expect = 'block' }   # no type
+    @{ tool = 'Agent'; input = @{ subagent_type = 'Explore'; prompt = 'x' };         repo = 'claude'; expect = 'allow' }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'Plan'; prompt = 'x' };            repo = 'claude'; expect = 'allow' }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = '0' } }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = 'Off' } }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block'; env = @{ ATRIUM_ONLY_SUBAGENTS = '1' } }
+
+    # --- co-authored-by, any shell ---
+    @{ cmd = "echo 'Co-Authored-By: x'";                            repo = 'claude'; expect = 'block'; reason = 'Co-Authored-By' }
+    @{ cmd = "gh pr create --body 'co-authored-by: x'";             repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+
+    # --- go build output goes to build.claude ---
+    @{ cmd = 'go build ./...';                                      repo = 'claude'; expect = 'block'; reason = 'build\.claude' }
+    @{ cmd = 'go build -o bin/x.exe .';                             repo = 'claude'; expect = 'block'; tool = 'PowerShell' }
+    @{ cmd = 'go build -o build.claude/ ./...';                     repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'go build -o ./build.claude/x.exe .';                  repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'go vet ./...';                                        repo = 'claude'; expect = 'allow' }
+
+    # --- find, perl, python ---
+    @{ cmd = 'find . -name x';                                      repo = 'claude'; expect = 'block'; reason = 'find' }
+    @{ cmd = "ls${nl}find . -name x";                               repo = 'claude'; expect = 'block' }
+    @{ cmd = 'echo find me';                                        repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'perl -e 1';                                           repo = 'claude'; expect = 'block'; reason = 'perl' }
+    @{ cmd = 'ls | perl -ne print';                                 repo = 'claude'; expect = 'block' }
+    @{ cmd = 'perldoc -f print';                                    repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'python x.py';                                         repo = 'claude'; expect = 'block'; reason = 'python' }
+    @{ cmd = 'python3 -V';                                          repo = 'claude'; expect = 'block' }
+    @{ cmd = 'ls && python.exe -V';                                 repo = 'claude'; expect = 'block' }
+    @{ cmd = 'echo $PYTHONPATH';                                    repo = 'claude'; expect = 'allow' }
+
+    # --- docker env goes through flags, not an inline prefix ---
+    @{ cmd = 'FOO=bar docker run x';                                repo = 'claude'; expect = 'block'; reason = 'inline env' }
+    @{ cmd = 'A=1 B=2 docker compose up';                           repo = 'claude'; expect = 'block' }
+    @{ cmd = 'docker run -e FOO=bar x';                             repo = 'claude'; expect = 'allow' }
+
+    # --- ';' and '>' have no rule (2026-10-10): the sampled blocks were read-only chains and tee-equivalent writes ---
+    @{ cmd = 'echo a; echo b';                                      repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'for f in a b; do echo $f; done';                      repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'echo a > out.txt';                                    repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'echo a >> out.txt';                                   repo = 'claude'; expect = 'allow' }
+    @{ cmd = "grep -n '->message' x.c";                             repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'ls 2>/dev/null';                                      repo = 'claude'; expect = 'allow' }
+
+    # --- cmake goes through a preset, only where the cwd has presets ---
+    @{ cmd = 'cmake --build build';                                 repo = 'presets'; expect = 'block'; reason = 'preset' }
+    @{ cmd = 'cmake -S . -B build';                                 repo = 'presets'; expect = 'block' }
+    @{ cmd = 'cmake ..';                                            repo = 'presets'; expect = 'block' }
+    @{ cmd = 'cmake --preset x';                                    repo = 'presets'; expect = 'allow' }
+    @{ cmd = 'cmake --build --preset x';                            repo = 'presets'; expect = 'allow' }
+    @{ cmd = 'cmake --version';                                     repo = 'presets'; expect = 'allow' }
+    @{ cmd = 'cmake -E echo x';                                     repo = 'presets'; expect = 'allow' }
+    @{ cmd = 'cmake --build build';                                 repo = 'claude';  expect = 'allow' }
+
+    # --- gh api starts with -X GET, and the PR comments endpoint is approved ---
+    @{ cmd = 'gh api repos/o/r/pulls';                              repo = 'claude'; expect = 'block'; reason = '-X GET' }
+    @{ cmd = 'gh api -X POST repos/o/r/issues';                     repo = 'claude'; expect = 'block' }
+    @{ cmd = 'gh api -X GET repos/o/r/pulls';                       repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'gh api -X GET repos/o/r/pulls/12/comments';           repo = 'claude'; expect = 'approve'; reason = 'inline review comments' }
+
+    # --- files that trigger vcpkg rebuilds ---
+    @{ tool = 'Write'; input = @{ file_path = "$root\vcpkg.json"; content = '{}' };               repo = 'claude'; expect = 'block'; reason = 'vcpkg' }
+    @{ tool = 'Edit';  input = @{ file_path = "$root\CMakePresets.json"; old_string = 'a'; new_string = 'b' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Edit';  input = @{ file_path = "$root\CMakeUserPresets.json"; old_string = 'a'; new_string = 'b' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\triplets\x64-windows.cmake"; content = 'x' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\ports\foo\portfile.cmake"; content = 'x' };   repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\my-vcpkg.json"; content = '{}' };            repo = 'claude'; expect = 'allow' }
+
+    # --- em-dash and CSS !important in written content ---
+    @{ tool = 'Write'; input = @{ file_path = "$root\a.md"; content = "a ${emDash} b" };                   repo = 'claude'; expect = 'block'; reason = 'em-dash' }
+    @{ tool = 'Edit';  input = @{ file_path = "$root\a.md"; old_string = 'a'; new_string = "a ${emDash} b" }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\a.md"; content = 'a - b' };                           repo = 'claude'; expect = 'allow' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\a.css"; content = 'a { color: red !important }' };    repo = 'claude'; expect = 'block'; reason = '!important' }
+    @{ tool = 'Edit';  input = @{ file_path = "$root\a.scss"; old_string = 'a'; new_string = 'b !important' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\a.ts"; content = "s = '!important'" };               repo = 'claude'; expect = 'allow' }
+
+    # --- .env files: blocked, except default.env, which still gets the content rules ---
+    @{ tool = 'Write'; input = @{ file_path = "$root\.env"; content = 'A=1' };          repo = 'claude'; expect = 'block'; reason = '\.env files' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\.env.local"; content = 'A=1' };    repo = 'claude'; expect = 'block' }
+    @{ tool = 'Edit';  input = @{ file_path = "$root\prod.env"; old_string = 'a'; new_string = 'b' }; repo = 'claude'; expect = 'block' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\default.env"; content = 'A=1' };   repo = 'claude'; expect = 'approve'; reason = 'template' }
+    @{ tool = 'Write'; input = @{ file_path = "$root\default.env"; content = "A=${emDash}" }; repo = 'claude'; expect = 'block' }
 )
 
 # Each case is one hook process, about 1.3 s for a .ps1, so the cases run in parallel. Each child gets its own
@@ -438,15 +545,21 @@ $results = $cases | ForEach-Object -ThrottleLimit $throttle -Parallel {
     $c = $_
     $tool = if ($c.tool) { $c.tool } else { 'Bash' }
     $ad = if ($c.appdata) { $c.appdata } else { $using:appData }
-    $payload = @{ tool_name = $tool; tool_input = @{ command = $c.cmd }; cwd = ($using:repos)[$c.repo] } |
+    $ti = if ($c.input) { $c.input } else { @{ command = $c.cmd } }
+    $payload = @{ tool_name = $tool; tool_input = $ti; cwd = ($using:repos)[$c.repo] } |
         ConvertTo-Json -Compress
     $psi = [Diagnostics.ProcessStartInfo]::new($using:hookExe, $using:hookArgs)
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    # claude-code writes the payload as UTF-8. Without this, an em-dash would reach the hook in the console codepage.
+    $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
     $psi.Environment['LOCALAPPDATA'] = $ad
     [void]$psi.Environment.Remove('ATRIUM_LOCATION')
+    # The subagent gate reads this, and the session running the suite may have it set either way.
+    [void]$psi.Environment.Remove('ATRIUM_ONLY_SUBAGENTS')
+    if ($c.env) { foreach ($k in $c.env.Keys) { $psi.Environment[$k] = $c.env[$k] } }
     $p = [Diagnostics.Process]::Start($psi)
     $errTask = $p.StandardError.ReadToEndAsync()
     $p.StandardInput.Write($payload)
@@ -454,16 +567,25 @@ $results = $cases | ForEach-Object -ThrottleLimit $throttle -Parallel {
     $out = $p.StandardOutput.ReadToEnd()
     [void]$errTask.Result
     $p.WaitForExit()
-    [pscustomobject]@{ Case = $c; Tool = $tool; Blocked = ($out -match '"decision"\s*:\s*"block"') }
+    $decision = 'allow'
+    $reason = ''
+    if ($out.Trim()) {
+        try { $o = $out | ConvertFrom-Json } catch { $o = $null }
+        if ($o -and $o.decision) { $decision = "$($o.decision)"; $reason = "$($o.reason)" }
+    }
+    [pscustomobject]@{ Case = $c; Tool = $tool; Decision = $decision; Reason = $reason }
 } | Sort-Object { $_.Case.idx }
 
 $pass = 0; $fail = 0; $failed = @()
 foreach ($r in $results) {
     $c = $r.Case
     $tool = $r.Tool
-    $shown = $c.cmd -replace "`r", '\r' -replace "`n", '\n'
-    $got = if ($r.Blocked) { 'block' } else { 'allow' }
-    if ($got -eq $c.expect) {
+    $label = if ($c.input) { $c.input | ConvertTo-Json -Compress } else { $c.cmd }
+    $shown = $label -replace "`r", '\r' -replace "`n", '\n'
+    $got = $r.Decision
+    $reasonOk = (-not $c.reason) -or ($r.Reason -match $c.reason)
+    if (-not $reasonOk) { $shown += "  (reason did not match '$($c.reason)': $($r.Reason))" }
+    if ($got -eq $c.expect -and $reasonOk) {
         $pass++
         Write-Host ("PASS  [{0,-10}] {1,-6} {2}" -f "$($c.repo)/$tool", $got, $shown) -ForegroundColor DarkGray
     } else {

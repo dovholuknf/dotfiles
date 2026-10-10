@@ -123,9 +123,8 @@ behaviour. No body, no attribution, unless their log shows otherwise. Check with
 **Signing:** check `git log --format='%G?' -3` after the FIRST commit lands, not after eight. A repo can want
 GPG while the global config points at an SSH key, and the failure only appears at push.
 
-**The bash tool refuses:** `;` chaining, `>` and `>>` redirection (use `tee`), `2>&1`, `find`, `perl`,
-`git -C`, and `cd` outside the working directory. Write a script to a file and run it when a one-liner will
-not fit. Beware `-->` inside a string: it contains `>`.
+**The bash tool refuses:** `find`, `perl`, `git -C`, and `cd` outside the working directory. Write a script
+to a file and run it when a one-liner will not fit.
 
 **Builds** may be constrained to an output directory by a hook. A binary that a running process holds open
 cannot be overwritten: build under another name, or stop the process first.

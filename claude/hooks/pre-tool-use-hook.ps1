@@ -53,7 +53,7 @@ if ($json.tool_input.command) {
 }
 
 if ($json.tool_name -eq "Write" -or $json.tool_name -eq "Edit" -or $json.tool_name -eq "NotebookEdit") {
-    $newRoot = Find-NewRootPath $json.tool_input.file_path
+    $newRoot = Find-NewRootPath "$($json.tool_input.file_path)$($json.tool_input.notebook_path)"
     if ($newRoot) {
         @{
             decision = "block"
@@ -121,7 +121,7 @@ if ($json.tool_input.command) {
     #   current-branch verbs     -> the CHECKED-OUT branch must start 'claude/'
     #     (commit, add, rebase, reset, restore, clean)
     # Anything on a non-claude/ branch, or any remote op, is handed back to the user.
-    # Validated by claude/hooks/tests/test-git-guard.ps1 -- keep that green.
+    # Validated by claude/hooks/tests/test-gate.ps1 -- keep that green.
     function _GitBlock($why) {
         @{ decision = "block"; reason = $why } | ConvertTo-Json -Compress
         exit 0
@@ -403,28 +403,9 @@ if ($json.tool_input.command) {
 		exit 0
 	}
 	
-	# ';' chaining and '>' redirection are Bash-tool ergonomics only. PowerShell uses ';' as
-	# its statement separator and '>' / '2>&1' as normal redirection, so these two stay
-	# scoped to the Bash tool. The git/co-author policy above is NOT scoped -- it binds every shell.
-	if ($json.tool_name -eq "Bash") {
-		if ($cmd -match ';') {
-			@{
-				decision = "block"
-				reason   = "Do not chain multiple commands with ';'. Use '&&', or run one command per call."
-			} | ConvertTo-Json -Compress
-			exit 0
-		}
+	# No ';' or '>' rule: '&&' and tee do the same things and pass, so blocking them only cost a retry.
+	# See claude/hooks/docs/gate-decisions.md (2026-10-10).
 
-		# '2>&1', '>&2' and '>&-' only point one stream at another, so they pass. '>&file' (no digit) writes a file.
-		if ($cmd -match '[>]{1,2}(?!&[\d-])\s*\S+') {
-			@{
-				decision = "block"
-				reason   = "Use tee instead of > or >> for output redirection."
-			} | ConvertTo-Json -Compress
-			exit 0
-		}
-	}
-	
 	# CMake must go THROUGH a preset. A bare 'cmake --build' or bare configure re-runs
 	# vcpkg with the shell environment, missing VCPKG_BINARY_SOURCES and the shared
 	# installed dir -- so it rebuilds every port from source into the wrong cache. Only
