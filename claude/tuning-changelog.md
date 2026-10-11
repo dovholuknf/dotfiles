@@ -354,3 +354,5 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   cannot replace it. Why: claude@sg4.local on 6463fc35 forced recreating github.com/dovholuknf/atrium.
 - **2026-10-10** githooks: set the claude account's global `core.hooksPath` to `githooks/agent`, so the attribution gate
   runs on every claude commit and push. Why: layer 3 was written but inactive until this config was set.
+- **2026-10-11** gate: branch rules read each git command's own arguments, and `git branch` list mode passes. Why: 17
+  blocks in 23 hours, most of them reads like `git branch --show-current` followed by another command.

@@ -22,6 +22,25 @@ code or secrets from leaving the machine, and the ones that keep claude off clin
 The rest are style or tidiness rules. A style rule earns its place only if the retries it causes cost less than the
 mess it prevents.
 
+## 2026-10-11: branch rules read each git command's own arguments
+
+**Decision.** `git checkout`, `git switch` and `git branch` are each checked on their own arguments, which end at the
+next newline, `;`, `&` or `|`. Every one in the command is checked, not only the first. `git branch` in list mode
+(`--list`, `--show-current`, `-a`, `-r`, or a `--contains`, `--merged` or `--points-at` filter) passes unless a delete,
+move, copy or upstream flag is there too. Quoted names are unquoted before the `claude/` check. The current-branch check
+(commit, add, reset, ...) now runs after a plain `git branch`. Only a switch or `checkout -b` skips it.
+
+**Why.** The branch rule read from `git branch` to the end of the command, so the next command's words counted as
+branch names. Only the first branch verb was checked, and a plain `git branch claude/x; git commit` on `main` skipped
+the commit check.
+
+**Evidence.**
+- 17 blocks in the 23 hours after c4f97c8. False positives: `git branch --show-current` then `git merge`,
+  `git branch -r --list 'hub/claude/x*' --format='...'`, `git branch -D claude/a claude/b | wc -l`.
+- `tests/test-gate.ps1`: 23 new cases, 338 of 338 pass.
+
+**Status.** Done.
+
 ## 2026-10-10: drive-root guard kept for now, account hardening to be evaluated
 
 **Decision.** Keep the guard unchanged. Evaluate whether account ACLs can replace it.

@@ -212,6 +212,31 @@ $cases = @(
     @{ cmd = 'git switch -c claude/new 7f736df';        repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git switch -c claude/new v1.2.3';         repo = 'claude'; expect = 'allow' }
     @{ cmd = 'git switch -c feature/x 7f736df';         repo = 'claude'; expect = 'block' }
+    # each branch verb reads only its own arguments, up to the next newline, ';', '&' or '|'
+    @{ cmd = "git branch --show-current`ngit log --oneline -3"; repo = 'main'; expect = 'allow' }
+    @{ cmd = 'git branch --show-current; git log -1';   repo = 'main';   expect = 'allow' }
+    @{ cmd = 'git branch -D claude/a claude/b | wc -l'; repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git branch -D claude/a && git branch --list ''claude/*'''; repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git switch claude/x && git branch -D main'; repo = 'claude'; expect = 'block' }   # every segment checked
+    @{ cmd = 'git branch --list claude/a; git branch -D main'; repo = 'claude'; expect = 'block' }
+    @{ cmd = '{ git branch -D main }';                  repo = 'claude'; expect = 'block' }
+    @{ cmd = 'xargs git branch -D < del.txt';           repo = 'claude'; expect = 'block' }   # names unseen
+    @{ cmd = 'git branch -D $(cat del.txt)';            repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch -D ''claude/a''';              repo = 'claude'; expect = 'allow' }   # quotes stripped
+    @{ cmd = 'git branch -D ''main''';                  repo = 'claude'; expect = 'block' }
+    # list mode: names are patterns or filter values, unless a delete/move/copy/upstream flag is present
+    @{ cmd = "git branch -r --list 'hub/claude/x*' --format='%(refname:short) %(objectname:short)'"; repo = 'main'; expect = 'allow' }
+    @{ cmd = 'git branch --list main';                  repo = 'main';   expect = 'allow' }
+    @{ cmd = 'git branch --no-merged claude/main --format=%(refname)'; repo = 'main'; expect = 'allow' }
+    @{ cmd = 'git branch --contains 7f736df';           repo = 'main';   expect = 'allow' }
+    @{ cmd = 'git branch -r -d origin/main';            repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch --list -D main';               repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch --merged -d main';             repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch -u origin/main main';          repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git branch -v main';                      repo = 'claude'; expect = 'block' }   # -v alone is not list mode
+    # a branch switch held to claude/* covers the commit after it. A plain branch create does not move HEAD.
+    @{ cmd = 'git switch -c claude/new && git commit -m x'; repo = 'main'; expect = 'allow' }
+    @{ cmd = 'git branch claude/new; git commit -m x';  repo = 'main';   expect = 'block' }
 
     # --- global options before the verb: -c/-C/--git-dir/--work-tree take a value, which is not the verb ---
     @{ cmd = 'git -c core.editor=true cherry-pick --continue'; repo = 'claude'; expect = 'block' }   # -c rule

@@ -280,42 +280,66 @@ if ($json.tool_input.command) {
         }
     }
 
-    # 2a. checkout: allowed ONLY as 'checkout -b claude/*'. Plain 'git checkout <x>' is
-    #     ambiguous with file restore, so it is blocked; use 'git switch' to move branches.
-    if ($cmd -match ('\bgit\s+' + $gOpt + 'checkout\b')) {
-        if ($cmd -match '\bcheckout\s+(?:-\S+\s+)*-[bB]\s+(\S+)') {
-            if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only create claude/* branches. '$($Matches[1])' is not one." }
-        } else {
-            _GitBlock "Use 'git switch claude/<branch>' to move branches. Plain 'git checkout' is blocked here (ambiguous with file restore, and claude stays on claude/* branches)."
+    # 2. Branch-naming verbs. Each 'git checkout|switch|branch' is checked on its own arguments, which end at the next
+    #    newline, ';', '&' or '|'. Reading to the end of the whole command took the next command's words for branch
+    #    names, so 'git branch --show-current; git log' was refused.
+    $segRe = '\bgit(?:\.exe)?\s+' + $gOpt + '(checkout|switch|branch)\b([^\r\n;&|]*)'
+    $segs = @([regex]::Matches($cmd, $segRe, 'IgnoreCase'))
+    $movesBranch = $false
+    foreach ($s in $segs) {
+        $verb = $s.Groups[1].Value.ToLower()
+        $argv = $s.Groups[2].Value
+        # Quoted tokens stay whole, so a --format='%(refname) %(objectname)' value is one token.
+        $tokens = @([regex]::Matches($argv, '"[^"]*"|''[^'']*''|\S+') | ForEach-Object { $_.Value -replace '^(["''])(.*)\1$', '$2' })
+
+        # 2a. checkout: allowed ONLY as 'checkout -b claude/*'. Plain 'git checkout <x>' is
+        #     ambiguous with file restore, so it is blocked; use 'git switch' to move branches.
+        if ($verb -eq 'checkout') {
+            $movesBranch = $true
+            if ("$tokens" -match '^(?:-\S+\s+)*-[bB]\s+(\S+)') {
+                if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only create claude/* branches. '$($Matches[1])' is not one." }
+            } else {
+                _GitBlock "Use 'git switch claude/<branch>' to move branches. Plain 'git checkout' is blocked here (ambiguous with file restore, and claude stays on claude/* branches)."
+            }
+        }
+        # 2b. switch: 'switch -c <n>' (create) or 'switch <n>' (move). Target must be claude/*.
+        elseif ($verb -eq 'switch') {
+            $movesBranch = $true
+            if ("$tokens" -match '^(?:-[cC]\s+)?(?:-\S+\s+)*([^\s-]\S*)') {
+                if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only switch to claude/* branches. '$($Matches[1])' is not one." }
+            } else {
+                _GitBlock "claude may only 'git switch' to a named claude/* branch."
+            }
+        }
+        # 2c. branch: every branch-name argument (create/delete/rename) must be claude/*.
+        #     No name args (a listing: 'git branch', '-a', '-r', '-v') passes. So does list mode: git lists, and never
+        #     creates, when given --list, --show-current, -a, -r or a --contains/--merged/--points-at filter, unless a
+        #     delete, move, copy or upstream flag is there too. The names are then patterns or filter values.
+        #     A plain create ('git branch [-f] [-t] claude/x [<start>]') checks only the new name. The start point is any
+        #     commit-ish, limited to ref characters so it cannot hide a chained or substituted command.
+        else {
+            $flags = @($tokens | Where-Object { $_ -match '^-' })
+            $names = @($tokens | Where-Object { $_ -notmatch '^-' })
+            $mutate = @($flags | Where-Object {
+                $_ -cmatch '^-[a-zA-Z]*[dDmMcCu]' -or $_ -match '^--(delete|move|copy|set-upstream-to|unset-upstream|edit-description)\b'
+            }).Count
+            $listing = @($flags | Where-Object {
+                $_ -cmatch '^-[alr]+$' -or $_ -match '^--(list|show-current|all|remotes|contains|no-contains|merged|no-merged|points-at)\b'
+            }).Count
+            if ($listing -and -not $mutate) { continue }
+            $createFlags = '^(?:-f|--force|-t|--track(?:=\S+)?|--no-track|-q|--quiet)$'
+            $isCreate = ($names.Count -eq 2) -and -not @($flags | Where-Object { $_ -notmatch $createFlags }).Count `
+                -and ($names[1] -match '^[\w./@^~:{}+-]+$')
+            if ($isCreate) { $names = @($names[0]) }
+            foreach ($n in $names) {
+                if ($n -notmatch '^claude/') { _GitBlock "claude may only create/delete/rename claude/* branches. '$n' is not one." }
+            }
         }
     }
-    # 2b. switch: 'switch -c <n>' (create) or 'switch <n>' (move). Target must be claude/*.
-    elseif ($cmd -match ('\bgit\s+' + $gOpt + 'switch\b')) {
-        if ($cmd -match '\bswitch\s+(?:-c\s+)?(?:-\S+\s+)*([^\s-]\S*)') {
-            if ($Matches[1] -notmatch '^claude/') { _GitBlock "claude may only switch to claude/* branches. '$($Matches[1])' is not one." }
-        } else {
-            _GitBlock "claude may only 'git switch' to a named claude/* branch."
-        }
-    }
-    # 2c. branch: every branch-name argument (create/delete/rename) must be claude/*.
-    #     No name args (a listing: 'git branch', '-a', '-r', '-v') passes.
-    #     A plain create ('git branch [-f] [-t] claude/x [<start>]') checks only the new name. The start point is any
-    #     commit-ish, limited to ref characters so it cannot hide a chained or substituted command.
-    elseif ($cmd -match ('\bgit\s+' + $gOpt + 'branch\b')) {
-        $after = ($cmd -replace ('^.*?\bgit\s+' + $gOpt + 'branch\b'), '').Trim()
-        $tokens = @($after -split '\s+' | Where-Object { $_ })
-        $flags  = @($tokens | Where-Object { $_ -match '^-' })
-        $names  = @($tokens | Where-Object { $_ -notmatch '^-' })
-        $createFlags = '^(?:-f|--force|-t|--track(?:=\S+)?|--no-track|-q|--quiet)$'
-        $isCreate = ($names.Count -eq 2) -and -not @($flags | Where-Object { $_ -notmatch $createFlags }).Count `
-            -and ($names[1] -match '^[\w./@^~:{}+-]+$')
-        if ($isCreate) { $names = @($names[0]) }
-        foreach ($n in $names) {
-            if ($n -notmatch '^claude/') { _GitBlock "claude may only create/delete/rename claude/* branches. '$n' is not one." }
-        }
-    }
-    # 3. Current-branch verbs: the checked-out branch must be claude/*.
-    elseif ($cmd -match ('\bgit\s+' + $gOpt + '(commit|add|rebase|reset|restore|clean)\b')) {
+    # 3. Current-branch verbs: the checked-out branch must be claude/*. Skipped when the command also switches branch,
+    #    which step 2 has already held to claude/*: 'git switch -c claude/x && git commit' commits on claude/x. A plain
+    #    'git branch claude/x' does not move HEAD, so it does not skip this.
+    if (-not $movesBranch -and $cmd -match ('\bgit\s+' + $gOpt + '(commit|add|rebase|reset|restore|clean)\b')) {
         $verb = $Matches[1]
         $branch = ''
         try { $branch = "$(& git -C "$gitCwd" rev-parse --abbrev-ref HEAD 2>$null)".Trim() } catch { $branch = '' }
