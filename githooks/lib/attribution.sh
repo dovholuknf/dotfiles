@@ -10,11 +10,8 @@ ATTR_MSG_RE='^co-authored-by:.*(claude|anthropic)|noreply@anthropic[.]com|genera
 
 # attr_scan_commits <rev-list args...>: prints one line per offending commit and returns 1 if any.
 attr_scan_commits() {
-    hits=$(git log --format='%h%x09%an <%ae>%x09%cn <%ce>' "$@" 2>/dev/null | while IFS='	' read -r h a c; do
-        for who in "$a" "$c"; do
-            if printf '%s\n' "$who" | grep -qiE "$ATTR_IDENT_RE"; then printf '  %s  identity: %s\n' "$h" "$who"; fi
-        done
-    done)
+    hits=$(git log --format='%h%x09%an <%ae>%x09%cn <%ce>' "$@" 2>/dev/null | awk -F'\t' -v re="$ATTR_IDENT_RE" '
+        { for (i = 2; i <= 3; i++) if (tolower($i) ~ re) printf "  %s  identity: %s\n", $1, $i }')
     msgs=$(git log --format='@@%h%n%B' "$@" 2>/dev/null | awk -v re="$ATTR_MSG_RE" '
         /^@@/ { h = substr($0, 3); next }
         tolower($0) ~ re { printf "  %s  message:  %s\n", h, $0 }')

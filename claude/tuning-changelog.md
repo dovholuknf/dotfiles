@@ -356,3 +356,5 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   runs on every claude commit and push. Why: layer 3 was written but inactive until this config was set.
 - **2026-10-11** gate: branch rules read each git command's own arguments, and `git branch` list mode passes. Why: 17
   blocks in 23 hours, most of them reads like `git branch --show-current` followed by another command.
+- **2026-10-12** skills: `/slop-review`, a thin pointer that loads `claude/review/slop-review-process.md` and the
+  operator's five standing asks. Why: "self-review" alone got a one-shot summary, and clint had to paste the full ask.
