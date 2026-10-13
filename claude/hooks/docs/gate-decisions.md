@@ -4,8 +4,8 @@ Why each `pre-tool-use-hook.ps1` rule exists, why some were removed, and the evi
 Add an entry whenever a rule is added, removed, loosened or tightened, or when a rule is evaluated and kept as is.
 
 Each entry records the decision, the why, the evidence (block counts, sampled commands, tests), and its status. Block
-counts come from `tests/hook-blocks.ps1`, which reads the blocks back out of the claude-code transcripts. Rerun it to
-check a claim.
+counts come from `claude/usage/Get-HookReport.ps1`, which reads the blocks back out of the claude-code transcripts.
+Rerun it to check a claim. Its `-Json` output carries every blocked command, for sampling one rule.
 
 `claude/tuning-changelog.md` stays the one-line feed of behavior changes. This file holds the reasoning.
 

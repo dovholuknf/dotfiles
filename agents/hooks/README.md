@@ -45,11 +45,6 @@ Writes lifecycle transitions to `$env:WORKTREE_ROOT\watch\state.log` and patches
 ledger. Fires on `UserPromptSubmit` (thinking), `Stop` (idle), `Notification` (needs-input),
 `SessionStart` (startup/resume/clear/compact via `-FromPayloadSource`), `SessionEnd` (ended).
 
-### `no-compound-cd.ps1`
-
-Older single-purpose precursor to `pre-tool-use-hook.ps1`. Kept around for reference. You don't need
-to wire this; the bigger hook supersedes it.
-
 ## How to wire them
 
 The wiring lives in `../../claude/settings.json` (which is symlinked into `~/.claude/settings.json`).

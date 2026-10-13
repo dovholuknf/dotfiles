@@ -33,6 +33,14 @@ These apply to everything: files, chat, commits, PR descriptions, forum replies.
 - **Wrap markdown FILE contents at 120 characters.** Do NOT hard-wrap prose in chat replies; let it flow.
 - **Never `!important`** in CSS.
 
+## Reading level
+
+Target grade 8-9:
+
+- Short words over long ones. "use" not "utilize". "show" not "demonstrate".
+- One idea per sentence. Active voice: "the script writes the file", not "the file is written by the script".
+- No jargon without a one-phrase definition the first time it appears.
+
 ## Reply length
 
 - Default to short. If I want depth I will ask.

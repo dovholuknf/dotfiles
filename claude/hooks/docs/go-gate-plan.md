@@ -128,7 +128,7 @@ settings.json does not encode the dotfiles path.
 
 ### Phase 4: retire the ps1
 
-1. Delete `pre-tool-use-hook.ps1` and `no-compound-cd.ps1`. The suite targets the exe only.
+1. Delete `pre-tool-use-hook.ps1`. The suite targets the exe only.
 2. Update `claude/README.md` and the AGENTS.md hook bullet. "Edit the ps1, it is live on save" becomes "edit the Go,
    run build.ps1".
 

@@ -76,10 +76,17 @@ if ($json.tool_name -in @('Task', 'Agent')) {
     # against. They pass through even when the guard is on. log-subagent.ps1 still records the
     # start (type + description = the why) into state.log, so every one is visible in agent-log.
     # clint's decision 2026-09-21: allow read-only subagents inside doers, keep redirecting the rest.
+    #
+    # SPECIALISTS ARE EXEMPT TOO. A type defined in ~/.claude/agents (go-security-reviewer,
+    # functional-tester and the rest) is a reviewer a PR card fans out to. Blocking them made PR
+    # cards run every review themselves. clint's decision 2026-10-13. general-purpose, fork and an
+    # empty type are still redirected.
     $subtype = "$($json.tool_input.subagent_type)".Trim().ToLower()
     $readonlyAgents = @('explore', 'plan')
+    $specialist = $subtype -match '^[a-z0-9][a-z0-9-]*$' -and
+        (Test-Path -LiteralPath (Join-Path $HOME ".claude\agents\$subtype.md") -PathType Leaf)
     $g = "$env:ATRIUM_ONLY_SUBAGENTS".Trim().ToLower()
-    if (($readonlyAgents -notcontains $subtype) -and $g -ne '0' -and $g -ne 'off' -and $g -ne 'false' -and $g -ne 'no') {
+    if (($readonlyAgents -notcontains $subtype) -and -not $specialist -and $g -ne '0' -and $g -ne 'off' -and $g -ne 'false' -and $g -ne 'no') {
         @{
             decision = "block"
             reason   = "Plain Claude subagents are off here (ATRIUM_ONLY_SUBAGENTS). Run substantive agent work as a REAL atrium session instead, so it is watchable on the board and kept in history. HARD RULE, check FIRST: call the atrium-control MCP tool atrium_peers and count the running sessions YOU launched (sessions the user started do not count); if you launched 10 or more (the concurrency cap), do NOT launch another -- wait for one to finish or ask clint, do not spawn past the cap. Otherwise: (1) make/prepare the working directory first -- it must already exist; (2) call atrium_launch with cwd, a short title, a one-line why, and a FULL prompt containing the ENTIRE task (the new session inherits NONE of this conversation's context, so spell it all out); (3) use the returned card id with atrium_task / atrium_say to follow up. If a normal one-shot subagent is genuinely wanted this session, the user can set ATRIUM_ONLY_SUBAGENTS=0 and retry."
@@ -208,6 +215,7 @@ if ($json.tool_input.command) {
     # 1. Remote ops: never, on any branch, with one exception: atrium's hub remote (hub forge
     #    design 5.3, wall 1). The whole command must be exactly one of
     #      git push hub <branch> | git push -u hub <branch> | git fetch hub
+    #      | git push hub --delete claude/<branch>   (the hub refuses a branch the card did not push)
     #    (or the same with 'atrium-hub'), and every url and pushurl of that remote, after
     #    insteadOf rewrites, must start with this room's forwarder, <agent>/git/, where <agent>
     #    comes from atrium's daemon.json. No force, no '+' or ':' refspec, no extra flags, and
@@ -250,6 +258,7 @@ if ($json.tool_input.command) {
         # [ \t], not \s: a newline would end the git command and start another.
         if ($hubCwd -and (
             $hubCmd -match '^[ \t]*git[ \t]+push[ \t]+(?:-u[ \t]+)?(hub|atrium-hub)[ \t]+[A-Za-z0-9_][\w./-]*[ \t]*$' -or
+            $hubCmd -match '^[ \t]*git[ \t]+push[ \t]+(hub|atrium-hub)[ \t]+--delete[ \t]+claude/[A-Za-z0-9_][\w./-]*[ \t]*$' -or
             $hubCmd -match '^[ \t]*git[ \t]+fetch[ \t]+(hub|atrium-hub)[ \t]*$')) {
             $hubRemote = $Matches[1]
         }
@@ -276,7 +285,7 @@ if ($json.tool_input.command) {
             }
         }
         if (-not $hubOk) {
-            _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user. The one exception is atrium's hub remote: exactly 'git push hub <branch>', 'git push -u hub <branch>' or 'git fetch hub', optionally after one 'cd <dir>' (newline or &&), and only when that remote points at this room's atrium forwarder."
+            _GitBlock "claude never pushes, pulls, or fetches -- no git command may reach a remote. Hand it to the user. The one exception is atrium's hub remote: exactly 'git push hub <branch>', 'git push -u hub <branch>', 'git push hub --delete claude/<branch>' or 'git fetch hub', optionally after one 'cd <dir>' (newline or &&), and only when that remote points at this room's atrium forwarder."
         }
     }
 

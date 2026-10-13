@@ -34,11 +34,12 @@ This is best-effort defense-in-depth, not a wall: a text-matching hook cannot ca
 binary, `sh -c`, a subprocess). The hard "never push" guarantee lives in the claude account's credentials, not
 here.
 
-## hook-blocks.ps1
+## Block counts
 
-Counts what the gate blocked in the last N days, read back from the claude-code transcripts (the hook keeps no log).
-`-Sample <rule prefix>` prints random commands that one rule blocked. Cite its output in `../docs/gate-decisions.md`
-when a rule changes.
+`claude/usage/Get-HookReport.ps1` counts what the gate blocked, read back from the claude-code transcripts (the hook
+keeps no log). Cite its output in `../docs/gate-decisions.md` when a rule changes.
 
-    pwsh -File claude/hooks/tests/hook-blocks.ps1 -Days 7
-    pwsh -File claude/hooks/tests/hook-blocks.ps1 -Sample 'claude may only create' -N 25
+    pwsh -File claude/usage/Get-HookReport.ps1 -Days 7
+    # sample 25 commands one rule blocked
+    pwsh -File claude/usage/Get-HookReport.ps1 -Days 7 -Json | ConvertFrom-Json |
+        Where-Object rule -like 'claude may only create*' | Get-Random -Count 25 | ForEach-Object what

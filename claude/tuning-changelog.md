@@ -360,5 +360,15 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   operator's five standing asks. Why: "self-review" alone got a one-shot summary, and clint had to paste the full ask.
 - **2026-10-13** skills: folded the slop-review process into `/slop-review`'s SKILL.md and moved the retro beside it
   as `retro.md`. `claude/review/` is gone. Why: the skill was a pointer to docs that only it uses.
+- **2026-10-13** cleanup: dropped `hooks/tests/hook-blocks.ps1` for `usage/Get-HookReport.ps1`, moved the stray
+  `claude/agents/communication.md` (not an agent) reading-level rules into `agents/communication.md`, and linked the
+  `atrium-batch` and `zendesk-triage` skills. Why: duplicate tooling, a rules file loaded as a subagent, and two
+  committed skills that never loaded.
+- **2026-10-13** cleanup: versioned the `ziti-repro` skill (it lived only in `~/.claude/skills`), and removed the
+  unwired `no-compound-cd.ps1`, the unused `terse-engineer` output style, a stale copy of atrium's architecture-v2
+  doc, and the pack's "Pending review items" section (its `handoff.md` is gone). Why: dead or unversioned config.
 2026-10-12: worker briefs file an efficacy report to the hub 'reports' dept; @minion keeps notes/WORK-LEDGER.md. Why: clint could not see dispatched work or its cost.
 2026-10-12: @minion launches, watches and drives every worker (tagged atrium:director for atrium_launch); the orchestrator hears only decisions and "verified, ready to merge/deploy". Why: worker chatter burned the orchestrator's context.
+2026-10-13: pre-tool-use hook lets a card delete its own hub branch (--delete claude/<branch> to the hub remote). Why: cards free their own hub branches on close.
+2026-10-13: subagent gate exempts specialist types defined in ~/.claude/agents (reviewers, testers). Why: PR cards could not fan out to the review specialists and ran every review themselves.
+2026-10-13: review-panel report items get per-section ids (correctness-01, fit-and-consistency-01, ...). Why: clint wants to answer a report by id.

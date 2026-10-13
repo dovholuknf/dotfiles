@@ -8,7 +8,6 @@ claude-code configuration tracked in version control. Symlinked into `~/.claude/
 claude/
   hooks/
     pre-tool-use-hook.ps1     # the gatekeeper: blocks a handful of footguns
-    no-compound-cd.ps1        # older single-purpose version of the cd guard, kept for reference
     set-session-state.ps1     # patches the session ledger with thinking/idle/needs-input
     set-tab-title.ps1         # sets the wt tab title to "needs input" while claude waits
     session-bootstrap.ps1     # tiny dispatcher invoked by SessionStart / SessionEnd

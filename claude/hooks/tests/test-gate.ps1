@@ -480,6 +480,9 @@ $cases = @(
     @{ tool = 'Agent'; input = @{ prompt = 'x' };                                    repo = 'claude'; expect = 'block' }   # no type
     @{ tool = 'Agent'; input = @{ subagent_type = 'Explore'; prompt = 'x' };         repo = 'claude'; expect = 'allow' }
     @{ tool = 'Agent'; input = @{ subagent_type = 'Plan'; prompt = 'x' };            repo = 'claude'; expect = 'allow' }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'go-security-reviewer'; prompt = 'x' }; repo = 'claude'; expect = 'allow' }   # in ~/.claude/agents
+    @{ tool = 'Agent'; input = @{ subagent_type = 'no-such-agent'; prompt = 'x' };   repo = 'claude'; expect = 'block' }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'fork'; prompt = 'x' };            repo = 'claude'; expect = 'block' }
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = '0' } }
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = 'Off' } }
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block'; env = @{ ATRIUM_ONLY_SUBAGENTS = '1' } }

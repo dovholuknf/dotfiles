@@ -222,6 +222,11 @@ Output one consolidated report:
 - A one-line verdict header (for example `BLOCKING: 1 high security, 1 high fit, 2 nits`).
 - Findings grouped by lane, each tagged with severity, file:line, the issue, the fix, which agent(s)
   raised it, and -- for anything that went through step 5 -- the verify verdict.
+- Every item carries an index that LEADS its line, so the user can answer by id ("fix correctness-02, skip
+  fit-and-consistency-03"). The id is the section slug plus a two-digit number that restarts at 01 in each
+  section, in the order printed: `correctness-01`, `fit-and-consistency-01`, `pre-existing-01`,
+  `possible-gaps-01`. Example line: `correctness-01 (medium, test) ziti_tunnel_cbs.c:607: ...`. Each id
+  appears exactly once in the report: a duplicate id means a finding was printed twice, so merge it.
 - A short "possible gaps" section from the completeness critic.
 - A short note on anything you merged, dropped, or downgraded during triage and verification, so the
   user can see what was reconciled.
