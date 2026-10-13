@@ -1,10 +1,7 @@
 # Slop-review retro: the first two trial runs (2026-10-08 / 10-09)
 
-> **Trial status.** The self/slop-review process is in its second trial run and may change. Do not build a skill,
-> a gate or a linter from these requirements yet.
-
 Raw material for building review tooling. Captures what happened, the operator's reactions in their own words, and
-why each step was taken. The process distilled from it is `slop-review-process.md` next to this file.
+why each step was taken. The process distilled from it is `SKILL.md` next to this file.
 
 ## What happened
 
