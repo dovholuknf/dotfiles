@@ -358,3 +358,5 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
   blocks in 23 hours, most of them reads like `git branch --show-current` followed by another command.
 - **2026-10-12** skills: `/slop-review`, a thin pointer that loads `claude/review/slop-review-process.md` and the
   operator's five standing asks. Why: "self-review" alone got a one-shot summary, and clint had to paste the full ask.
+2026-10-12: worker briefs file an efficacy report to the hub 'reports' dept; @minion keeps notes/WORK-LEDGER.md. Why: clint could not see dispatched work or its cost.
+2026-10-12: @minion launches, watches and drives every worker (tagged atrium:director for atrium_launch); the orchestrator hears only decisions and "verified, ready to merge/deploy". Why: worker chatter burned the orchestrator's context.

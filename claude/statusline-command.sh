@@ -7,6 +7,9 @@
 
 input=$(cat)
 
+# The PowerShell profile puts $LINUX_COMMANDS (msys64) on PATH. A room started without a profile does not have it.
+command -v jq >/dev/null 2>&1 || PATH="$PATH:$(cygpath -u "${LINUX_COMMANDS:-D:/tools/msys64/usr/bin}")"
+
 # One jq pass pulls every field, tab-separated. Numbers default to -1 so the
 # formatter can tell "zero" from "not reported"; strings default to empty.
 # Windows backslash paths are valid JSON (escaped), so jq handles the real
