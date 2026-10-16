@@ -138,6 +138,11 @@ check that tells a harness what to change, so it gets to a pass in one or two tr
   flip, and the same 5 each time. Down-weighting only cost pair accuracy (97.5% to 68.8%) and reaction AUC. The model
   tells his text from an LLM's. It cannot tell which of two texts that both sound like him is better. That needs his
   preferences as training data: grill, rw: and bake-off picks, not more LLM-versus-Clint examples.
+- **A trigram model of his writing doesn't rank either.** A word trigram model of his authored text, scored against
+  one of LLM replies (`C:\temp\clint-style\trigram`), also scored the strict picks 5 of 10. Dropping words of two
+  letters or less, adding teacher rewrites or his own rewrites, or scoring his model alone (4 of 10) changed nothing.
+  Its 1.000 held-out AUC came from register, forum posts against chat replies. The phrases it flagged were topic
+  words ("agent", "printed", "seamlessly"), not the phrasing he objected to.
 
 ## Ops
 

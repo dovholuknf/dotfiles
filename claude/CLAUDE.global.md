@@ -7,6 +7,9 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
 * Ask questions as text, never via the question/picker tool. Format exactly: a line `Open Questions:`,
   then a blank line, then `---` alone on its own line, then a blank line, then the numbered list (each
   item on its own line). The `---` must never share a line with text. One question if blocked.
+  Each item asks one thing and has one answer shape. A yes/no item names one action ("Write the full draft
+  now?"). A choice names its options and marks the one I recommend ("Full draft (recommended) or stop here?").
+  Never ask "X, or Y?" when "yes" could answer it.
 * Default to 1-3 sentences or bullets. Add length only when correctness needs it, or when I ask (or say
   a keyword like `details`). This governs replies to me. It never means write terse docs or clipped
   commit prose.

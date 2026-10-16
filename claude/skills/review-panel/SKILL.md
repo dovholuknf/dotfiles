@@ -199,8 +199,8 @@ When verification is done, consolidate into ONE report. Do not just concatenate.
 
 - Deduplicate deterministically on the structured fields: same `file` + `line` (or same root cause in
   `claim`) collapses into one entry, listing every agent that raised it (agreement raises confidence).
-- Keep two lanes: Correctness and security findings, and Fit and consistency findings. A reader should
-  see them separately.
+- Do not group by lane (correctness, fit and consistency). The `category` field becomes the Area column of the
+  report tables in step 7, and the tables group by severity.
 - Apply reachability skepticism to anything that did not go through step 5: for any claimed panic, nil
   path, or unreachable state, sanity-check it against the actual code before promoting it. Drop or mark
   low-confidence false positives and say why.
@@ -211,26 +211,57 @@ When verification is done, consolidate into ONE report. Do not just concatenate.
   each item against the merged findings and say which ones no reviewer examined." Only after that, ask what
   other dimension NO reviewer covered (thread-safety, error paths, tests, i18n, perf, docs, backward compat).
   On PR 967 the critic alone found 7+ findings the specialists missed, all from that attack-surface list. Its
-  output is a short "possible gaps" list, not new confirmed findings.
+  output is a short "possible gaps" list, not new confirmed findings. Each gap still carries a severity from
+  the scale above, rated as if it were confirmed, so the user can tell a likely high from a confirm-only check.
   Do NOT list "does it build / compile / vet" as a candidate gap and do NOT let it run a build -- CI owns
   that; it reasons from reading the code only.
 
 ## 7. Report
 
-Output one consolidated report:
+When every reviewer, verifier and the critic are done, write the report to three files in one directory,
+`C:/temp/review-panel/<target>/`, where `<target>` is `pr-<n>` for a PR or the branch name otherwise:
 
-- A one-line verdict header (for example `BLOCKING: 1 high security, 1 high fit, 2 nits`).
-- Findings grouped by lane, each tagged with severity, file:line, the issue, the fix, which agent(s)
-  raised it, and -- for anything that went through step 5 -- the verify verdict.
-- Every item carries an index that LEADS its line, so the user can answer by id ("fix correctness-02, skip
-  fit-and-consistency-03"). The id is the section slug plus a two-digit number that restarts at 01 in each
-  section, in the order printed: `correctness-01`, `fit-and-consistency-01`, `pre-existing-01`,
-  `possible-gaps-01`. Example line: `correctness-01 (medium, test) ziti_tunnel_cbs.c:607: ...`. Each id
-  appears exactly once in the report: a duplicate id means a finding was printed twice, so merge it.
-- A short "possible gaps" section from the completeness critic.
-- A short note on anything you merged, dropped, or downgraded during triage and verification, so the
-  user can see what was reconciled.
+- `high.md`: every `blocking` and `high` finding, then a "Pre-existing, not introduced here" table, then a
+  "Possible gaps" table from the completeness critic. Pre-existing findings and possible gaps go here whatever
+  their severity, because they are the ones most easily buried. Those two tables add a Severity column after
+  Area (blocking, high, medium, low, nit), and sort by it, most severe first. A pre-existing finding keeps the
+  severity its reviewer gave before the step 5 demotion.
+- `medium.md`: every `medium` finding.
+- `low.md`: every `low` and `nit` finding, then a short note on anything you merged, dropped, or downgraded
+  during triage and verification.
 
-Report only. Do NOT apply fixes, and do NOT end by asking whether to fix anything ("should I fix the
-highs?", "want me to apply these?"). Each finding already carries its `fix`; the user acts on the report
-themselves. Stop after the report. Apply a fix only if the user, in a later message, explicitly asks for it.
+Each file opens with the target (PR number and head SHA, or branch and commit) and a one-line count. Every
+finding is one row of a table with these columns, in this order:
+
+| Id | Area | Problem | Impact | Location |
+|---|---|---|---|---|
+
+- **Id** is the file's slug plus a two-digit number that restarts at 01 per table: `high-01`, `pre-existing-01`,
+  `gap-01`, `medium-01`, `low-01`. The user answers by id ("fix high-02, skip low-03"), so each id appears once.
+  A duplicate id means a finding was printed twice, so merge it.
+- **Area** is the finding's `category`: correctness, security, fit, test, perf, style. A `nit` says so here
+  (`style, nit`).
+- **Problem** is the `claim`, one sentence.
+- **Impact** is what goes wrong for a user or operator, and on what path. For a possible gap, write
+  `unverified` and the risk.
+- **Location** is a LINK to the code, with `file:line` as its text. For a PR, link the head commit on GitHub:
+  `[ziti.c:1862](https://github.com/<org>/<repo>/blob/<headRefOid>/library/ziti.c#L1862)`. Take `headRefOid` and
+  the base repo from `gh pr view <n> --json headRefOid,url`. For a local branch with no PR, link the absolute file
+  path instead. A finding that spans files gets one link per file.
+
+Under each table, list the details by id: the `fix`, the agents that raised it, and the step 5 verify verdict
+where one exists. Keep each to one or two lines. Escape `|` inside cells.
+
+## 8. Walk the user through it, one tier at a time
+
+In chat, print the one-line verdict (for example `BLOCKING: 1 high security, 1 high fit, 2 nits`) and the three
+file paths. Then walk through `high.md` only: its tables, then each row by id, in plain words, with what the
+problem is, why it matters, and the fix. Do not mention the medium or low findings yet.
+
+End that turn with exactly one question: `Do the medium next?` On yes, walk `medium.md` the same way and end with
+`Do the low and nit next?` On yes, walk `low.md` and stop. On anything else, answer it, then offer the next tier
+again. If a tier's file has no findings, say so in one line and offer the next tier in the same turn.
+
+Report only. Do NOT apply fixes, and do NOT ask whether to fix anything ("should I fix the highs?", "want me to
+apply these?"). The only questions are the next-tier offers above. Each finding already carries its `fix`, and the
+user acts on the report themselves. Apply a fix only if the user, in a later message, explicitly asks for it.

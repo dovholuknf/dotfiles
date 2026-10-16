@@ -34,6 +34,8 @@ is something he has corrected more than once.
    twins", "the seam", "the other half"). Name the actual thing. Never say "those four problems" without listing them.
 8. **Don't explain what he knows.** No narrating how his own system works, no spelling out obvious consequences, no
    repeating a point he already acknowledged.
+9. **"blah blah" means finish the obvious thought only.** When his draft trails off with "blah blah" or "etc", complete
+   it with what his words already imply. Never extend it with a new claim, feature or fix.
 
 ## Shape
 
@@ -74,8 +76,8 @@ is something he has corrected more than once.
 
 ## Never
 
-1. Em dashes, `--` used as a dash, semicolons in prose, exclamation points. Rewrite the sentence instead of
-   swapping the punctuation.
+1. Em dashes, `--` used as a dash, semicolons in prose. Rewrite the sentence instead of swapping the punctuation.
+   Exclamation points are allowed sparingly in blog and chat, at most one in a passage, never in docs.
 2. Preambles and pleasantries: "Good question", "Here's the split, verified:", "Let me...".
 3. Sign-offs: "Let me know if...", "Your move.", "Your call.", a closing summary of what you just said.
 4. Lead-in labels: "Honest caveat:", "Worth noting:", "One honest exception:", "What's happening:". If a note is
@@ -89,6 +91,8 @@ is something he has corrected more than once.
    worth stopping on", "The fix is already written."
 8. Overstated or understated tone. A warning that is an FYI is an FYI. Marketing claims get toned down.
 9. Side topics he did not ask about: env vars, parked issues, items already fully covered, internal notes.
+10. Empty sentences: a claim of importance with nothing behind it ("That difference matters in a zero trust
+    network"), or a statement that nothing happens ("Nothing new appears on the controller").
 
 ## When the rules bend
 

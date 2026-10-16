@@ -23,11 +23,12 @@ the most common failure. Decide which one applies before editing a sentence.
   mechanism, not decoration.
 - Motivation before mechanism. Why the reader should care comes before how the thing works, often as its own early
   section.
-- Honest concession in the same breath as the claim: "This is useful for learning and understanding but it is not an
+- A concession in the same breath as the claim: "This is useful for learning and understanding but it is not an
   actual HSM." "Using EV certificates isn't for everyone, it's expensive. However..." Never strip the concession to
   strengthen the pitch.
-- Flat confident assertions with no hedging: "Without a doubt the biggest benefit of an HSM is that it is a physical
-  piece of hardware."
+- Flat confident assertions with no hedging, for facts that always hold: "Without a doubt the biggest benefit of an
+  HSM is that it is a physical piece of hardware." Behavior that depends on setup or version is qualified instead (see
+  the blog register).
 
 ## Doc register
 
@@ -47,7 +48,7 @@ Rules:
 - **"Why" earns its own early section**, placed before any how-to. The literal heading `## Why an HSM` is the pattern.
 - **"We" is the project, "you" is the reader.** "We have included a couple of quickstarts." "You will want to go to the
   OpenSC Project." Hold both steady.
-- **Prose paragraphs under H2 headings**, not stacks of bullets. Bullets appear for genuine lists (prerequisites,
+- **Prose paragraphs under H2 headings**, not stacks of bullets. Bullets appear for true lists (prerequisites,
   supported clients, steps), not as a way to avoid writing paragraphs.
 - **No punchy one-liners, no rhetorical flourish.** Explanatory, patient, and plain.
 - Structure that recurs: what the thing is, why you would want it, what it takes to enable it, then pointers to the
@@ -71,6 +72,29 @@ Rules:
   access. Period. No VPN. No bastion host." A fragment doing the work of a sentence on its own is a defect.
 - **Rhetorical questions and flat dismissals.** "why wouldn't you?" "No 'are you on the right network' nonsense."
 - **TL;DR at the top** of longer posts. **Pull-quotes** mid-article for emphasis.
+- **People are the subject, tools are the means.** Not "The policy advisor shows what each of them can reach" but
+  "Using policy advisor, we can see what services each identity is allowed to dial or bind". A tool, machine or
+  device as the subject of shows, lets, allows, tells, gives or signs in is the LLM habit ("a new machine signs in as
+  the identity the user already has"). An opening "Using X," phrase is fine, and is not an inverted clause, when the
+  person in the main clause ("we", "you", "I") is the one using X.
+- **State the condition.** A result that depends on setup keeps its "if". Not "They get no attributes and reach
+  nothing" but "If your service policies rely on attributes, the identity will likely have no services it can reach".
+  Cutting the condition to make a sentence shorter makes it wrong.
+- **Qualify what depends on setup or may change.** He adds the modal words an LLM cuts: "they sign in to the IdP
+  again" becomes "they will need to sign in", "lines up with" becomes "can then align with", "Attributes are copied
+  once" becomes "Attributes based on IdP groups are currently only added to the OpenZiti identity once".
+- **Say why a surprising result is correct.** When the reader might take behavior for a bug, name the principle that
+  makes it right ("following the zero trust least privilege ethos"). One clause, not a section.
+- **Define a term before using it.** A term the reader hasn't met yet ("With a user session" in the benefits section,
+  before user sessions are explained) is confusing there. Introduce it where it is explained, or explain it first.
+- **A caveat states the behavior, then the way out.** Not an anecdote ("I added alice to finance ... the attributes
+  still said engineering") but the rule ("OpenZiti does not sync group state between the IdP and OpenZiti") and where
+  to go instead ("The NetFoundry platform offers that sync as an enterprise feature through SCIM").
+- **A design property is not a "catch".** "The one catch: the device has to trust the controller's certificate" became
+  a section on how trust gets bootstrapped. A real downside is named small and from the reader's side: "From a user's
+  perspective, there is one small tradeoff."
+- **Don't document self-inflicted errors.** A troubleshooting row for an error the reader only hits by forcing the
+  wrong command (`ALREADY_ENROLLED`) gets cut.
 - Ends with the project's standard "Share the Project" call to action. That block is boilerplate, leave it alone.
 
 ## Posted-as-clint registers

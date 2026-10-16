@@ -103,7 +103,11 @@ foreach ($f in $files) {
                     $kind = 'error'
                     if ($text -match '^PreToolUse:\S+ hook error: (?s)(.*)$') {
                         $reason = $Matches[1]
-                        $kind = if ($reason -match 'Message from another session|^\[atrium\]|sent through atrium') {
+                        # atrium's prefixes come from its internal/daemon/messages.go. The transcript does not
+                        # record which hook raised the error, so the text is all there is to match.
+                        $kind = if ($reason -match ('Message from another session|^\[atrium\]|sent through atrium|' +
+                                '^@\S+ says \(a session, not the human\)|' +
+                                '^Messages, some from the human and some from sessions')) {
                             'notice' } else { 'block' }
                     } elseif ($text -match "doesn't want to proceed|user rejected|denied by the user") {
                         $kind = 'user-deny'
