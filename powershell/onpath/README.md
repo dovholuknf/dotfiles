@@ -16,6 +16,7 @@ Scripts intended to live on `$env:PATH`. The profile adds this directory automat
 | `New-Worktree.ps1` | Older single-purpose "make a worktree from a PR URL" script. Kept for reference; `gwt` covers this. |
 | `Prune-All-Worktrees.ps1` | Bulk prune across an entire `D:\git\<host>\<org>\<repo>` set. `gwt prune -Org <org>` is the modern equivalent. |
 | `test-gwt-states.ps1` | Test harness. Builds a sandbox with one example of every worktree state, runs `gwt list`, asserts the classification. |
+| `handoff.ps1` | Read a session `HANDOFF.md` (clock line, then the top N lines) or `-Add` a timestamped `## ` entry under its pinned `# ` preamble. Defaults to `<git toplevel>\.uncommitted\notes\HANDOFF.md`. |
 | `prune-claude-projects.ps1` | Find / delete orphan claude-code transcript directories under `~/.claude/projects/` whose decoded path no longer exists. Default is read-only. `-Apply` to delete. |
 
 ### gwt flags worth knowing

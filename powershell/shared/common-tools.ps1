@@ -774,7 +774,10 @@ function _WtPrompt {
         [Console]::Write("${esc}[s${esc}[${row};${col}H${esc}[${color}m${label}${esc}[0m${esc}[u")
     }
 
-    If (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    # $env:USERNAME can read SYSTEM, so name the user from the process token.
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $userName = $identity.Name.Split('\')[-1]
+    If (([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Host "[Admin]" -NoNewLine -ForegroundColor "Red"
     }
     # Apply-Theme copies the theme's own label into WtLabel, so for a theme whose
@@ -784,9 +787,9 @@ function _WtPrompt {
         Write-Host "[$global:WtLabel] " -NoNewLine -ForegroundColor "DarkCyan"
     }
     if ($global:WtThemeName) {
-        Write-Host "[$($env:USERNAME):$global:WtThemeName] " -NoNewLine -ForegroundColor "DarkCyan"
+        Write-Host "[${userName}:$global:WtThemeName] " -NoNewLine -ForegroundColor "DarkCyan"
     } else {
-        Write-Host "[$($env:USERNAME):default] " -NoNewLine -ForegroundColor "DarkGray"
+        Write-Host "[${userName}:default] " -NoNewLine -ForegroundColor "DarkGray"
     }
     Write-Host $env:COMPUTERNAME -NoNewLine -ForegroundColor "White"
     Write-Host ": " -NoNewLine

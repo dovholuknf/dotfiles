@@ -509,6 +509,11 @@ $cases = @(
     @{ cmd = 'python3 -V';                                          repo = 'claude'; expect = 'block' }
     @{ cmd = 'ls && python.exe -V';                                 repo = 'claude'; expect = 'block' }
     @{ cmd = 'echo $PYTHONPATH';                                    repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'python -m venv build.claude/venv';                    repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'python -m venv --clear /d/git/x/build.claude/venv';   repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'build.claude/venv/Scripts/python.exe -m pip install openziti'; repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'python -m venv build.claude/venv && python x.py';     repo = 'claude'; expect = 'block'; reason = 'python' }
+    @{ cmd = 'python -m venv /tmp/venv';                            repo = 'claude'; expect = 'block'; reason = 'python' }
 
     # --- docker env goes through flags, not an inline prefix ---
     @{ cmd = 'FOO=bar docker run x';                                repo = 'claude'; expect = 'block'; reason = 'inline env' }

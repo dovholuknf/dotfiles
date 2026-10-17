@@ -419,10 +419,13 @@ if ($json.tool_input.command) {
 	# No python by default. Matches python / python3 / python.exe invoked as the command
 	# (start, or after a pipe/compound), not 'python' inside a path or words like
 	# 'pythonpath'. A nudge, not an absolute: rework in bash/pwsh, or ask if it's truly needed.
-	if ($cmd -match '(^|;|\||\n|&&)\s*python3?(\.exe)?\b') {
+	# Python in a venv under build.claude/ needs no ask: 'python -m venv <...>build.claude/<dir>' passes, and the
+	# venv's own interpreter, called by path, never matches the bare-command pattern.
+	$pyCmd = $cmd -replace 'python3?(?:\.exe)?\s+-m\s+venv\s+(?:-\S+\s+)*["'']?[^\s;|&"'']*build\.claude[\\/][^\s;|&]*', 'venv-ok'
+	if ($pyCmd -match '(^|;|\||\n|&&)\s*python3?(\.exe)?\b') {
 		@{
 			decision = "block"
-			reason   = "Do not use python unless bash or PowerShell genuinely cannot solve the problem. Prefer bash, pwsh, or the dedicated file/search/edit tools. If python is actually required for this, say why and ask the user first."
+			reason   = "Do not use bare python unless bash or PowerShell cannot solve the problem. If python is needed, use a venv under build.claude/ without asking: 'python -m venv build.claude/venv', then call build.claude/venv/Scripts/python.exe (bin/python on linux) and its pip by path. Activating the venv and calling bare 'python' is still blocked."
 		} | ConvertTo-Json -Compress
 		exit 0
 	}
