@@ -70,6 +70,11 @@ context, wrote to cache, and output. It grows while the turn runs and resets whe
 background task wakes the session, or an atrium message arrives. Output includes thinking, so a short reply can
 show hundreds of tokens.
 
+A cache miss turns the middle figure red and appends `<n> miss`, as in `prompt 94k 73k 2 miss 360`. Claude Code
+caches the whole prefix, so uncached input stays at a few tokens per call and a miss shows up as a write instead: a
+call that writes more cache than it reads. That happens after the cache TTL lapses or the model changes. A large
+tool result early in a session, while the context is still small, can trip it too.
+
 It reads the transcript incrementally. `~/.claude/usage-log.state/<session>.turn` holds the byte offset already
 read and the running totals, so a render with no new transcript lines starts no process, and a busy one runs
 `tail` and `jq` over the new lines only. The first render of a large transcript starts 4 MB from the end. Subagent

@@ -1,7 +1,8 @@
 {
   "cleanupPeriodDays": 3650,
   "env": {
-    "_ATRIUM_PERM_GATE": "on"
+    "_ATRIUM_PERM_GATE": "on",
+    "ATRIUM_GUARD": "on"
   },
   "attribution": {
     "commit": "Co-Authored-By: deez nutz",
@@ -182,31 +183,11 @@
   "hooks": {
     "Notification": [
       {
-        "matcher": "permission_prompt",
+        "matcher": "permission_prompt|elicitation_dialog",
         "hooks": [
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-tab-title.ps1 -Title \"‼️ needs input\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "elicitation_dialog",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State needs-input",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-tab-title.ps1 -Title \"‼️ needs input\"",
             "timeout": 5
           }
         ]
@@ -216,15 +197,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event notification"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event notification",
+            "timeout": 5
           }
         ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "matcher": "",
-        "hooks": []
       }
     ],
     "PostToolUse": [
@@ -233,7 +209,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-end"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-end",
+            "timeout": 5,
+            "async": true
           }
         ]
       }
@@ -244,7 +222,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-failed"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-failed",
+            "timeout": 5,
+            "async": true
           }
         ]
       }
@@ -255,7 +235,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe session --event compact"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe session --event compact",
+            "timeout": 5
           }
         ]
       }
@@ -276,7 +257,8 @@
           },
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-start"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event tool-start",
+            "timeout": 5
           }
         ]
       },
@@ -298,7 +280,7 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State ended",
-            "timeout": 15
+            "timeout": 5
           },
           {
             "type": "command",
@@ -325,33 +307,29 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -FromPayloadSource",
-            "timeout": 15
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "C:/Users/claude/.atrium/bin/atrium.exe session --event start",
-            "timeout": 8
+            "timeout": 5
           }
         ]
       }
     ],
     "Stop": [
       {
-        "matcher": "none",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State idle",
-            "timeout": 15
-          }
-        ]
-      },
-      {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe turn --event end"
+            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State idle",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe turn --event end",
+            "timeout": 5
           }
         ]
       }
@@ -362,7 +340,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event subagent-start"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event subagent-start",
+            "timeout": 5
           }
         ]
       }
@@ -378,7 +357,8 @@
           },
           {
             "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event subagent-end"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event subagent-end",
+            "timeout": 5
           }
         ]
       }
@@ -390,21 +370,17 @@
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/set-session-state.ps1 -State thinking",
-            "timeout": 15
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/filler-guard.ps1",
-            "timeout": 15
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "pwsh -NoProfile -File C:/Users/claude/.claude/hooks/snapshot-layout.ps1",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event prompt"
+            "command": "C:/Users/claude/.atrium/bin/atrium.exe hook --event prompt",
+            "timeout": 5
           },
           {
             "type": "command",

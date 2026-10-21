@@ -220,44 +220,54 @@ fmtk() {
 # running totals, so a render with no new transcript lines forks nothing, and a busy one reads only the new
 # lines (tail + jq). Streamed replies repeat one message id across entries, so the open id is kept apart and
 # merged by max. A first look at a big transcript starts 4 MB from the end.
+# Cache misses: Claude Code caches the whole prefix, so uncached input stays at a few tokens and a miss shows up
+# as a call that writes more cache than it reads (the context is re-written after the TTL lapses or the model
+# changes). m counts those calls. Any miss turns the written figure red and appends "<m> miss".
 turn_tokens() {
     local dir=$HOME/.claude/usage-log.state key=${sid//[^A-Za-z0-9-]/} st n res
-    local off=0 r=0 w=0 o=0 cid=- cr=0 cw=0 co=0
+    local off=0 r=0 w=0 o=0 cid=- cr=0 cw=0 co=0 m=0
     [ -n "$key" ] && [ "${bytes:-0}" -gt 0 ] 2>/dev/null || return 0
     [ -d "$dir" ] || mkdir -p "$dir" || return 0
     st=$dir/$key.turn
-    [ -f "$st" ] && read -r off r w o cid cr cw co < "$st"
-    [[ $off =~ ^[0-9]+$ ]] && [ "$off" -le "$bytes" ] || { off=0 r=0 w=0 o=0 cid=- cr=0 cw=0 co=0; }
+    [ -f "$st" ] && read -r off r w o cid cr cw co m < "$st"
+    [[ $m =~ ^[0-9]+$ ]] || m=0
+    [[ $off =~ ^[0-9]+$ ]] && [ "$off" -le "$bytes" ] || { off=0 r=0 w=0 o=0 cid=- cr=0 cw=0 co=0 m=0; }
     if [ "$bytes" -gt "$off" ]; then
         [ "$off" -eq 0 ] && [ "$bytes" -gt 4000000 ] && off=$(( bytes - 4000000 ))
-        res=$(tail -c +$(( off + 1 )) "$tpath" | jq -Rrs --argjson st "[$r,$w,$o,\"$cid\",$cr,$cw,$co]" '
+        res=$(tail -c +$(( off + 1 )) "$tpath" | jq -Rrs --argjson st "[$r,$w,$o,\"$cid\",$cr,$cw,$co,$m]" '
             def prompt: .type == "user" and (.isMeta | not) and (.isSidechain | not) and
               ( ((.message.content | type) == "string"
-                  and (.message.content | test("^\\s*<(local-command|bash-)") | not))
+                  and (.message.content | test("^[[:space:]]*<(local-command|bash-)") | not))
                 or ((.message.content | type) == "array" and any(.message.content[]; .type == "text")
                   and all(.message.content[]; .type != "tool_result")) );
             . as $s | split("\n") as $l
             | reduce ($l[:-1][] | fromjson?) as $e ($st;
-                if ($e | prompt) then [0, 0, 0, "-", 0, 0, 0]
+                if ($e | prompt) then [0, 0, 0, "-", 0, 0, 0, 0]
                 elif $e.type == "assistant" and $e.message.usage != null and ($e.isSidechain | not) then
                   $e.message.usage as $u
                   | [(($u.cache_read_input_tokens // 0) + ($u.input_tokens // 0)),
                      ($u.cache_creation_input_tokens // 0), ($u.output_tokens // 0)] as $c
                   | if $e.message.id == .[3] then
                       .[4] = ([.[4], $c[0]] | max) | .[5] = ([.[5], $c[1]] | max) | .[6] = ([.[6], $c[2]] | max)
-                    else [.[0] + .[4], .[1] + .[5], .[2] + .[6], ($e.message.id // "-"), $c[0], $c[1], $c[2]] end
+                    else [.[0] + .[4], .[1] + .[5], .[2] + .[6], ($e.message.id // "-"), $c[0], $c[1], $c[2],
+                          .[7] + (if .[5] > .[4] then 1 else 0 end)] end
                 else . end)
             | "\(($s | utf8bytelength) - ($l[-1] | utf8bytelength)) \(map(tostring) | join(" "))"' 2>/dev/null)
-        read -r n r w o cid cr cw co <<<"$res"
+        read -r n r w o cid cr cw co m <<<"$res"
         [[ $n =~ ^[0-9]+$ ]] || return 0
         off=$(( off + n ))
-        printf '%s %s %s %s %s %s %s %s\n' "$off" "$r" "$w" "$o" "$cid" "$cr" "$cw" "$co" > "$st"
+        printf '%s %s %s %s %s %s %s %s %s\n' "$off" "$r" "$w" "$o" "$cid" "$cr" "$cw" "$co" "$m" > "$st"
     fi
     local kr kw ko
     fmtk $(( r + cr )); kr=$K
     fmtk $(( w + cw )); kw=$K
     fmtk $(( o + co )); ko=$K
-    printf -v tmp '\033[90m  | prompt\033[0m %s %s %s' "$kr" "$kw" "$ko"
+    [ "$cw" -gt "$cr" ] && m=$(( m + 1 ))
+    if [ "$m" -gt 0 ]; then
+        printf -v tmp '\033[90m  | prompt\033[0m %s \033[1;31m%s %s miss\033[0m %s' "$kr" "$kw" "$m" "$ko"
+    else
+        printf -v tmp '\033[90m  | prompt\033[0m %s %s %s' "$kr" "$kw" "$ko"
+    fi
     right+=$tmp
 }
 turn_tokens 2>/dev/null
