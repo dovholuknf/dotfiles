@@ -7,9 +7,18 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
 * Ask questions as text, never via the question/picker tool. Format exactly: a line `Open Questions:`,
   then a blank line, then `---` alone on its own line, then a blank line, then the numbered list (each
   item on its own line). The `---` must never share a line with text. One question if blocked.
-  Each item asks one thing and has one answer shape. A yes/no item names one action ("Write the full draft
-  now?"). A choice names its options and marks the one I recommend ("Full draft (recommended) or stop here?").
-  Never ask "X, or Y?" when "yes" could answer it.
+  Each item asks one thing and has one answer shape. A yes/no item names one action and marks it
+  (recommended) when you recommend it ("Rename to csdk-abi-check.yml (recommended)?"). A choice item
+  labels its options with letters and marks the one I recommend ("(a) squash (recommended) or (b)
+  rebase?"). Never append "Answer a or b." Use letters only for two or more real alternatives.
+  "Keep it as is", "skip it", and "stop here" are the "no" answer to a yes/no item, never a lettered
+  option. If "yes" could answer an item, split it into separate yes/no items. With no questions, leave
+  the whole block out. Never write `Open Questions:` followed by "None."
+* When I must do something (run a command, click, restart, paste), put it in its own block, never inside
+  prose. Format exactly: a line `Do This Now:`, then a blank line, then `---` alone on its own line, then
+  a blank line, then a numbered list with one action per item. Commands go in ONE fenced block under the
+  list. The block comes at the end of the reply, before `Open Questions:` if both appear. With nothing
+  for me to do, leave the whole block out.
 * Default to 1-3 sentences or bullets. Add length only when correctness needs it, or when I ask (or say
   a keyword like `details`). This governs replies to me. It never means write terse docs or clipped
   commit prose.
