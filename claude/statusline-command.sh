@@ -264,9 +264,9 @@ turn_tokens() {
     fmtk $(( o + co )); ko=$K
     [ "$cw" -gt "$cr" ] && m=$(( m + 1 ))
     if [ "$m" -gt 0 ]; then
-        printf -v tmp '\033[90m  | prompt\033[0m %s \033[1;31m%s %s miss\033[0m %s' "$kr" "$kw" "$m" "$ko"
+        printf -v tmp '\033[90m  | r/o/w\033[0m %s/%s/\033[1;31m%s %s miss\033[0m' "$kr" "$ko" "$kw" "$m"
     else
-        printf -v tmp '\033[90m  | prompt\033[0m %s %s %s' "$kr" "$kw" "$ko"
+        printf -v tmp '\033[90m  | r/o/w\033[0m %s/%s/%s' "$kr" "$ko" "$kw"
     fi
     right+=$tmp
 }

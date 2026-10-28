@@ -395,7 +395,7 @@
   "enableArtifact": false,
   "statusLine": {
     "type": "command",
-    "command": "bash /c/Users/claude/.claude/statusline-command.sh"
+    "command": "D:/git/github/dovholuknf/dotfiles/claude/tools/statusline/build.claude/statusline.exe"
   },
   "feedbackSurveyRate": 0,
   "spinnerTipsEnabled": false,
