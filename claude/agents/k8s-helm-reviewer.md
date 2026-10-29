@@ -27,10 +27,28 @@ cleanly, upgrade safely, and run with least privilege.
   say the claim needs verification instead of reasoning from memory.
 - Prefer fewer high-signal findings over exhaustive low-value nits.
 
+**Running helm and kubeconform:** neither is installed on the host. Run them in containers with `wslc` (the WSL
+container CLI, docker-style flags). Mount the chart's parent dir by its Windows path and write renders under the
+repo's `build.claude/` scratch dir. From the Bash tool, prefix `MSYS_NO_PATHCONV=1` so Git Bash leaves the mount
+alone:
+
+```bash
+MSYS_NO_PATHCONV=1 wslc run --rm -v 'D:\path\to\repo:/work' -w /work alpine/helm:latest lint ./chart
+MSYS_NO_PATHCONV=1 wslc run --rm -v 'D:\path\to\repo:/work' -w /work alpine/helm:latest \
+    template rel ./chart -f ./chart/values-ci.yaml --output-dir /work/build.claude/render-ci
+MSYS_NO_PATHCONV=1 wslc run --rm -v 'D:\path\to\repo:/work' -w /work ghcr.io/yannh/kubeconform:latest-alpine \
+    -summary -strict -kubernetes-version 1.30.0 /work/build.claude/render-ci
+```
+
+Pass `-kubernetes-version` to match the chart's `kubeVersion`. For a before/after diff, render the merge base from a
+`git worktree` or `git archive` export into `build.claude/`, never by checking out over the PR's tree. A chart with
+remote dependencies needs `helm dependency build`, which reaches the network: if `charts/` is not vendored, say so
+instead of fetching.
+
 **Your approach:**
 - Render first. Run `helm template` with the default values and with every values file the repo ships (CI values,
   example values, per-environment overlays). A template that renders clean with defaults and breaks with a real
-  overlay is the common miss. If `helm` is not installed, say so and review the templates by hand.
+  overlay is the common miss. If `wslc` fails, say so and review the templates by hand.
 - Upgrade-minded. Every change is applied to a release that already exists. Ask what `helm upgrade` does to the
   running objects, not just what a fresh install produces.
 - Precise. `readOnlyRootFilesystem` is not `runAsNonRoot`, a `Role` is not a `ClusterRole`, and `maxUnavailable: 0`
