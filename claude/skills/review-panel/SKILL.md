@@ -88,6 +88,8 @@ Look at the changed files and the shape of the change, then choose from the avai
   instances, one scoped to each side.
 - `*.c` / `*.h` -> add `c-systems-reviewer`
 - `*.cs` -> add `csharp-expert`
+- Helm charts or Kubernetes manifests (`Chart.yaml`, `values*.yaml`, `templates/**`, `*.tpl`, or YAML with
+  `apiVersion` and `kind`) -> add `k8s-helm-reviewer`
 - Windows admin surface (registry, GPO, MSI, services, `*.admx` / `*.adml`, Intune) ->
   add `windows-enterprise-veteran`
 - behavior change with test-coverage stakes (new feature, endpoint, branch, bug fix) ->

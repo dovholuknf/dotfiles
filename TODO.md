@@ -40,9 +40,6 @@ Working list for clint + claude. Check items off as they land. Dates are absolut
   the prompt never throws in a console-less host.
 - [ ] gwt: normalize WorktreePath slash style at every write point (spawn/claim/restore/rehome), not just
   audit display.
-- [ ] On or after 2026-10-29, if the Go statusline (`claude/tools/statusline`) ran clean: delete
-  `claude/statusline-command.sh` and repoint its mentions in `claude/usage/README.md`, `Get-BurnFit.ps1`,
-  `atrium-token-display.md`, and the statusline README and `main.go` header.
 
 ## Security / hardening
 

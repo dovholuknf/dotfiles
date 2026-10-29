@@ -18,6 +18,7 @@ once the status line has logged enough of it.
 | `PromptScan.cs` | The scanner behind `Get-TokenReport.ps1`: charges each API call to the prompt before it |
 | `Get-BurnFit.ps1` | Fits the logged meter against cost, then predicts when the week hits 100% and how many calls fit |
 | `Test-BurnFit.ps1` | Builds a synthetic meter with known weights and checks that the fit recovers them |
+| `Invoke-BurnTest.ps1` | Spends a fixed budget on one token class at a time, with a meter checkpoint between, to weigh each class |
 
 ## The usage log
 
@@ -165,6 +166,25 @@ recent rate, and the calls left per model at this window's average cost per call
 `Test-BurnFit.ps1` builds a meter from this week's transcripts with Opus 5.5 weighted 1.5x, rounded to whole
 percents like the real meter. Fit B recovers 0.0676 %/$ for Opus 5.5 (expected 0.0682) and 0.0446 to 0.0451 for the
 rest (expected 0.0455).
+
+## Invoke-BurnTest.ps1
+
+```powershell
+./Invoke-BurnTest.ps1 -DryRun                           # build the prompts and print the plan, send nothing
+./Invoke-BurnTest.ps1                                   # all three phases, asks before spending
+./Invoke-BurnTest.ps1 -Phase read -PhaseBudgetUsd 8
+```
+
+Fit C cannot weigh the token classes from organic use, because concurrent sessions share one meter and the classes
+move together. This test isolates them. Each phase spends `-PhaseBudgetUsd` (default $15, about $45 for all three)
+on one class: long answers to a tiny prompt (output), one-word replies in a session holding a large context (cache
+read), or fresh sessions with a new large prompt each (cache write). Calls run `claude -p --safe-mode --tools ""`, so
+no CLAUDE.md, hooks or MCP servers add context.
+
+Before and after each phase the script asks for the 5h and 7d percents. Read them off a live status line: the
+default it offers is the newest log sample, which only moves when an interactive session renders. Idle every other
+session first, and watch 5h hold for 10 minutes. Results land in `build.claude/burn-<stamp>/`, with the per-phase
+dollars per 5h point in `summary.md`.
 
 ## Prices
 

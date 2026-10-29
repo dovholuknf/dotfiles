@@ -42,8 +42,8 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
 * Prefer PowerShell unless clearly in a linux environment. PowerShell commands over 120 chars should use
   line continuations.
 * When clint changes how I behave (a chat directive, a hook, a permission, or config meant to make me work
-  better), append a dated one-line entry to `claude/tuning-changelog.md` with a short why.
-* For substantive agent work, prefer a real atrium session (`atrium_launch`) over a Claude subagent (the `Task`
+  better), append a dated one-line entry to `$env:DOTFILES/claude/tuning-changelog.md` with a short why.
+* For substantive agent work, prefer a real atrium session (`atrium_launch`) over a Claude subagent (the `Agent`
   tool), so the work is watchable on the board and kept in history. Plain subagents are gated off by default via
   `ATRIUM_ONLY_SUBAGENTS`. Before launching, check `atrium_peers`: do not exceed 10 running sessions you
   launched. Sessions I started do not count.
