@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# git sland <branch>: make this worktree's files match the committed tree of <branch>, unstaged, so you review them and
+# commit them as your own. Rerun it any time: each run replaces the last copy. Edit on <branch>, not here, because a
+# rerun overwrites hand edits and unstages anything staged.
+set -euo pipefail
+
+src=${1:?usage: git sland <branch>}
+if ! git rev-parse --verify --quiet "$src^{commit}" > /dev/null; then
+  echo "no such branch or commit: $src" >&2
+  exit 1
+fi
+cd "$(git rev-parse --show-toplevel)"
+
+# Copy into the index and the files, then unstage: changed files show as modified, files <branch> deleted are deleted,
+# and files <branch> added show as untracked.
+git restore --source="$src" --staged --worktree :/
+git reset -q
+
+# An untracked file <branch> does not have is yours, or left over from an earlier copy of a file <branch> since deleted.
+while IFS= read -r f; do
+  if ! git cat-file -e "$src:$f" 2> /dev/null; then
+    echo "not on $src, left in place: $f"
+  fi
+done < <(git ls-files --others --exclude-standard)
+
+git status -s
