@@ -31,6 +31,8 @@
     smerge = merge --squash --no-commit
     brls = branch --sort=-committerdate
     undocommit = reset --soft HEAD~1
+    # sland <branch>: stage the tree of <branch> onto the current branch (adds, edits, deletes), then commit -S
+    sland = "!f() { [ -n \"$1\" ] || { echo 'usage: git sland <branch>' >&2; return 1; }; git diff --quiet && git diff --cached --quiet || { echo 'commit or stash your changes first' >&2; return 1; }; git restore --source=\"$1\" --staged --worktree :/ && git diff --cached --stat; }; f"
     
 [winUpdater]
 	recentlySeenVersion = 2.24.1.windows.2
