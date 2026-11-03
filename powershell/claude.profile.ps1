@@ -4,7 +4,8 @@ Set-PSReadLineKeyHandler -Key Tab -Function Complete
 
 
 #environment variables
-$env:GIT_ROOT="d:\git"
+# windows/bootstrap-agent.ps1 sets the path vars as User env vars. The defaults below cover a machine without them.
+if (-not $env:GIT_ROOT) { $env:GIT_ROOT = "d:\git" }
 $env:GH_ROOT="${env:GIT_ROOT}\github"
 $env:BB_ROOT="${env:GIT_ROOT}\bitbucket"
 $env:OZ_ROOT="${env:GH_ROOT}\openziti"
