@@ -398,6 +398,23 @@ if ($json.tool_input.command) {
 		exit 0
 	}
 
+	# The agent's git hooks (githooks/agent, via its global core.hooksPath) refuse commits off claude/* however git is
+	# started. Two things switch them off: --no-verify ('commit -n'), and a changed core.hooksPath (git config, or the
+	# GIT_CONFIG_* env vars). Reading the setting ('--get', '--list', '--show-origin') passes. git must start a command,
+	# so prose that mentions these words (a changelog line, a commit message) passes.
+	$gitAt = '(?:^|[\r\n;&|({])[ \t]*(?i:git)\s+'
+	if ($cmd -match ($gitAt + '[^\r\n;|&]*\s--no-verify\b') -or
+		$cmd -cmatch ($gitAt + $gOpt + '(?i:commit)\b[^\r\n;|&]*\s-[a-zA-Z]*n[a-zA-Z]*(\s|$)') -or
+		$cmd -match '\bGIT_CONFIG_(?:KEY_\d+|PARAMETERS|GLOBAL|SYSTEM|NOSYSTEM)\b' -or
+		($cmd -match ($gitAt + $gOpt + 'config\b[^\r\n;|&]*core\.hooksPath') -and
+		 $cmd -notmatch '--(get|get-all|get-regexp|list|show-origin)\b')) {
+		@{
+			decision = "block"
+			reason   = "Do not skip or replace the agent's git hooks: no --no-verify (or 'commit -n'), and no change to core.hooksPath. They hold commits to claude/* branches. Hand the commit to the user."
+		} | ConvertTo-Json -Compress
+		exit 0
+	}
+
 	if ($cmd -match '(^|;|\n)\s*find\s+') {
 		@{
 			decision = "block"

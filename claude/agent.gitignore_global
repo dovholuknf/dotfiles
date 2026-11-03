@@ -1,0 +1,19 @@
+CLAUDE.md
+AGENTS.md
+CLAUDE.local.md
+
+**/.claude/settings.local.json
+.claude/
+
+# mercurius: per-project review config (agent-synced via dotagents)
+mercurius.yaml
+
+# mercurius run artifacts: per-checkout session logs, never shared
+.mercurius/
+
+# atrium: per-repo incoming/pasted files (images, scratch), never shared
+.atrium/
+
+bash.exe.stackdump
+build.claude/
+BRIEF.md

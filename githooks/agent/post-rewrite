@@ -1,5 +1,10 @@
 #!/bin/sh
-# Every hook name in this folder other than commit-msg is a copy of this file. core.hooksPath replaces .git/hooks, so
-# without these a repo's own hooks (git-lfs, atrium's pre-commit and pre-push) would stop running for the agent.
+# Every hook name in this folder other than commit-msg and pre-push is a copy of this file. core.hooksPath replaces
+# .git/hooks, so without these a repo's own hooks (git-lfs, atrium's pre-commit and pre-push) would stop running for the
+# agent. pre-commit and pre-merge-commit also hold the agent to claude/* branches (../lib/branch.sh).
 . "$(dirname "$0")/../lib/attribution.sh"
+. "$(dirname "$0")/../lib/branch.sh"
+case "$(basename "$0")" in
+    pre-commit|pre-merge-commit) agent_require_claude_branch "$(basename "$0")" || exit 1 ;;
+esac
 attr_run_repo_hook "$(basename "$0")" "$@"

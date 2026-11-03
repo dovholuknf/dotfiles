@@ -42,7 +42,8 @@ function _initRepo($path, $extraBranch) {
     & git -c init.defaultBranch=main init -q $path
     Set-Content -Path (Join-Path $path 'README.md') -Value 'x' -Encoding UTF8
     & git -C $path add README.md 2>$null
-    & git -C $path -c user.email=t@t -c user.name=t commit -q -m init 2>$null
+    # --no-verify: the agent account's git hooks refuse a commit on main, and this setup commit has to land there.
+    & git -C $path -c user.email=t@t -c user.name=t commit -q --no-verify -m init 2>$null
     # aliases, to prove the guard resolves them instead of pattern-matching literal verbs
     & git -C $path config alias.co checkout 2>$null
     & git -C $path config alias.ci commit 2>$null
@@ -252,6 +253,19 @@ $cases = @(
     @{ cmd = 'git --work-tree . push';                   repo = 'claude'; expect = 'block' }
     @{ cmd = 'git -c x=y checkout -b feature/x';         repo = 'claude'; expect = 'block' }
     @{ cmd = 'git -c x=y branch claude/foo 7f736df';     repo = 'claude'; expect = 'block' }   # -c rule
+    # The agent's git hooks hold commits to claude/*. Skipping or replacing them is blocked, even on claude/*.
+    @{ cmd = 'git commit --no-verify -m x';              repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git commit -n -m x';                       repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git commit -anm x';                        repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git merge --no-verify claude/x';           repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git config --global core.hooksPath x';     repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git config --global --unset core.hooksPath'; repo = 'claude'; expect = 'block' }
+    @{ cmd = '$env:GIT_CONFIG_KEY_0="core.hooksPath"';   repo = 'claude'; expect = 'block' }
+    @{ cmd = 'git config --get core.hooksPath';          repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git commit -am x';                         repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'git log -n 5';                             repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'echo "the git hooks block --no-verify and core.hooksPath"'; repo = 'claude'; expect = 'allow' }
+    @{ cmd = 'ls; git commit --no-verify -m x';          repo = 'claude'; expect = 'block' }
     @{ cmd = 'git -C . status';                          repo = 'claude'; expect = 'block'; reason = '' }   # -C rule, not "git ."
     @{ cmd = 'GIT -C . status';                          repo = 'claude'; expect = 'block' }   # -C rule is case-exact on -C only
 

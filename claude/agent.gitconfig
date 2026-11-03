@@ -7,10 +7,9 @@
 #       hooksPath = <dotfiles>/githooks/agent      # holds commits to claude/* and refuses LLM attribution
 #   [user]
 #       signingkey = <home>/.ssh/id_ed25519_sign.pub
-#   [alias]
-#       sland = !pwsh -NoProfile -File <dotfiles>/powershell/onpath/git-sland.ps1
 #
-# Settings in ~/.gitconfig after the include win over the same settings here.
+# Settings in ~/.gitconfig after the include win over the same settings here. core.excludesfile below expects
+# ~/.gitignore_global to be a symlink to claude/agent.gitignore_global in this repo.
 
 [core]
 	autocrlf = false
