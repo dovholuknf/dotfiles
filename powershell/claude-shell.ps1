@@ -297,13 +297,22 @@ function _OpenClaudeShell {
     # -NoClaude (a plain themed shell, not a claude session) and -ReuseSessionId (a restore;
     # atrium cannot resume a wt session id). Toggle with 'gwt open <atrium|wt>'.
     if (-not $NoClaude -and -not $ReuseSessionId -and (_GwtOpener) -eq 'atrium') {
-        if (_LaunchOnAtrium -Path $Path -Title $Branch -Why "gwt $Branch" -Tags @('gwt', $Repo) -PromptText $PromptText -Repo $Repo -Branch $Branch) {
+        $script:AtriumDeclined = $null
+        if (_LaunchOnAtrium -Path $Path -Title $Branch -Why "gwt $Branch" -Tags @('gwt', $Repo) `
+                -PromptText $PromptText -Repo $Repo -Branch $Branch) {
             return
         }
-        $reason = if (_GetAtriumBoard) { 'atrium refused the launch' } else { 'atrium not running' }
-        Write-Color "  $reason" Yellow
-        $ans = Read-Host "  open it in a windows terminal tab instead? (y/N)"
-        if ($ans -notmatch '^(y|yes)$') { Write-Color "  not launched" Yellow; return }
+        if ($script:AtriumDeclined -eq 'notab') {
+            Write-Color "  no atrium room picked: no tab opened" DarkGray
+            return
+        } elseif ($script:AtriumDeclined -eq 'wt') {
+            Write-Color "  no atrium room picked: opening a windows terminal tab" DarkGray
+        } else {
+            $reason = if (_GetAtriumBoard) { 'atrium refused the launch' } else { 'atrium not running' }
+            Write-Color "  $reason" Yellow
+            $ans = Read-Host "  open it in a windows terminal tab instead? (y/N)"
+            if ($ans -notmatch '^(y|yes)$') { Write-Color "  not launched" Yellow; return }
+        }
     }
 
     # Resolve picker sentinels here, the single chokepoint that records the window
@@ -593,7 +602,13 @@ function _LaunchOnAtrium {
             $rooms = $null
             try { $rooms = @(($why | ConvertFrom-Json -ErrorAction Stop).rooms | Where-Object { $_ }) } catch { }
             if (-not $room -and $rooms.Count) {
-                $room = _TuiSelect -Items $rooms -Prompt 'atrium: launch in which room?'
+                # The last two rows opt out of atrium for this launch. The caller reads $script:AtriumDeclined
+                # ('wt' or 'notab') and skips the y/N fallback prompt.
+                $noRoom = 'none (no atrium, plain wt tab)'
+                $noTab  = 'none (no atrium, no tab)'
+                $room = _TuiSelect -Items (@($rooms) + $noRoom + $noTab) -Prompt 'atrium: launch in which room?'
+                if ($room -eq $noRoom) { $script:AtriumDeclined = 'wt'; return $false }
+                if ($room -eq $noTab)  { $script:AtriumDeclined = 'notab'; return $false }
                 if ($room) { continue }
                 Write-Color "  no room picked" Yellow
                 return $false

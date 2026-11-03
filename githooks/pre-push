@@ -74,14 +74,14 @@ if [ -n "$blocked" ]; then
     fi
 fi
 
-# claude/* gate: a claude/<name> branch is agent scratch and never goes to a remote under that name, whichever side
-# of the refspec carries it. Deleting one is allowed, so stray remote claude/* branches can still be cleaned up.
-# Rename the branch before pushing, or bypass once with GIT_ALLOW_CLAUDE_BRANCH=1.
+# claude/* gate: a claude/<name> branch is agent scratch and never lands on a remote under that name. Pushing one to a
+# different name (git push origin claude/x:x) is fine. Deleting one is allowed, so stray remote claude/* branches can
+# still be cleaned up. Bypass once with GIT_ALLOW_CLAUDE_BRANCH=1.
 claude_bad=''
 while read -r l_ref l_sha r_ref r_sha; do
     case "$l_sha" in *[!0]*) ;; *) continue ;; esac       # branch deletion
-    case "$l_ref $r_ref" in
-        *refs/heads/claude/*) claude_bad="$claude_bad
+    case "$r_ref" in
+        refs/heads/claude/*) claude_bad="$claude_bad
     $l_ref -> $r_ref" ;;
     esac
 done <<EOF
@@ -89,7 +89,7 @@ $input
 EOF
 if [ -n "$claude_bad" ] && [ "$GIT_ALLOW_CLAUDE_BRANCH" != "1" ]; then
     printf '\n  BLOCKED: claude/* branches are not pushed:%s\n\n' "$claude_bad" 1>&2
-    printf '  Rename the branch first: git branch -m <new-name>\n' 1>&2
+    printf '  Push it under another name: git push <remote> claude/x:<new-name>\n' 1>&2
     printf '  bypass once: set GIT_ALLOW_CLAUDE_BRANCH=1 for that one push\n' 1>&2
     exit 1
 fi
