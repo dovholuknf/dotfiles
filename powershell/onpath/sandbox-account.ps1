@@ -28,7 +28,8 @@
   Zero or more paths inside (or outside) the trees where the account keeps write access.
 
 .PARAMETER OwnerUser
-  Optional. An account to grant Full on each tree, for when the owner is not a local administrator.
+  An account to grant Full on each tree. Pass it whenever UAC is on, even if the owner is a local administrator.
+  A non-elevated shell drops BUILTIN\Administrators from its token, so without this grant it loses access.
 
 .PARAMETER BroadPrincipal
   The over-broad principal to remove. Default: "NT AUTHORITY\Authenticated Users".

@@ -54,13 +54,17 @@ this box, run it elevated as clint:
 sandbox-account.ps1 -Account "<host>\claude" `
     -Tree "D:\git","D:\worktrees" `
     -WritePath "D:\worktrees","D:\git\github\dovholuknf\dotfiles\claude" `
+    -OwnerUser "<host>\clint" `
     -Apply
 ```
 
 It dry-runs by default (prints the plan) and changes nothing until you pass `-Apply`, which also requires an
-elevated shell. `claude` cannot change these ACLs itself, which is why this is an administrator action. It assumes
-clint keeps Full through `BUILTIN\Administrators`. If clint is not a local administrator, add
-`-OwnerUser "<host>\clint"`.
+elevated shell. `claude` cannot change these ACLs itself, which is why this is an administrator action.
+
+Keep `-OwnerUser`, even though clint is a local administrator. With UAC on (`EnableLUA=1`, the default), clint's
+normal shells run with a filtered token that drops `BUILTIN\Administrators`. Without an explicit grant to clint, the
+apply removes `Authenticated Users` and locks clint's non-elevated shells out of his own clones. Only an elevated
+shell would still reach them.
 
 The result: `claude` keeps Read across `D:` but writes only its worktrees (which include the session ledger and
 watch log) and `dotfiles\claude`, the content it authors. Everything else, including clint's clones and

@@ -32,7 +32,7 @@ The script does those steps for you, in the right order, for each tree and each 
 | `-Account` (required) | The account to confine, for example `HOST\agent`. |
 | `-Tree` (required) | One or more trees to bring under the policy. The broad principal is removed from these. |
 | `-WritePath` | Zero or more paths where the account keeps write. Granted `Modify` (or `-Permission`). |
-| `-OwnerUser` | Optional. Granted `Full` on each tree, for when the owner is not a local administrator. |
+| `-OwnerUser` | Granted `Full` on each tree. Pass it whenever UAC is on, even if the owner is an administrator. |
 | `-BroadPrincipal` | The over-broad principal to remove. Default `NT AUTHORITY\Authenticated Users`. |
 | `-Permission` | The icacls permission granted on each `-WritePath`. Default `(OI)(CI)(M)`. |
 | `-Apply` | Execute. Without it the script prints the plan and changes nothing. `-Apply` also needs elevation. |
@@ -52,7 +52,7 @@ sandbox-account.ps1 -Account "HOST\agent" -Tree "D:\git","D:\worktrees" `
     -WritePath "D:\worktrees","D:\git\org\repo\agent-area" -Apply
 ```
 
-If the owner account is not a local administrator, grant it Full at the same time:
+With UAC on, grant the owner Full at the same time, even if the owner is a local administrator:
 
 ```
 sandbox-account.ps1 -Account "HOST\agent" -Tree "D:\git" -WritePath "D:\worktrees" `
@@ -91,6 +91,8 @@ Or re-run the tool with the broad principal added back to the write list for tha
 
 - The account reads through `BUILTIN\Users:(RX)`, which `/inheritance:d` preserves. If your account is not in
   `Users`, add a read grant for it on the trees.
-- The owner keeps access through `BUILTIN\Administrators`, or through `-OwnerUser`.
+- The owner keeps access through `-OwnerUser`. `BUILTIN\Administrators` covers the owner only in an elevated shell.
+  With UAC on, a normal shell runs with a filtered token that drops that group, so omitting `-OwnerUser` locks the
+  owner's non-elevated shells out of the trees.
 - This is filesystem ACLs only. Network credentials such as API tokens are not constrained by it. If an account
   holds a write-scoped token, it can still reach the remote regardless of these ACLs.
