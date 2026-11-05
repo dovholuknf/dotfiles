@@ -58,15 +58,17 @@ Do these in order. Show your user the plan (steps 1 to 3) before you write any f
    - `claude/skills/slop-review/SKILL.md`
    - `claude/skills/slop-review/retro.md`
 3. **Adapt them to your user.**
-   - References to `agents/code-review.md` and to "atrium" point at things they do not have. They do not change
-     behavior. Ask your user whether to leave or delete them.
+   - "atrium" is my private orchestrator. Your user does not have it. Delete every atrium reference and keep the
+     non-atrium path. Do not ask about it.
+   - References to `agents/code-review.md` point at a file they do not have. They do not change behavior. Ask your
+     user whether to leave or delete them.
    - The "Lead and worker" section uses a second session to draft findings. It is optional. Leave it unless your
      user asks to remove it.
    - Phase 6 mentions a cross-platform test matrix from my C SDK work. Ask your user what their repo's build and
      test commands are, and say so in that phase.
    - `build.claude/` (the lead and worker queue and scratch dirs) is my scratch-dir name. Swap in one that their
      repos already gitignore, or tell them to add it.
-   - Search both files for `D:\`, `C:\`, `clint`, `atrium` and `dovholuknf`, and resolve each hit with your user.
+   - Search both files for `D:\`, `C:\`, `clint` and `dovholuknf`, and resolve each hit with your user.
 4. **Write the files** to `~/.claude/skills/slop-review/SKILL.md` and `~/.claude/skills/slop-review/retro.md`.
 5. **Verify.** Your user restarts Claude Code. `/slop-review` shows up as a slash command.
 6. **Smoke test.** On a branch with a few AI-written commits, run `/slop-review`. Check that it names the base and the

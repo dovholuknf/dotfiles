@@ -38,7 +38,7 @@ Windows-specific bits.
 - The agent never commits or pushes. It surfaces the git commands and I run them.
 - I run many sessions at once through a private orchestrator called atrium. The review-panel skill launches reviewers
   as atrium sessions when that tool exists, and falls back to Claude Code's `Agent` tool when it does not. Your user
-  does not have atrium. The fallback is the path you use.
+  does not have atrium. Discard every atrium reference you meet and keep the non-atrium path. Do not ask about it.
 
 ## How the agents work
 
@@ -147,8 +147,8 @@ Do these in order. Show your user the plan (steps 1 to 4) before you write any f
      flags, and mount the repo with `-v "$PWD:/work" -w /work`. Also replace the agent's `wslc` fallback line.
    - `build.claude/` in `k8s-helm-reviewer.md` is my scratch-dir name. Swap in one that their repos already
      gitignore, or tell them to add it.
-   - Search every fetched file for `D:\`, `C:\`, `clint`, `atrium` and `dovholuknf`, and resolve each hit with your
-     user.
+   - Delete every remaining `atrium` reference without asking. Then search every fetched file for `D:\`, `C:\`,
+     `clint` and `dovholuknf`, and resolve each hit with your user.
 5. **Write the files.** Agents go in `~/.claude/agents/`. Each skill is a folder:
    `~/.claude/skills/review-panel/SKILL.md`.
 6. **Verify.** Your user restarts Claude Code. `/agents` lists the new agents. `/review-panel` shows up as a slash
