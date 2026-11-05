@@ -412,3 +412,4 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 - 2026-11-04: CLAUDE.global.md atrium rule: with no atrium_launch tool, use Agent subagents without asking; why: a launched review card stopped its own review-panel subagents to ask permission.
 - 2026-11-04 pre-tool-use hook: reviewer subagents blocked, use atrium cards (atrium_launch or atrium_need). Why: reviews watchable on the board and kept in history.
 - 2026-11-05 pre-tool-use hook: subagent gate applies only inside atrium (ATRIUM_TASK_ID set). CLAUDE.global.md says "outside atrium, use Agent subagents without asking". Why: the hook and the doc disagreed, and anyone using these hooks without atrium had every subagent blocked.
+- 2026-11-05 doc-panel skill plus doc-fact-checker, cold-reader, doc-editor, seo-aeo-reviewer agents. Why: docs had no review panel, and a blog agent asked clint questions a fact-checker or a brief should have settled.
