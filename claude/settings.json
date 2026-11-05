@@ -133,7 +133,6 @@
     ],
     "blockReadsOutsideWorkingDirectories": false
   },
-  "model": "opus",
   "modelPicker": {
     "options": [
       {
