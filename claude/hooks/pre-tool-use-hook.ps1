@@ -79,10 +79,15 @@ if ($json.tool_name -in @('Task', 'Agent')) {
     #
     # Specialist reviewers (types in ~/.claude/agents) are NOT exempt: they run as atrium cards,
     # so reviews are watchable on the board and kept in history. clint's decision 2026-11-04.
+    #
+    # OUTSIDE ATRIUM THE GATE IS OFF. With no ATRIUM_TASK_ID the session is not an atrium card, so
+    # there is no board to redirect to. Someone using these hooks without atrium keeps normal
+    # subagents. clint's decision 2026-11-05.
     $subtype = "$($json.tool_input.subagent_type)".Trim().ToLower()
     $readonlyAgents = @('explore', 'plan')
+    $inAtrium = -not [string]::IsNullOrWhiteSpace($env:ATRIUM_TASK_ID)
     $g = "$env:ATRIUM_ONLY_SUBAGENTS".Trim().ToLower()
-    if (($readonlyAgents -notcontains $subtype) -and $g -ne '0' -and $g -ne 'off' -and $g -ne 'false' -and $g -ne 'no') {
+    if ($inAtrium -and ($readonlyAgents -notcontains $subtype) -and $g -ne '0' -and $g -ne 'off' -and $g -ne 'false' -and $g -ne 'no') {
         @{
             decision = "block"
             reason   = "Plain Claude subagents are off here (ATRIUM_ONLY_SUBAGENTS). Run substantive agent work as a REAL atrium session instead, so it is watchable on the board and kept in history. HARD RULE, check FIRST: call the atrium-control MCP tool atrium_peers and count the running sessions YOU launched (sessions the user started do not count); if you launched 10 or more (the concurrency cap), do NOT launch another -- wait for one to finish or ask clint, do not spawn past the cap. Otherwise: (1) make/prepare the working directory first -- it must already exist; (2) call atrium_launch with cwd, a short title, a one-line why, and a FULL prompt containing the ENTIRE task (the new session inherits NONE of this conversation's context, so spell it all out); (3) use the returned card id with atrium_task / atrium_say to follow up. This covers reviewers too (go-security-reviewer and the other ~/.claude/agents types): launch each as its own card. If you have no atrium_launch tool, call atrium_need with kind tool:atrium_launch and say why, then end your turn. If a normal one-shot subagent is genuinely wanted this session, the user can set ATRIUM_ONLY_SUBAGENTS=0 and retry."

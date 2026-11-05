@@ -46,5 +46,5 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
 * For substantive agent work, prefer a real atrium session (`atrium_launch`) over a Claude subagent (the `Agent`
   tool), so the work is watchable on the board and kept in history. Plain subagents are gated off by default via
   `ATRIUM_ONLY_SUBAGENTS`. Before launching, check `atrium_peers`: do not exceed 10 running sessions you
-  launched. Sessions I started do not count. With no `atrium_launch` tool in the session, use `Agent` subagents
-  without asking.
+  launched. Sessions I started do not count. Outside atrium (no `ATRIUM_TASK_ID`), use `Agent` subagents without
+  asking.

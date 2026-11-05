@@ -500,6 +500,8 @@ $cases = @(
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = '0' } }
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = 'Off' } }
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block'; env = @{ ATRIUM_ONLY_SUBAGENTS = '1' } }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_TASK_ID = '' } }   # outside atrium
+    @{ tool = 'Agent'; input = @{ subagent_type = 'go-security-reviewer'; prompt = 'x' }; repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_TASK_ID = '' } }
 
     # --- co-authored-by, any shell ---
     @{ cmd = "echo 'Co-Authored-By: x'";                            repo = 'claude'; expect = 'block'; reason = 'Co-Authored-By' }
@@ -606,6 +608,8 @@ $results = $cases | ForEach-Object -ThrottleLimit $throttle -Parallel {
     [void]$psi.Environment.Remove('ATRIUM_LOCATION')
     # The subagent gate reads this, and the session running the suite may have it set either way.
     [void]$psi.Environment.Remove('ATRIUM_ONLY_SUBAGENTS')
+    # The gate is on only inside an atrium card. Default every case into one, a case can blank it.
+    $psi.Environment['ATRIUM_TASK_ID'] = 'test-task'
     if ($c.env) { foreach ($k in $c.env.Keys) { $psi.Environment[$k] = $c.env[$k] } }
     $p = [Diagnostics.Process]::Start($psi)
     $errTask = $p.StandardError.ReadToEndAsync()
