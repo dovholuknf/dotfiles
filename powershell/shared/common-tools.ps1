@@ -100,6 +100,7 @@ function _TuiSelect {
     #   Enter                  commit current cursor / digit buffer
     #   Esc                    1st press: clear the digit buffer; 2nd press: cancel
     #   q                      cancel (single keystroke when buffer is empty)
+    #   Ctrl+C                 cancel
     #   a                      select-all (only when -AllowAll)
     #
     # Parameters:
@@ -273,6 +274,9 @@ function _TuiSelect {
             # Digits build up a numBuf and just move the cursor; commit on Enter.
             # Non-digit keys clear the buffer.
             $ch = $k.KeyChar
+            # Ctrl+C cancels. Some terminals report it only as KeyChar 0x03, with no
+            # Key=C and no Control modifier, so the 'C' case below can miss it.
+            if ([int]$ch -eq 3) { return $null }
             if ($ch -ge '0' -and $ch -le '9') {
                 $candidate = $numBuf + [string]$ch
                 # cap at 3 digits; nobody is picking item 1000
