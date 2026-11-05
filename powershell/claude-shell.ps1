@@ -447,8 +447,9 @@ function _ConfirmOpenOrCd {
     $resp = Read-Host "open in claude? (Y/n)"
     if ([string]::IsNullOrWhiteSpace($resp) -or $resp -match '^[Yy]$') {
         # -ByProject skips the picker and groups by repo; otherwise the picker
-        # defaults to 'auto' (also group-by-project).
-        $window = if ($ByProject -and $Repo) { $Repo } else { _SelectWtWindow -Repo $Repo }
+        # defaults to 'auto' (also group-by-project). An atrium launch has no wt window, so it skips it too.
+        $window = if (($ByProject -and $Repo) -or (_GwtOpener) -eq 'atrium') { '__auto__' }
+                  else { _SelectWtWindow -Repo $Repo }
         if ($window -eq '__auto__') { $window = if ($Repo) { $Repo } else { $null } }
         if ($window -eq '__new__')  { $window = $null }
         $promptText = if ($PromptOverride) { $PromptOverride }
@@ -584,9 +585,13 @@ function _LaunchOnAtrium {
     $body = $payload | ConvertTo-Json -Compress
 
     # A hub with several rooms attached refuses an unscoped launch with a 409 that lists
-    # the rooms. `gwt -Room <r>` names one up front. Otherwise the refusal becomes a
-    # picker and the launch is retried with X-Atrium-Room set to the pick.
-    $room = if ($script:AtriumRoom) { $script:AtriumRoom.Trim() } else { $null }
+    # the rooms. `gwt -Room <r>` names one up front. Without it the launch goes to
+    # $env:ATRIUM_ROOM, else claude-<computername> (claude-sg4 on sg4). If the hub refuses
+    # that default, the refusal becomes a picker and the launch is retried with the pick.
+    $room = if ($script:AtriumRoom) { $script:AtriumRoom.Trim() }
+            elseif ($env:ATRIUM_ROOM) { $env:ATRIUM_ROOM.Trim() }
+            else { "claude-$($env:COMPUTERNAME.ToLower())" }
+    $roomIsDefault = -not $script:AtriumRoom
     while ($true) {
         $headers = @{}
         if ($room) { $headers['X-Atrium-Room'] = $room }
@@ -601,7 +606,9 @@ function _LaunchOnAtrium {
             $why = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
             $rooms = $null
             try { $rooms = @(($why | ConvertFrom-Json -ErrorAction Stop).rooms | Where-Object { $_ }) } catch { }
-            if (-not $room -and $rooms.Count) {
+            if ($roomIsDefault -and $rooms.Count) {
+                if ($room) { Write-Color "  default room '$room' refused, pick one" Yellow }
+                $roomIsDefault = $false
                 # The last two rows opt out of atrium for this launch. The caller reads $script:AtriumDeclined
                 # ('wt' or 'notab') and skips the y/N fallback prompt.
                 $noRoom = 'none (no atrium, plain wt tab)'

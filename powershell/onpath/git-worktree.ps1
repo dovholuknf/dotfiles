@@ -3,7 +3,9 @@
 # profile alias: function gwt { & "$env:ON_PATH\git-worktree.ps1" @args }
 #
 # usage:
-#   gwt new  <branch> [-From <source>] [-Prompt <str>] [-Room <r>] [--by-project] # defaults to -y; -Interactive prompts
+#   gwt new  <branch> [-From <source>] [-Prompt <str>] [-Atrium] [-Room <r>] [--by-project] # defaults to -y
+#                                                # -Interactive prompts. -Atrium: launch claude on atrium.
+#                                                # Without -Atrium or -Room, 'new' only creates the worktree.
 #                                                # -Room: atrium room for the claude launch (any
 #                                                # launching subcommand). Omit it and a hub asks.
 #                                                # --by-project: group the tab into a
@@ -42,6 +44,7 @@ param(
     [string]$RemoteHost,    # explicit host (e.g. 'github.com', 'bitbucket.org') -- for callers that don't have a git remote to detect from
     [string]$Prompt,
     [string]$Room,          # atrium room to launch claude in. Omit and a multi-room hub asks.
+    [switch]$Atrium,        # 'new': launch claude on atrium. Without it (or -Room), 'new' only creates the worktree.
     [switch]$Review,        # 'pr': start a review card even for your own PR
     [string]$SourceRoot   = $( $r = if ($env:GIT_ROOT)      { $env:GIT_ROOT }      else { 'D:\git' };      ($r -replace '\\+','\').TrimEnd('\') ),
     [string]$WorktreeRoot  = $( $r = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }; ($r -replace '\\+','\').TrimEnd('\') ),
@@ -1822,7 +1825,14 @@ switch ($Command) {
         $stayPut = ($env:GWT_NEW_CD -match '^\s*(0|off|no)\s*$')
         # Always -NoCd so _ConfirmOpenOrCd never runs its own 'cd there?' prompt; the cd
         # is owned here so it happens whether or not a session was opened.
-        _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y -ByProject:$ByProject -NoCd
+        # A plain 'gwt new' on the atrium opener creates the worktree only. -Atrium or -Room opts into the launch.
+        # Forwarded calls (issue, advisory, zendesk, discourse) carry -Origin and still launch.
+        if (-not $Origin -and -not $Atrium -and -not $Room -and (_GwtOpener) -eq 'atrium') {
+            Write-Color "  no claude launch (pass -Atrium, or -Room <r>, to launch on atrium)" DarkGray
+        } else {
+            _ConfirmOpenOrCd -Path $wtPath -Repo $ctx.Repo -Branch $Target -PromptOverride $Prompt -AutoOpen:$y `
+                -ByProject:$ByProject -NoCd
+        }
         if (-not $stayPut) {
             # cd is part of the action, not gated on the open-in-claude answer: clear any
             # suppress the -NoCd decline path set, then write the hint unconditionally.
@@ -4916,7 +4926,8 @@ switch ($Command) {
             $window     = 'active-work'
             $promptText = if ($Prompt) { $Prompt } else { (_GetClaudePromptPresets -Repo $ctx.Repo -Branch $Target)[0].Text }
         } else {
-            $window = _SelectWtWindow
+            # An atrium launch has no wt window, so skip the picker.
+            $window = if ((_GwtOpener) -eq 'atrium') { '__auto__' } else { _SelectWtWindow }
             if ($window -eq '__new__') { $window = $null }
             $presets      = _GetClaudePromptPresets -Repo $ctx.Repo -Branch $Target
             $selectedText = if ($Prompt) { $Prompt } else { Select-ClaudePrompt -Repo $ctx.Repo -Branch $Target }
@@ -6257,8 +6268,10 @@ switch ($Command) {
         Write-Host "  COMMANDS" -ForegroundColor DarkGray
         Write-Host ""
         Write-Host "    gwt new " -NoNewline -ForegroundColor Cyan
-        Write-Host "<branch> [-From <src>] [-Prompt <str>] [-y] [--by-project]"
+        Write-Host "<branch> [-From <src>] [-Prompt <str>] [-Atrium] [-Room <r>] [-y] [--by-project]"
         Write-Host "        create (or reopen) a worktree for a branch" -ForegroundColor DarkGray
+        Write-Host "        -Atrium       also launch claude on atrium (default: create the worktree only)" -ForegroundColor DarkGray
+        Write-Host "        -Room         launch claude on atrium in this room (implies -Atrium)" -ForegroundColor DarkGray
         Write-Host "        -From         fork from this branch instead of origin/main" -ForegroundColor DarkGray
         Write-Host "        -Prompt       override the default claude prompt" -ForegroundColor DarkGray
         Write-Host "        -y            skip confirmation prompts" -ForegroundColor DarkGray
