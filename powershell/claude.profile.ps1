@@ -83,6 +83,11 @@ function editprofile() {
   np "$HOME\.profile.ps1"
 }
 
+# Claude Desktop is a per-user install under this account's LOCALAPPDATA.
+function start-claude-desktop() {
+  Start-Process "$env:LOCALAPPDATA\AnthropicClaude\claude.exe"
+}
+
 # Ctrl+d keyhandler lives in common-tools.ps1
 
 add-go_current
