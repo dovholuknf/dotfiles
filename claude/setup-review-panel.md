@@ -19,7 +19,8 @@ Two pieces, each a plain markdown file that Claude Code loads from `~/.claude`:
    completeness critic, and writes one severity-ranked report.
 
 A separate skill, `/slop-review`, has the AI review its own branch before a human sees it. Its setup is in
-`claude/setup-slop-review.md`. Offer it to your user after the panel works.
+`claude/setup-slop-review.md`. Offer it to your user after the panel works. For docs and blog posts, `/doc-panel`
+runs a separate set of prose reviewers. Its setup is in `claude/setup-doc-panel.md`.
 
 ## How my setup works (context, not required)
 
