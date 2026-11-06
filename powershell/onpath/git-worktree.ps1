@@ -334,36 +334,59 @@ function Resolve-RepoContext {
     # host/org/repo out without needing a git remote. Lets `gwt list` work
     # from the repo's worktree-root dir (which has no .git of its own).
     if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
+        # Returns @(host, org, repo) when $p sits in the layout, else $null. A
+        # <SourceRoot> match must name a real main clone (<repo>\.git exists):
+        # without that, a foreign tree nested under SourceRoot (atrium's
+        # D:\git\worktrees\github.com\<org>\<repo>\<branch>) parses as
+        # host=worktrees, org=github.com.
+        $parseLayout = {
+            param([string]$p)
+            foreach ($root in @($WorktreeRoot, $SourceRoot)) {
+                $rootNorm = $root.Replace('/','\').TrimEnd('\')
+                if (-not $p.StartsWith("$rootNorm\", [StringComparison]::OrdinalIgnoreCase)) { continue }
+                $parts = $p.Substring($rootNorm.Length + 1) -split '\\'
+                if ($parts.Count -lt 3) { continue }
+                if ($root -eq $SourceRoot -and
+                    -not (Test-Path -LiteralPath (Join-Path $rootNorm "$($parts[0])\$($parts[1])\$($parts[2])\.git"))) {
+                    continue
+                }
+                return ,@($parts[0], $parts[1], $parts[2])
+            }
+            return $null
+        }
+
         # Resolve symlinks before parsing -- otherwise a path like
         # D:\git\github\openziti\nf\ziti (where nf\ziti is a symlink to ziti)
-        # gets parsed as repo=nf instead of ziti. Walk each path segment and
-        # follow any symlink we find; the final path is the canonical one.
+        # gets parsed as repo=nf instead of ziti.
         $cwdNorm = (Get-Location).Path.Replace('/','\').TrimEnd('\')
         try {
             $di = [System.IO.DirectoryInfo]::new($cwdNorm)
             $target = $di.ResolveLinkTarget($true)   # $true = recursive
             if ($target) { $cwdNorm = $target.FullName.TrimEnd('\') }
         } catch {}
-        foreach ($root in @($WorktreeRoot, $SourceRoot)) {
-            $rootNorm = $root.Replace('/','\').TrimEnd('\')
-            if (-not $cwdNorm.StartsWith("$rootNorm\", [StringComparison]::OrdinalIgnoreCase)) { continue }
-            $rest  = $cwdNorm.Substring($rootNorm.Length + 1)
-            $parts = $rest -split '\\'
-            if ($parts.Count -lt 3) { continue }
-            $hostShort = $parts[0]
-            $orgGuess  = $parts[1]
-            $repoGuess = $parts[2]
-            $hostFull = switch ($hostShort) {
+        $hit = & $parseLayout $cwdNorm
+
+        # Off-layout cwd inside a git worktree: ask git for the shared .git dir.
+        # Its parent is the main clone, which does sit in the layout. Costs one
+        # git call, and only on this path.
+        if (-not $hit) {
+            $common = (& git rev-parse --path-format=absolute --git-common-dir 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and $common) {
+                $hit = & $parseLayout (Split-Path -Parent $common.Replace('/','\').TrimEnd('\'))
+            }
+        }
+
+        if ($hit) {
+            $hostFull = switch ($hit[0]) {
                 'github'    { 'github.com'    }
                 'bitbucket' { 'bitbucket.org' }
                 'gitlab'    { 'gitlab.com'    }
-                default     { $hostShort      }
+                default     { $hit[0]         }
             }
-            if (-not $script:Org)        { $script:Org        = $orgGuess  }
-            if (-not $script:Repo)       { $script:Repo       = $repoGuess }
-            if (-not $script:RemoteHost) { $script:RemoteHost = $hostFull  }
+            if (-not $script:Org)        { $script:Org        = $hit[1]   }
+            if (-not $script:Repo)       { $script:Repo       = $hit[2]   }
+            if (-not $script:RemoteHost) { $script:RemoteHost = $hostFull }
             $script:OrgRepoFromCwd = $true
-            break
         }
     }
 

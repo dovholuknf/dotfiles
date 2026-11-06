@@ -258,17 +258,14 @@ function _ConfirmNoAliveSessionAt {
 # Windows Terminal tab). This is the single place the choice is resolved; every gwt spawn
 # funnels through _OpenClaudeShell, which asks this. Resolution order, first wins:
 #   1. <WORKTREE_ROOT>\gwt-opener.txt -- the persisted default, set by 'gwt open <name>'
-#   2. legacy $env:GWT_ATRIUM=off/0/false/no  -> 'wt'
-#   3. default                  -> 'atrium'
-# An unrecognized value anywhere falls through to the next source.
+#   2. default                  -> 'atrium'
+# An unrecognized value in the file falls through to the default.
 function _GwtOpener {
     $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
     $f = Join-Path $wtRoot 'gwt-opener.txt'
     if (Test-Path $f) {
         try { $c = (Get-Content $f -Raw).Trim().ToLower(); if ($c -in 'atrium','wt') { return $c } } catch {}
     }
-    $legacy = "$env:GWT_ATRIUM".Trim().ToLower()
-    if ($legacy -in '0','off','false','no') { return 'wt' }
     return 'atrium'
 }
 
