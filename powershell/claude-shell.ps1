@@ -257,14 +257,11 @@ function _ConfirmNoAliveSessionAt {
 # Which "opener" a gwt spawn uses: 'atrium' (a real, watchable board session) or 'wt' (a
 # Windows Terminal tab). This is the single place the choice is resolved; every gwt spawn
 # funnels through _OpenClaudeShell, which asks this. Resolution order, first wins:
-#   1. $env:GWT_OPENER          -- per-session override ('atrium' | 'wt')
-#   2. <WORKTREE_ROOT>\gwt-opener.txt -- the persisted default, set by 'gwt open <name>'
-#   3. legacy $env:GWT_ATRIUM=off/0/false/no  -> 'wt'
-#   4. default                  -> 'atrium'
+#   1. <WORKTREE_ROOT>\gwt-opener.txt -- the persisted default, set by 'gwt open <name>'
+#   2. legacy $env:GWT_ATRIUM=off/0/false/no  -> 'wt'
+#   3. default                  -> 'atrium'
 # An unrecognized value anywhere falls through to the next source.
 function _GwtOpener {
-    $o = "$env:GWT_OPENER".Trim().ToLower()
-    if ($o -in 'atrium','wt') { return $o }
     $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT } else { 'D:\worktrees' }
     $f = Join-Path $wtRoot 'gwt-opener.txt'
     if (Test-Path $f) {

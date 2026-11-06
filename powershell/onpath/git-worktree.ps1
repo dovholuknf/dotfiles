@@ -1844,7 +1844,7 @@ switch ($Command) {
     'open' {
         # Choose how gwt opens a claude session: 'atrium' (a real, watchable board session)
         # or 'wt' (a Windows Terminal tab). No arg prints the active opener and its source.
-        # The choice persists in <WtRoot>\gwt-opener.txt; $env:GWT_OPENER overrides per-session.
+        # The choice persists in <WtRoot>\gwt-opener.txt.
         #   gwt open            -- show the active opener
         #   gwt open atrium|wt  -- set (and persist) the default opener
         $wtRoot = if ($env:WORKTREE_ROOT) { $env:WORKTREE_ROOT.TrimEnd('\') } else { 'D:\worktrees' }
@@ -1853,11 +1853,10 @@ switch ($Command) {
             $n = $Target.Trim().ToLower()
             if ($n -notin 'atrium','wt') { throw "opener must be 'atrium' or 'wt' (got '$Target')" }
             Set-Content -Path $f -Value $n -Encoding UTF8 -NoNewline
-            Write-Color "gwt opener -> $n  (persisted in $f; set `$env:GWT_OPENER to override per-session)" Green
+            Write-Color "gwt opener -> $n  (persisted in $f)" Green
         } else {
             Write-Color "gwt opener: $(_GwtOpener)" Cyan
-            if ($env:GWT_OPENER)  { Write-Color "  source: `$env:GWT_OPENER" DarkGray }
-            elseif (Test-Path $f) { Write-Color "  source: $f" DarkGray }
+            if (Test-Path $f)     { Write-Color "  source: $f" DarkGray }
             else                  { Write-Color "  source: default" DarkGray }
         }
     }
