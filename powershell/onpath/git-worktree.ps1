@@ -335,10 +335,13 @@ function Resolve-RepoContext {
     # from the repo's worktree-root dir (which has no .git of its own).
     if (-not $script:Org -or -not $script:Repo -or -not $script:RemoteHost) {
         # Returns @(host, org, repo) when $p sits in the layout, else $null. A
-        # <SourceRoot> match must name a real main clone (<repo>\.git exists):
-        # without that, a foreign tree nested under SourceRoot (atrium's
-        # D:\git\worktrees\github.com\<org>\<repo>\<branch>) parses as
-        # host=worktrees, org=github.com.
+        # match under either root must name a real main clone
+        # (<SourceRoot>\<host>\<org>\<repo>\.git exists): without that, a
+        # foreign tree nested under a root parses wrong. Atrium's
+        # D:\git\worktrees\github.com\<org>\<repo>\<branch> would read as
+        # host=worktrees, and its D:\worktrees\claude\cards\<card>\work as
+        # host=claude.
+        $srcNorm = $SourceRoot.Replace('/','\').TrimEnd('\')
         $parseLayout = {
             param([string]$p)
             foreach ($root in @($WorktreeRoot, $SourceRoot)) {
@@ -346,8 +349,7 @@ function Resolve-RepoContext {
                 if (-not $p.StartsWith("$rootNorm\", [StringComparison]::OrdinalIgnoreCase)) { continue }
                 $parts = $p.Substring($rootNorm.Length + 1) -split '\\'
                 if ($parts.Count -lt 3) { continue }
-                if ($root -eq $SourceRoot -and
-                    -not (Test-Path -LiteralPath (Join-Path $rootNorm "$($parts[0])\$($parts[1])\$($parts[2])\.git"))) {
+                if (-not (Test-Path -LiteralPath (Join-Path $srcNorm "$($parts[0])\$($parts[1])\$($parts[2])\.git"))) {
                     continue
                 }
                 return ,@($parts[0], $parts[1], $parts[2])
