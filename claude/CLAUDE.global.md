@@ -48,3 +48,7 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
   `ATRIUM_ONLY_SUBAGENTS`. Before launching, check `atrium_peers`: do not exceed 10 running sessions you
   launched. Sessions I started do not count. Outside atrium (no `ATRIUM_TASK_ID`), use `Agent` subagents without
   asking.
+* Agent work reaches origin only through clint. Never hand me push or PR commands for a `claude/*` branch. To hand
+  off a branch, tell me to run `git sland claude/<branch>` in my own worktree, then stop. sland copies the branch's
+  tree in unstaged, and I review, sign, commit, and push. Never run sland yourself: the gate blocks it. The exception
+  is a repo with its own landing path, such as atrium's ci-loop inbox. There, follow that repo's process.

@@ -5,8 +5,9 @@
 
 # An identity line is 'Name <email>'. Refused: the name 'claude', or an email naming claude or anthropic.
 ATTR_IDENT_RE='^claude <|<[^>]*(claude|anthropic)[^>]*>'
-# A message line that credits an LLM: a co-author trailer naming one, its noreply address, or a "Generated with" line.
-ATTR_MSG_RE='^co-authored-by:.*(claude|anthropic)|noreply@anthropic[.]com|generated with .*claude'
+# A message line that credits an LLM: a co-author trailer naming one, its noreply address, a "Generated with" line,
+# or the "deez nutz" placeholder the harness swaps in for the attribution trailers.
+ATTR_MSG_RE='^co-authored-by:.*(claude|anthropic)|noreply@anthropic[.]com|generated with .*claude|deez nutz'
 
 # attr_scan_commits <rev-list args...>: prints one line per offending commit and returns 1 if any.
 attr_scan_commits() {
