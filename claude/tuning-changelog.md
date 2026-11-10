@@ -417,3 +417,4 @@ aimed at how claude behaves. Newest first. One dated line per change, plus a sho
 - 2026-11-09 githooks attribution.sh: "deez nutz" added to ATTR_MSG_RE. Why: the harness now asks for attribution trailers with that text, which named neither claude nor anthropic and so passed the gate.
 - 2026-11-09: atrium orch owns batch PR CI (watch, fix, re-push); QA stops watching CI. Why: QA only reported and waited.
 - 2026-11-10 CLAUDE.global.md: Do This Now items must name a concrete action and what it changes, never "Run the block below", and commands follow item order. Why: about 10 replies in one day gave pointer items such as "In a clint pwsh tab, run the block below" instead of the action.
+- 2026-11-10 CLAUDE.global.md: every proposed file edit, even one line, is shown in /slop-review form (real diff plus CHANGE/SUMMARY footer), never as the new text alone. Why: a rule edit was proposed as a bare replacement block, and clint had to ask for the diff.

@@ -26,6 +26,9 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
   commit prose.
 * When options exist, recommend one default and state the exact next action.
 * Unanswered question: stop and wait. Never decide anything consequential for me.
+* Show every file edit you propose, even one line, in `/slop-review` form: the real diff from
+  `git diff --no-index` against a patched scratch copy, then the fenced CHANGE/SUMMARY footer. Never show
+  only the new text.
 * Multiple shell commands: ONE fenced block, commands back-to-back, no interleaved prose. Explain via
   `# ...` comments, or put prose before or after the block.
 * Cut filler from replies: hedges, throat-clearing, editorializing adjectives, reflexive sign-offs.
