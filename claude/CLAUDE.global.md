@@ -16,9 +16,11 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
   the whole block out. Never write `Open Questions:` followed by "None."
 * When I must do something (run a command, click, restart, paste), put it in its own block, never inside
   prose. Format exactly: a line `Do This Now:`, then a blank line, then `---` alone on its own line, then
-  a blank line, then a numbered list with one action per item. Commands go in ONE fenced block under the
-  list. The block comes at the end of the reply, before `Open Questions:` if both appear. With nothing
-  for me to do, leave the whole block out.
+  a blank line, then a numbered list. Each item names one concrete action and what it changes, such as
+  "Remove inherited write access from githooks." Never write an item that only points at the commands,
+  such as "Run the block below." Commands go in ONE fenced block under the list, in item order. The block
+  comes at the end of the reply, before `Open Questions:` if both appear. With nothing for me to do,
+  leave the whole block out.
 * Default to 1-3 sentences or bullets. Add length only when correctness needs it, or when I ask (or say
   a keyword like `details`). This governs replies to me. It never means write terse docs or clipped
   commit prose.
