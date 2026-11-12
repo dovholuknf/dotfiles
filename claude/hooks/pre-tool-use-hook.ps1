@@ -76,6 +76,7 @@ if ($json.tool_name -in @('Task', 'Agent')) {
     # against. They pass through even when the guard is on. log-subagent.ps1 still records the
     # start (type + description = the why) into state.log, so every one is visible in agent-log.
     # clint's decision 2026-09-21: allow read-only subagents inside doers, keep redirecting the rest.
+    # web-fetch is exempt too: it is read-only and only stands in for WebFetch. clint's decision 2026-11-10.
     #
     # Specialist reviewers (types in ~/.claude/agents) are NOT exempt: they run as atrium cards,
     # so reviews are watchable on the board and kept in history. clint's decision 2026-11-04.
@@ -84,7 +85,7 @@ if ($json.tool_name -in @('Task', 'Agent')) {
     # there is no board to redirect to. Someone using these hooks without atrium keeps normal
     # subagents. clint's decision 2026-11-05.
     $subtype = "$($json.tool_input.subagent_type)".Trim().ToLower()
-    $readonlyAgents = @('explore', 'plan')
+    $readonlyAgents = @('explore', 'plan', 'web-fetch')
     $inAtrium = -not [string]::IsNullOrWhiteSpace($env:ATRIUM_TASK_ID)
     $g = "$env:ATRIUM_ONLY_SUBAGENTS".Trim().ToLower()
     if ($inAtrium -and ($readonlyAgents -notcontains $subtype) -and $g -ne '0' -and $g -ne 'off' -and $g -ne 'false' -and $g -ne 'no') {

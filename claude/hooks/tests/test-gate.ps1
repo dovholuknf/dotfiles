@@ -488,12 +488,14 @@ $cases = @(
     @{ tool = 'NotebookEdit'; input = @{ notebook_path = "C:\$noRoot\x.ipynb"; new_source = 'x' }; repo = 'claude'; expect = 'block' }
     @{ tool = 'Write'; input = @{ file_path = "$root\x.txt"; content = 'x' };        repo = 'claude'; expect = 'allow' }
 
-    # --- plain and specialist subagents: blocked unless ATRIUM_ONLY_SUBAGENTS is off, Explore and Plan exempt ---
+    # --- plain and specialist subagents: blocked unless ATRIUM_ONLY_SUBAGENTS is off, Explore, Plan and web-fetch exempt ---
     @{ tool = 'Agent'; input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block'; reason = 'ATRIUM_ONLY_SUBAGENTS' }
     @{ tool = 'Task';  input = @{ subagent_type = 'general-purpose'; prompt = 'x' }; repo = 'claude'; expect = 'block' }
     @{ tool = 'Agent'; input = @{ prompt = 'x' };                                    repo = 'claude'; expect = 'block' }   # no type
     @{ tool = 'Agent'; input = @{ subagent_type = 'Explore'; prompt = 'x' };         repo = 'claude'; expect = 'allow' }
     @{ tool = 'Agent'; input = @{ subagent_type = 'Plan'; prompt = 'x' };            repo = 'claude'; expect = 'allow' }
+    @{ tool = 'Agent'; input = @{ subagent_type = 'web-fetch'; prompt = 'x' };       repo = 'claude'; expect = 'allow' }   # read-only, stands in for WebFetch
+    @{ tool = 'Task';  input = @{ subagent_type = 'web-fetch'; prompt = 'x' };       repo = 'claude'; expect = 'allow'; env = @{ ATRIUM_ONLY_SUBAGENTS = '1' } }
     @{ tool = 'Agent'; input = @{ subagent_type = 'go-security-reviewer'; prompt = 'x' }; repo = 'claude'; expect = 'block'; reason = 'atrium_need' }   # in ~/.claude/agents, still blocked
     @{ tool = 'Agent'; input = @{ subagent_type = 'no-such-agent'; prompt = 'x' };   repo = 'claude'; expect = 'block' }
     @{ tool = 'Agent'; input = @{ subagent_type = 'fork'; prompt = 'x' };            repo = 'claude'; expect = 'block' }
