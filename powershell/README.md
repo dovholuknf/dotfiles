@@ -52,6 +52,9 @@ wsl sudo mkfs.ext4 $DriveName
 wsl sudo mkfs.ext4 -L "WSL-Home" $DriveName
 ```
 
+`resetwsl.ps1` attaches this disk at /mnt/wsl/home and binds it over /home. To finish the setup, copy /home onto the
+disk once, then add the `/etc/wsl.conf` boot line. Both are in `wsl/README.md`, "/home on the home disk".
+
 ## Making a vhd just for wsl
 
 https://pomeroy.me/2023/12/how-i-fixed-wsl-2-filesystem-performance-issues/

@@ -32,3 +32,8 @@ wsl --shutdown
 wsl --mount V:\work\wsl\100gb-dev-mar-2024.vhdx --vhd --name dev
 wsl --mount v:\work\wsl\100gb-git.vhdx --vhd --name git
 wsl --mount v:\work\wsl\100gb-home.vhdx --vhd --name home
+# Bind the home disk over /home. This runs before any login, so the LUKS mount at ~/.encrypted lands on top.
+# An empty disk is skipped, so a new disk never hides /home before it gets its first copy.
+wsl -d Ubuntu -u root -- sh -c `
+    ('mountpoint -q /mnt/wsl/home && ls -A /mnt/wsl/home | grep -qvx lost+found && ' + `
+     '! findmnt -n /home >/dev/null && mount --bind /mnt/wsl/home /home')

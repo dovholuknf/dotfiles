@@ -1151,6 +1151,25 @@ function _ShellIsInside {
     return ($cwd -eq $target) -or $cwd.StartsWith($target + '\')
 }
 
+function _WtLeaf {
+    # Worktree folder name for a branch. A '/' in the branch would nest the folder a level deeper and break the
+    # <WtRoot>\<branch> layout that the prune and session-clean guards check, so feat/x lives in feat-x.
+    param([string]$Branch)
+    return ($Branch -replace '[\\/]', '-')
+}
+
+function _AssertUserBranchName {
+    # Branch names clint creates by hand. claude branches belong to agents and reach clint through
+    # 'git sland', never through a worktree of his own.
+    param([string]$Name, [string]$Verb)
+    if ($Name -match '^\s|\s$|[\\:\?\*\[\]~^]|^/|/$|//') { throw "branch name '$Name' contains an illegal character" }
+    if ($Name -notmatch 'claude') { return }
+    $plain = ($Name -replace '(?i)^claude/', '')
+    if ($plain -match 'claude') { throw "branch names with 'claude' belong to agents. pick a name without it." }
+    throw "branch names with 'claude' belong to agents. make your own branch, then copy the agent's work in:`n" +
+          "  gwt $Verb $plain`n  git sland $Name"
+}
+
 function _SetGwtCwdHint {
     # Drop a hint file the gwt profile wrapper reads after the script exits, so it
     # can Set-Location the parent shell into the newly-created worktree. Keyed on
@@ -1729,7 +1748,7 @@ switch ($Command) {
             throw "'$Target' is a URL but not a recognized git repo URL -- discourse thread: 'gwt discourse <url>', Zendesk ticket: 'gwt zendesk <url>'"
         }
         if ($Target -eq '.')   { throw "'new' needs an explicit branch name (the '.' shortcut is only for 'gwt claude .')" }
-        if ($Target -match '^\s|\s$|[\\\/:\?\*\[\]~^]') { throw "branch name '$Target' contains an illegal character" }
+        _AssertUserBranchName -Name $Target -Verb 'new'
         $ctx = Resolve-RepoContext
         [System.IO.Directory]::CreateDirectory($ctx.WtRoot) | Out-Null
         Ensure-RepoClonedAndUpdated -Org $ctx.Org -Repo $ctx.Repo -Src $ctx.Src -RemoteHost $ctx.RemoteHost
@@ -1826,7 +1845,7 @@ switch ($Command) {
             }
         }
 
-        $wtPath = Join-Path $ctx.WtRoot $Target
+        $wtPath = Join-Path $ctx.WtRoot (_WtLeaf $Target)
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
         _InvokeGwtHook -Org $ctx.Org -Repo $ctx.Repo -WorktreePath $wtPath -RemoteHost $ctx.RemoteHost
@@ -2259,7 +2278,7 @@ switch ($Command) {
             $Prompt = $lines -join "`n`n"
         }
 
-        $wtLeaf = if ($prNum) { $branch } else { "advisory-$ghsa" }
+        $wtLeaf = if ($prNum) { _WtLeaf $branch } else { "advisory-$ghsa" }
         $wtPath = Join-Path $ctx.WtRoot $wtLeaf
         if ($existingWt) {
             Write-Color "ready: $existingWt (branch $branch)" Green
@@ -2649,6 +2668,7 @@ switch ($Command) {
 
     'twig' {
         if (-not $Target) { throw "'twig' requires a new branch name" }
+        _AssertUserBranchName -Name $Target -Verb 'twig'
 
         # NOTE: not $current -- that collides (case-insensitively) with the [switch]$Current
         # parameter, so assigning a branch string to it throws a SwitchParameter cast error.
@@ -2693,7 +2713,7 @@ switch ($Command) {
         # branch off whatever $srcBranch currently points to locally -- do NOT force-update it
         Invoke-Git $ctx.Src @('branch','--no-track',$Target,$srcBranch)
 
-        $wtPath = Join-Path $ctx.WtRoot $Target
+        $wtPath = Join-Path $ctx.WtRoot (_WtLeaf $Target)
         Ensure-Worktree $ctx.Src $wtPath $Target
         Write-Color "ready: $wtPath" Green
 
@@ -5012,7 +5032,7 @@ switch ($Command) {
             foreach ($line in $lines) {
                 if ($line -match '^worktree\s+(.+)$') {
                     $candidate = $Matches[1]
-                    if ((Split-Path $candidate -Leaf) -ieq $Target) {
+                    if ((Split-Path $candidate -Leaf) -ieq (_WtLeaf $Target)) {
                         $wtPath = $candidate
                         Write-Color "matched by dir name (branch differs): $candidate" DarkGray
                         break
@@ -5064,7 +5084,7 @@ switch ($Command) {
             foreach ($line in $lines) {
                 if ($line -match '^worktree\s+(.+)$') {
                     $candidate = $Matches[1]
-                    if ((Split-Path $candidate -Leaf) -ieq $Target) { $wtPath = $candidate; break }
+                    if ((Split-Path $candidate -Leaf) -ieq (_WtLeaf $Target)) { $wtPath = $candidate; break }
                 }
             }
         }
@@ -5104,7 +5124,7 @@ switch ($Command) {
     'rm' {
         if (-not $Target) { throw "'rm' requires a branch name" }
         $ctx    = Resolve-RepoContext
-        $wtPath = Join-Path $ctx.WtRoot $Target
+        $wtPath = Join-Path $ctx.WtRoot (_WtLeaf $Target)
         $normWt = ($wtPath -replace '/', '\').TrimEnd('\').ToLower()
 
         # Refuse if a session is still alive on this worktree (unless -y/-Force).

@@ -18,9 +18,11 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
   prose. Format exactly: a line `Do This Now:`, then a blank line, then `---` alone on its own line, then
   a blank line, then a numbered list. Each item names one concrete action and what it changes, such as
   "Remove inherited write access from githooks." Never write an item that only points at the commands,
-  such as "Run the block below." Commands go in ONE fenced block under the list, in item order. The block
-  comes at the end of the reply, before `Open Questions:` if both appear. With nothing for me to do,
-  leave the whole block out.
+  such as "Run the block below." When the commands run back to back with nothing for me to do between
+  them, put them in ONE fenced block under the list, in item order. When an item needs me to look, wait,
+  or decide before the next command, put that item's command in its own fenced block directly under the
+  item. The `Do This Now:` section comes at the end of the reply, before `Open Questions:` if both
+  appear. With nothing for me to do, leave the whole section out.
 * Default to 1-3 sentences or bullets. Add length only when correctness needs it, or when I ask (or say
   a keyword like `details`). This governs replies to me. It never means write terse docs or clipped
   commit prose.
@@ -57,3 +59,7 @@ docs, commits, or PRs. That content follows its own voice and the target repo's 
   off a branch, tell me to run `git sland claude/<branch>` in my own worktree, then stop. sland copies the branch's
   tree in unstaged, and I review, sign, commit, and push. Never run sland yourself: the gate blocks it. The exception
   is a repo with its own landing path, such as atrium's ci-loop inbox. There, follow that repo's process.
+* Before you give me any git steps, read `$env:DOTFILES\claude\git-handoff.md`. Every step starts by moving my shell
+  there (`Set-Location`, `gwt new`, or `gwt cd`), never "in your worktree" alone.
+* Need docker or Linux? `ssh agentwsl`. Never `cdwsl`: that is my own distro. Details in
+  `$env:DOTFILES\claude\agentwsl.md`.

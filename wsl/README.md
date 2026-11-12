@@ -36,10 +36,12 @@ regenerating /etc/resolv.conf and points it at /mnt/wsl/resolv.conf ("foreign" m
 not the stub resolver and the split never applies. Put resolved in stub mode with real upstreams,
 then let ZET do the rest.
 
-# 1. wsl.conf: enable systemd, stop WSL rewriting resolv.conf
+# 1. wsl.conf: enable systemd, bind the home disk over /home (see "/home on the home disk" below), and stop WSL
+#    rewriting resolv.conf
 sudo tee /etc/wsl.conf <<'EOF'
 [boot]
 systemd=true
+command = mountpoint -q /mnt/wsl/home && ls -A /mnt/wsl/home | grep -qvx lost+found && ! findmnt -n /home >/dev/null && mount --bind /mnt/wsl/home /home
 
 [network]
 generateResolvConf = false
@@ -75,3 +77,29 @@ resolvectl query mgmt.ziti
 # intercept address (mgmt.ziti, foo.mgmt.internal). If a .local address is unavoidable, add a
 # per-link routing domain (runtime only, ZET resets ziti0 on restart):
 #   sudo resolvectl domain ziti0 '~mgmt.local'
+
+
+# /home on the home disk
+
+/home lives on its own disk, V:\work\wsl\100gb-home.vhdx (made and formatted per powershell/README.md, "Making a vhd
+for /home"). Two pieces put it there, and a fresh machine needs both:
+
+1. resetwsl.ps1 (powershell/onpath) attaches the disk with 'wsl --mount ... --name home', so it appears at
+   /mnt/wsl/home. Then it binds that over /home before anyone logs in, so the LUKS mount at ~/.encrypted lands on top.
+2. The [boot] command in /etc/wsl.conf (step 1 of the DNS section above) redoes the bind on every Ubuntu start. Ubuntu
+   shuts down when no wsl.exe window is open, even with systemd on and vmIdleTimeout set. That drops the bind but
+   leaves the disk attached, so the next start needs the bind again.
+
+Both binds skip when the disk is not attached, when the disk is empty (nothing but lost+found), or when /home is
+already bound. The empty-disk guard means a new disk never hides /home. If /etc/wsl.conf already exists, add only the
+'command =' line under [boot], below systemd=true. Back up the file first. A new, empty home disk needs the current
+/home copied onto it once, then the next resetwsl.ps1 run or Ubuntu start binds it:
+
+wsl -d Ubuntu -u root -- cp -a /home/. /mnt/wsl/home/
+
+Check it from a fresh Ubuntu start (wsl --terminate Ubuntu, then open a window):
+
+findmnt /home    # SOURCE shows the home disk, not the root disk
+
+After an Ubuntu-only restart, mount-cd.sh prints "losetup busy". loop0 belongs to the whole WSL VM, so it survives an
+Ubuntu restart. Ignore it, because cryptsetup and mount still work.
