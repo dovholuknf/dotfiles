@@ -49,13 +49,16 @@ Never run `git sland` yourself. The gate blocks it. Never give him `git push` or
 
 ### The pattern
 
-Put each step in Do This Now. Commands go in one block, in step order:
+Do This Now is one fenced block. Each step is a `# N.` comment, with its commands directly under it:
 
 ```powershell
-Set-Location D:\git\github\<org>\<repo>   # the repo's main clone
-gwt new <his-branch>                       # makes his worktree and moves the shell into it
-git sland claude/<your-branch>             # copies your branch in, unstaged
-git status                                 # the files he will review
+# 1. Move to the repo's main clone, so gwt knows the repo.
+Set-Location D:\git\github\<org>\<repo>
+# 2. Make his worktree and move the shell into it.
+gwt new <his-branch>
+# 3. Copy your branch in as unstaged changes, then list the files he will review.
+git sland claude/<your-branch>
+git status
 ```
 
 If his worktree already exists, replace the `gwt new` line with `gwt cd <his-branch>`.
@@ -66,29 +69,29 @@ After that he reviews the files, then commits and pushes. You do not write those
 
 Weak, because he has no way to get there:
 
-> 1. Copy the net10 branch into your worktree as unstaged changes, so you can review, sign, commit, and push it.
->
-> `git sland claude/net10`
-
-Good:
-
-> 1. Move to the ziti-sdk-csharp main clone, so gwt knows the repo.
-> 2. Make a net10 worktree off main and move into it.
-> 3. Copy claude/net10 into it as unstaged changes, so you can review, sign, commit, and push.
-> 4. After it merges, close PR 162, because net10 already carries its bumps.
->
 > ```powershell
-> Set-Location D:\git\github\openziti\ziti-sdk-csharp
-> gwt new net10
+> # 1. Copy the net10 branch into your worktree as unstaged changes, so you can review, sign, commit, and push it.
 > git sland claude/net10
 > ```
 
-Step 4 has no command, so the block ends at step 3.
+Good:
+
+> ```powershell
+> # 1. Move to the ziti-sdk-csharp main clone, so gwt knows the repo.
+> Set-Location D:\git\github\openziti\ziti-sdk-csharp
+> # 2. Make a net10 worktree off main and move into it.
+> gwt new net10
+> # 3. Copy claude/net10 into it as unstaged changes, so you can review, sign, commit, and push.
+> git sland claude/net10
+> # 4. After it merges, close PR 162, because net10 already carries its bumps.
+> ```
+
+Step 4 has no command, so it is a comment only.
 
 ## Other commands
 
 - Name the exact branch, path, and remote. Never use a placeholder he has to fill in.
-- One fenced block, commands in step order, `# ...` comments for notes. If he has to look, wait, or decide between two
-  commands, put each command in its own block under its step.
+- One fenced block, each step a `# N.` comment above its commands. If he has to look, wait, or decide before the next
+  command, say so in that step's comment. Never split the block.
 - Before you write a step, check the real state (`git status --short`, `git log --oneline -3`, `gwt ls`). Never assume
   a worktree or branch exists.
